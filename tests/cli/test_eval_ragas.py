@@ -294,6 +294,7 @@ class TestRunEvaluation:
     ) -> None:
         """评估流程应正确调用 ragas.evaluate。"""
         from ragas.metrics import (
+            AnswerCorrectness,
             answer_relevancy,
             context_precision,
             context_recall,
@@ -329,6 +330,7 @@ class TestRunEvaluation:
             context_recall.name,
             faithfulness.name,
             answer_relevancy.name,
+            AnswerCorrectness().name,
         }
         assert actual_metric_names == expected_metric_names
         assert result is mock_result

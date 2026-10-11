@@ -267,6 +267,7 @@ def run_evaluation(
     from datasets import Dataset
     from ragas import evaluate
     from ragas.metrics import (
+        AnswerCorrectness,
         answer_relevancy,
         context_precision,
         context_recall,
@@ -295,6 +296,7 @@ def run_evaluation(
             context_recall,
             faithfulness,
             answer_relevancy,
+            AnswerCorrectness(),  # 实例化；类会 TypeError。列映射 ground_truth→reference
         ],
         raise_exceptions=False,
         run_config=RunConfig(timeout=600),
