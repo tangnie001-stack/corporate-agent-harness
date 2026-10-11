@@ -33,7 +33,7 @@ Evaluation SHALL be invoked via `python -m src.cli.eval_ragas`. The Markdown sum
 
 **Reason**: 该要求依赖的固定分块尺寸对比路径（`python -m scripts.compare_chunk`，比较 512 / 768 / 1024）在本仓已不存在；分块配置不再是运行时对比维度。
 
-**Migration**: 检索 / 重排参数组合的对比评测由「Retrieval configuration comparison」（`python -m src.cli.compare_retrieval`）承接；本变更不保留固定分块尺寸对比。
+**Migration**: 检索 / 重排参数组合的对比评测由**既有 CLI** `python -m src.cli.compare_retrieval` 承担（本变更**不**为其新增规格条款）；本变更不保留固定分块尺寸对比。
 
 ## ADDED Requirements
 
@@ -42,6 +42,8 @@ Evaluation SHALL be invoked via `python -m src.cli.eval_ragas`. The Markdown sum
 评测链路 SHALL 为每次评测的单题生成注入请求上下文，使被测 Agent 经工具（知识库检索 / 联网搜索）收集的检索材料能被评测读取，而不再走「评测入口从不设置上下文」的失效路径。
 
 每条被读取的检索材料 SHALL 携带其来源类型（知识库 / 联网）。评测 SHALL 仅让**纯知识库样本**（检索材料不含联网块）参与常规上下文指标（主分）；**含联网材料的样本** SHALL 被标记为「降级联网」并从主分中排除，且其是否降级联网 SHALL 记入诊断元数据。
+
+依赖检索材料的上下文类指标（`faithfulness` / `context_precision` / `context_recall`）SHALL 在无材料样本上被跳过；**不依赖上下文的指标（`answer_relevancy` 与答案正确性）SHALL 照常计算**。
 
 #### Scenario: Retrieval material is captured
 
@@ -61,7 +63,8 @@ Evaluation SHALL be invoked via `python -m src.cli.eval_ragas`. The Markdown sum
 #### Scenario: Samples without retrieval skip context metrics
 
 - **WHEN** 某问答未检索到任何材料（上下文为空）
-- **THEN** 该题的上下文类指标 SHALL 被跳过，不产生无效数值，也不拉低其他题的指标均值
+- **THEN** 依赖材料的 `faithfulness` / `context_precision` / `context_recall` SHALL 被跳过，不产生无效数值，也不拉低其他题的指标均值
+- **AND** 不依赖上下文的 `answer_relevancy` 与答案正确性 SHALL 照常计算
 
 ### Requirement: Answer correctness metric
 
@@ -78,15 +81,6 @@ Evaluation SHALL be invoked via `python -m src.cli.eval_ragas`. The Markdown sum
 
 - **WHEN** 测试集样本缺少参考答案
 - **THEN** 评测跳过答案正确性指标，且不产生无效数值
-
-### Requirement: Retrieval configuration comparison
-
-系统 SHALL 支持对检索与重排参数组合的对比评测（如 `TOP_K_RETRIEVAL` × `TOP_K_RERANK` 网格），复用与常规评测相同的指标口径，输出各组合的对比结果。
-
-#### Scenario: Compare retrieval configurations
-
-- **WHEN** 用户运行 `python -m src.cli.compare_retrieval`
-- **THEN** 系统 SHALL 输出各检索 / 重排参数组合的指标对比
 
 ### Requirement: Agent trajectory captured as diagnostic metadata
 

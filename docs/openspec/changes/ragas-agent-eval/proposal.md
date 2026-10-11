@@ -11,11 +11,10 @@ Agent 已就绪（工具 / 技能 / 多轮），但现有 RAGAS 评测**鉴定�
 
 - **修 `F-32`**：评测链路在每题调用图之前注入 `RequestContext`（eval 侧 seed，镜像 `turn_runner._run_with_finalize`），使工具收集的检索材料进入图状态，恢复 context 类指标。
 - **含联网样本处置**：仅**纯知识库样本**（检索材料不含 `kind=web` 块）参与常规上下文指标（主分）；含联网材料的样本标记为「降级联网」并从主分排除（「是否降级联网」记入诊断元数据）；`contexts` 为空的样本**跳过** context 类指标（单列为「无检索直答」）。
-- **新增答案正确性指标**：用 `RubricsScoreWithReference`（准则式 LLM 打分，1–5 + feedback）对最终回答与测试集 `reference` 比对，补上「答对没」这一维度（区别于忠实度与相关性）。
+- **新增答案正确性指标**：用 **legacy `from ragas.metrics import AnswerCorrectness`**（与现有四指标同一条 `evaluate()` 路径，对 `reference` 计算，输出 0–1）补上「答对没」这一维度（区别于忠实度与相关性）。准则式 `RubricsScoreWithReference`（可定制 + feedback）推迟为后续增强。
 - **采集 Agent 消息轨迹**：把 `state.messages`（含每次工具调用）转成评测侧结构，工具调用序列 / 迭代次数作为**诊断元数据**保存，**不单独评分**（常规检索轮路径近似恒定，无区分度）。
-- **测试集 schema 扩可选字段**：`reference_tool_calls` / `reference_topics`（缺失即跳过对应指标，旧测试集仍可读）。
 - **评测结果回写 Langfuse**：每题分数回写到对应 trace（沿用既有接线口径）。
-- **对齐 `evaluation-pipeline` 过时条款**：改正命令与路径（第 1、3 条）；移除已死的「分块尺寸对比」路径（第 2 条），其对比能力由「检索参数对比」承接。
+- **对齐 `evaluation-pipeline` 过时条款**：改正命令与路径（第 1、3 条）；移除已死的「分块尺寸对比」（第 2 条，Migration 指向既有 `compare_retrieval`）。
 
 ## Capabilities
 
@@ -25,13 +24,13 @@ Agent 已就绪（工具 / 技能 / 多轮），但现有 RAGAS 评测**鉴定�
 
 ### Modified Capabilities
 
-- `evaluation-pipeline`：① MODIFY「QA test pair coverage」对齐按 KB 生成测试集；② MODIFY「Evaluation report archival」对齐实际命令与报告路径；③ REMOVE「Chunk size comparison」（路径已死）并 ADD「Retrieval configuration comparison」承接；④ ADD 评测链路检索材料收集（修 F-32）+ 纯 KB 样本出主分 / 含联网样本另标；⑤ ADD 答案正确性指标；⑥ ADD Agent 轨迹作为诊断元数据。
+- `evaluation-pipeline`：① MODIFY「QA test pair coverage」对齐按 KB 生成测试集；② MODIFY「Evaluation report archival」对齐实际命令与报告路径；③ REMOVE「Chunk size comparison」（路径已死；Migration 指向既有 `compare_retrieval`，**不新增规格条款**）；④ ADD 评测链路检索材料收集（修 F-32）+ 纯 KB 样本出主分 / 含联网样本另标；⑤ ADD 答案正确性指标；⑥ ADD Agent 轨迹作为诊断元数据。
 - `llm-tracing`：ADD「评测结果回写为 trace 分数」。
 
 ## Impact
 
-- **代码**：`src/cli/eval_ragas.py`（seed `RequestContext`、轨迹采集、指标、score 回写）、`src/cli/eval_ragas_generate.py`（测试集 schema）；仅**只读参照** `src/services/turn_runner.py`（seed 方式）与 `src/rag/context.py`（`kind` 字段），不改它们。
-- **依赖**：无新增（`ragas==0.4.3` 已含所需指标）。
-- **数据**：测试集 JSON 新增**可选**字段（向后兼容）；**不改数据库**（本次不扩 `eval_report` 表、不改前端）。
+- **代码**：`src/cli/eval_ragas.py`（seed `RequestContext`、轨迹采集、指标、score 回写）；仅**只读参照** `src/services/turn_runner.py`（seed 方式）与 `src/rag/context.py`（`kind` 字段），不改它们。
+- **依赖**：无新增（`ragas==0.4.3` 已含所需指标；legacy `AnswerCorrectness` 亦在其内）。
+- **数据**：**无测试集 schema 变更**（答案正确性只需已有 `reference`）；**不改数据库**（不扩 `eval_report` 表、不改前端）。
 - **行为**：评测报告多出「答案正确性」与按来源分流的 context 指标；Langfuse 出现新的 score 记录。
 - **不改**：`src/agents/graph/agent_node.py`（F-32 由 eval 侧 seed 解决，不碰生产节点）、`eval_report` 表 / `kb_eval` API / 前端。
