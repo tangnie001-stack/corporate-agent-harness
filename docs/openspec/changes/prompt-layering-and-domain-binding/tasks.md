@@ -51,7 +51,7 @@
 - [x] 2.15c **补登：MODIFY 在效主规格 `evaluation-pipeline` 的「Current date in evaluation context」**（本项为实现计划补登）：原条文写日期注入 "via `PromptManager.get_system_prompt()`"，而该方法已在 2.22 / 2.15 收口时删除 —— 注入点现为组装器的 `_with_current_date`（唯一调用点 `src/rag/prompt.py:247`）。这份主规格**原本没有任何 delta 覆盖**，若不在本变更内 MODIFY，归档后会留下指向不存在方法的条文。delta 已按同名 Requirement 逐字对齐加入；归档合并由 2.15b 统一确认
 - [x] 2.16 新增 prompt 契约测试（按请求载荷断言）：① 选定预设后最终 system 仍含检索阶梯要素；② 未注册的工具名不出现在最终 prompt；③ `build_system_prompt` 产出的工具名集合 ⊆ 实际注册工具名集合；④ **遍历"是否绑库 × 已注册工具集合"组合，断言每组都含完成条件与数据·指令边界**（它们是无条件性质的，最该被钉死——`answer_len=0` 的直接修法就是完成条件）
 - [x] 2.17 **分段字符数并入既有组装事件**：在 `Event.PROMPT_ASSEMBLED`（`src/rag/prompt.py:71-79` 已在用）上增加容器值字段 `section_chars={"base":1234,"sources":890,"tools":456,"output":210}`（键序 = 组装顺序，空段不出现）。⚠ **口径变更（P0 → P1）**：P0 的 `validation.section_char_totals()` 已能给出段字符数，但它统计的是"各段模板正文字符数之和"、键序为**文件名顺序**；P1 须改为"实际参与组装的段字符数"、键序对齐组装顺序（`base → sources → tools → output`）。⚠ **单位是字符数（`len(str)`），字段名带 `chars`** —— 不要写 bytes（WeKnora 的 `bytes=` 是 Go 语义），与既有 `INLINE_PROMPT_MAX_CHARS` 同口径。⚠ **必须是紧凑 JSON 无空格** —— `logging-rules.md:27-28` 规定字符串 token 安全字符集 `^[A-Za-z0-9_./:@-]+$`（不含空格/逗号）、容器走紧凑 JSON。⚠ **不要新增逐段日志行** —— 级别只有 info/warning/error、无 debug 档，5 段 × 每请求属噪声。同步在 `docs/agents/logging-rules.md` 登记该字段的**值类型编码**，并补领域回退 / 预设与领域不一致的字段
-- [ ] 2.18 **人工重采端到端 prompt 快照基线**（本变更唯一不可自动化的验收点）⚠ 待 change retrieval-fetch-and-dedup 落地后执行（快照所测的 context 正由该对端改动，先采会作废）
+- [x] 2.18 **人工重采端到端 prompt 快照基线**（本变更唯一不可自动化的验收点）⚠ 待 change retrieval-fetch-and-dedup 落地后执行（快照所测的 context 正由该对端改动，先采会作废）
 - [x] 2.19 跑 `pytest tests/ -v` + `ruff check .` + `pyright src/`
 - [x] 2.20 **`USER_PROMPT_TEMPLATE` 去策略化**：删掉末尾的出口提示（`prompts.py:98`），改为纯数据两分块（参考资料 / 用户请求）。⚠ 不要加 `{current_time}` 之类的占位符 —— 现有消费点用 `str.format(context=, query=)`，未知字段会抛 `KeyError`（每请求都走）；时间锚点只保留 system 侧一份。⚠ **删除理由**：该句与 `sources` 段是同一事实的两个 owner，且出口条件放在 user 侧更易被模型当作唯一依据。**不要**再写成"`retrieve_kb` 从不返空所以永不触发" —— `rag_tools.py:230-233` 空结果返回 `""`，结构上可返空；"从不返空"只是 `trace_c54ce259` 的当次实测（每次 2 条非空），不是代码保证
 - [x] 2.21 **`KB_UNBOUND_SYSTEM_PROMPT` 的联网句改条件渲染**：去掉无条件提及 `search_web`；未注册该工具时降级为"仅基于常识回答，不得声称检索过"（该常量属"无条件引用条件注册工具"的同类缺陷，原先漏在 2.12 之外）
@@ -95,8 +95,8 @@
 
 - [x] 4.1 `docs/agents/requirements_pool.md` 的「Prompt 管理」表后加阶段说明（Git 内 YAML 为第一阶段，终态为远端读取）
 - [x] 4.2 `docs/agents/glossary.md` 登记新术语（**本项目用 `glossary.md` 而非根目录 `CONTEXT.md`，遵循 CLAUDE.md 的文档组织表**）：六段模型、领域 base、预设替换（三选一）、**段模板 vs 独立任务模板**、**优先级指针句**、**读取路径唯一化**、**判据留代码（能改文案不能改挂载）**、**完成条件（= 证据足够且已给出答案）**。⚠ 若 change `retrieval-fetch-and-dedup` 正在并行，`glossary.md` 会被两边同时修改（它改 `dedup` / `RETRIEVAL_MAX_PER_DOC` 词条）—— 需协调合并顺序，或让 change 1 先落（见 4.4b）
-- [ ] 4.3 Langfuse 侧 3 个 prompt 的归属 **已决定：出列**（本地模板为唯一事实源），落到 task 2.23
-- [ ] 4.4 与"库边界"项的态 A 冲突 **已决定：取"结构不变"**（D8），落到 task 2.15/2.15b
-- [ ] 4.4b **与 change `retrieval-fetch-and-dedup` 的文档竞争边界（OQ-5）**：两边都会改 `docs/agents/glossary.md`（见 4.2）、`docs/agents/code-map.md`（见 1.9）与 `CLAUDE.md` 的「文档组织」表 —— 约定**本变更先落**（P0 的载体/目录登记必须先到位），对端在其后合并；若顺序被迫颠倒，这三处改为"先落对端、本变更改完后再补一次"
+- [x] 4.3 Langfuse 侧 3 个 prompt 的归属 **已决定：出列**（本地模板为唯一事实源），落到 task 2.23
+- [x] 4.4 与"库边界"项的态 A 冲突 **已决定：取"结构不变"**（D8），落到 task 2.15/2.15b
+- [x] 4.4b **与 change `retrieval-fetch-and-dedup` 的文档竞争边界（OQ-5）**：两边都会改 `docs/agents/glossary.md`（见 4.2）、`docs/agents/code-map.md`（见 1.9）与 `CLAUDE.md` 的「文档组织」表 —— 约定**本变更先落**（P0 的载体/目录登记必须先到位），对端在其后合并；若顺序被迫颠倒，这三处改为"先落对端、本变更改完后再补一次"
 - [ ] 4.5 归档前校验 `openspec validate prompt-layering-and-domain-binding` 通过并归档
 - [ ] 4.6 提交信息写明：① 本次推翻了 persona 整体替换 base 的语义、移除 `KB_BOUND_RETRIEVAL_DISCIPLINE`；② 语义反转两处（规则 9 的笼统禁令删除、「已返回内容不必再读」由 `sources` 改归 `base`）；③ 契约变更导致 `tests/rag/test_prompt_layers.py` 需改，而 `:59` **不改**（其断言在新契约下仍成立）

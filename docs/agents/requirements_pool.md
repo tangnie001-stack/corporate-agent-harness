@@ -64,6 +64,8 @@
 | D-11 | **临时取证埋点清理待办**：「长时间静默」定位用的 4 组 `[retrieval]/[agent] TIMING` 埋点尚未清理 | 分组：① `src/agents/graph/agent_node.py`（TTFB 捕获 + `TIMING` 日志）**已随 `one-loop-two-roles` 删除**（2026-09-29，埋点连同承载它的旧循环函数一并消失；原计划保留的 `first_chunk_at` 因观测层不可得而未保留，`completion_start_time` 退化见 `docs/adr/0016`）；② `src/agents/tools/web_tools.py`（2 处）；③ `src/infra/search/tavily_client.py`（4 处）；④ `src/services/agent_service.py`（静默看门狗）。②③④ **不在 `one-loop-two-roles` 范围**，待定位确认后整块删除 | 2026-09-28 `one-loop-two-roles` 迁移影响面审计 | P3 | 低 | 无 |
 | D-12 | **`QueryRouter` 处于「生产死、CLI 活」灰区**：`src/infra/search/query_router.py` 的 `QueryRouter` 类 + `tests/infra/search/test_query_router.py` 目前**只有 CLI** `src/cli/check_abstain.py:160` 在用；生产图内**无** `classify`/`query_router` 节点（`grep classify_node src/agents/graph/` 无结果，one-loop-two-roles 重构后意图判定已并入主 agent）。⚠️ 同模块的 `aggregate_kb_entities` / `SUGGESTIONS_MAP` **仍被生产使用**（`rag_tools.py:31` / `ask_tools.py:21`），删整个文件会误伤。**处理**：不擅自删，先登记；后续若碰到意图路由/分类相关的 change，评估是否把 `QueryRouter` 并入或退役。相关陈旧引用（`models.py:181` docstring、`state.py:92` 注释）已由 `provider-compat-layer` 修正 | 2026-10-11 `provider-compat-layer` 立项调研（核查 `classify` 角色用途时发现） | P3 | 低 | 无 |
 
+| D-13 | **`prompt-layering-and-domain-binding` 的「人工层回归项」未跑（阻塞于 `e2e-playwright-regression`）** | 该 change 的 §3 要求把「绑 KB + 选预设 → 答案仍带 `[n]`」作为**端到端症状级回归**（三层验收里唯一的"最终形态"层）。**实情**：`e2e-playwright-regression` 尚未实施（0/30，`e2e/` 目录**不存在**），其所称"已固化"只是 `proposal.md` 的文字登记、**无测试文件**。故本 change 归档时该项**未跑**，转登记于此：待 `e2e-playwright-regression` 落地后补跑。另两条非阻塞遗留见 `archive/2026-10-12-prompt-layering-and-domain-binding/` 内 tasks 的说明 | `prompt-layering-and-domain-binding` 归档遗留（2026-10-12） | P3 | 低 | change `e2e-playwright-regression` |
+
 ## E. 文档处理增强
 
 | 需求 | 描述 | 来源对比 | 优先级 | 预估成本 | 依赖 |
