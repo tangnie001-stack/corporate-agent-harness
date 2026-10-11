@@ -33,3 +33,33 @@ providers:
       qwen3.7-text-embedding-flash:
         embedding_dimension: 1024
         embedding_batch_size: 20
+
+  # ---------------------------------------------------------------------------
+  # DeepSeek（OpenAI 兼容端点）—— 可切换目标（Phase 2）
+  #   · 官方模型名：deepseek-flash（DeepSeek-V4.1-Flash）/ deepseek-v4-pro（DeepSeek-V4-Pro-0813）
+  #   · 默认「思考模式开」，非思考档由层显式发 thinking.type=disabled（见 thinking_style）
+  #   · 无 embedding / rerank 端点 ⇒ 这两类角色绑到本 provider 会被启动校验拦截
+  # ---------------------------------------------------------------------------
+  deepseek:
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    thinking_style: deepseek               # 形状：thinking.type = enabled / disabled
+    reasoning_field: reasoning_content
+    capabilities:
+      tools: true
+    models:
+      main: deepseek-flash
+      classify: deepseek-flash
+      summary: deepseek-flash
+      judge: deepseek-v4-pro               # judge 缺省 dashscope，但可由 RAGAS_PROVIDER 显式绑本 provider
+      # 无 embedding / rerank 角色
+    catalog:
+      deepseek-flash:
+        context_window: 1048576            # 仅观测用途（system 段占比告警）
+        # 峰时价（保守，不低估成本）；闲时减半。口径：cache-miss input + output
+        # 价源：https://api-docs.deepseek.com/quick_start/pricing
+        pricing: { input: 0.0000003, output: 0.0000012 }  # 每 token
+        tokens_per_cjk_char: 0.6           # DeepSeek 官方：1 个中文字符 ≈ 0.6 token
+      deepseek-v4-pro:
+        context_window: 1048576
+        pricing: { input: 0.00000132, output: 0.00000396 }  # 峰时价；闲时减半
