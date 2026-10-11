@@ -215,7 +215,7 @@ async def test_fork_reuses_main_llm_when_model_empty():
 
 @pytest.mark.asyncio
 async def test_fork_model_override_builds_new_llm():
-    """fork 且声明 model：get_llm(model=record.model) 新建实例。"""
+    """fork 且声明 model：build_chat("main", model=record.model) 新建实例。"""
     fake_llm = MagicMock()
     fake_sub = _fake_sub_agent(
         _event("on_chat_model_start"),
@@ -228,8 +228,8 @@ async def test_fork_model_override_builds_new_llm():
             "src.agents.skills.executor.build_agent", return_value=fake_sub
         ) as mock_build,
         patch(
-            "src.agents.skills.executor.get_llm", return_value=fake_llm
-        ) as mock_get_llm,
+            "src.agents.skills.executor.build_chat", return_value=fake_llm
+        ) as mock_build_chat,
     ):
         exe = SkillExecutor(main_llm=MagicMock())
         rec = _record(
@@ -239,7 +239,10 @@ async def test_fork_model_override_builds_new_llm():
             model="qwen3.8-max",
         )
         out = await exe.execute(rec, task="分析")
-        mock_get_llm.assert_called_once_with(model="qwen3.8-max")
+        # 无 ctx（thinking=None）且声明 model → build_chat("main", thinking=None, model=...)
+        mock_build_chat.assert_called_once_with(
+            "main", thinking=None, model="qwen3.8-max"
+        )
         args, _kwargs = mock_build.call_args
         assert args[0] is fake_llm
         assert "专家分析" in out
@@ -247,7 +250,7 @@ async def test_fork_model_override_builds_new_llm():
 
 @pytest.mark.asyncio
 async def test_fork_thinking_follows_ctx_deep_thinking_true():
-    """ctx.deep_thinking=True：新建 llm 带 enable_thinking=True（思考跟随请求档）。"""
+    """ctx.deep_thinking=True：新建 llm 带 thinking=True（思考跟随请求档）。"""
     fake_llm = MagicMock()
     fake_llm.model_name = "main-model"
     fake_sub = _fake_sub_agent(
@@ -262,8 +265,8 @@ async def test_fork_thinking_follows_ctx_deep_thinking_true():
         with (
             patch("src.agents.skills.executor.build_agent", return_value=fake_sub),
             patch(
-                "src.agents.skills.executor.get_llm", return_value=fake_llm
-            ) as mock_get_llm,
+                "src.agents.skills.executor.build_chat", return_value=fake_llm
+            ) as mock_build_chat,
         ):
             main_llm = MagicMock()
             main_llm.model_name = "main-model"
@@ -277,14 +280,13 @@ async def test_fork_thinking_follows_ctx_deep_thinking_true():
             await exe.execute(rec, task="分析")
     finally:
         current_request_ctx.reset(token)
-    kwargs = mock_get_llm.call_args.kwargs
-    assert kwargs["model"] == "main-model"
-    assert kwargs["extra_body"] == {"enable_thinking": True}
+    # thinking 走 build_chat 的 thinking 参数（内部经 thinking_extra_body 产完整 extra_body）
+    mock_build_chat.assert_called_once_with("main", thinking=True, model="main-model")
 
 
 @pytest.mark.asyncio
 async def test_fork_thinking_follows_ctx_deep_thinking_false():
-    """ctx.deep_thinking=False：新建 llm 带 enable_thinking=False（不落模型默认思考）。"""
+    """ctx.deep_thinking=False：新建 llm 带 thinking=False（不落模型默认思考）。"""
     fake_llm = MagicMock()
     fake_sub = _fake_sub_agent(
         _event("on_chat_model_start"),
@@ -297,8 +299,8 @@ async def test_fork_thinking_follows_ctx_deep_thinking_false():
         with (
             patch("src.agents.skills.executor.build_agent", return_value=fake_sub),
             patch(
-                "src.agents.skills.executor.get_llm", return_value=fake_llm
-            ) as mock_get_llm,
+                "src.agents.skills.executor.build_chat", return_value=fake_llm
+            ) as mock_build_chat,
         ):
             main_llm = MagicMock()
             main_llm.model_name = "main-model"
@@ -312,7 +314,7 @@ async def test_fork_thinking_follows_ctx_deep_thinking_false():
             await exe.execute(rec, task="分析")
     finally:
         current_request_ctx.reset(token)
-    assert mock_get_llm.call_args.kwargs["extra_body"] == {"enable_thinking": False}
+    mock_build_chat.assert_called_once_with("main", thinking=False, model="main-model")
 
 
 @pytest.mark.asyncio
@@ -327,7 +329,7 @@ async def test_fork_thinking_none_without_ctx_reuses_main_llm():
         patch(
             "src.agents.skills.executor.build_agent", return_value=fake_sub
         ) as mock_build,
-        patch("src.agents.skills.executor.get_llm") as mock_get_llm,
+        patch("src.agents.skills.executor.build_chat") as mock_build_chat,
     ):
         main_llm = MagicMock()
         main_llm.model_name = "main-model"
@@ -339,7 +341,7 @@ async def test_fork_thinking_none_without_ctx_reuses_main_llm():
             model=None,
         )
         await exe.execute(rec, task="分析")
-    mock_get_llm.assert_not_called()
+    mock_build_chat.assert_not_called()
     args, _kwargs = mock_build.call_args
     assert args[0] is main_llm
 
@@ -669,13 +671,13 @@ async def test_fork_subagent_events_do_not_leak_to_outer_stream():
     )
     # 注入请求上下文：生产路径中 delegate_task 在请求上下文内执行，fork 增量经
     # ctx.clarify_channel 投 delegate delta（contextvar 随 graph 同 task 传播）。
-    # ctx 可及 → fork 按 ctx.deep_thinking 新建 llm（get_llm）——
+    # ctx 可及 → fork 按 ctx.deep_thinking 新建 llm（build_chat）——
     # 此处 mock 模型构建边界，复用 scenario 假模型（不发起真实网络调用）
     ctx = RequestContext(session_id="s1")
     ctx.delegate_id = "dlg_scope_leak"
     token = current_request_ctx.set(ctx)
     try:
-        with patch("src.agents.skills.executor.get_llm", return_value=model):
+        with patch("src.agents.skills.executor.build_chat", return_value=model):
             stream_events = []
             async for event in compiled.astream_events(init_state, version="v2"):
                 stream_events.append(event)
@@ -747,7 +749,7 @@ async def test_fork_with_llm_lacking_model_name_does_not_crash():
         patch(
             "src.agents.skills.executor.build_agent", return_value=fake_sub
         ) as mock_build,
-        patch("src.agents.skills.executor.get_llm") as mock_get_llm,
+        patch("src.agents.skills.executor.build_chat") as mock_build_chat,
     ):
         exe = SkillExecutor(main_llm=llm)
         rec = _record(
@@ -759,7 +761,7 @@ async def test_fork_with_llm_lacking_model_name_does_not_crash():
         out = await exe.execute(rec, task="分析")
 
     assert exe._main_model_name is None
-    mock_get_llm.assert_not_called()
+    mock_build_chat.assert_not_called()
     args, _kwargs = mock_build.call_args
     assert args[0] is llm
     assert "分析" in out
@@ -848,8 +850,8 @@ async def test_generic_execute_none_record_skips_record_model():
         with (
             patch("src.agents.skills.executor.build_agent", return_value=fake_sub),
             patch(
-                "src.agents.skills.executor.get_llm", return_value=fake_llm
-            ) as mock_get_llm,
+                "src.agents.skills.executor.build_chat", return_value=fake_llm
+            ) as mock_build_chat,
         ):
             main_llm = MagicMock()
             main_llm.model_name = "main-model"
@@ -857,4 +859,5 @@ async def test_generic_execute_none_record_skips_record_model():
             await exe.execute(None, task="分析")
     finally:
         current_request_ctx.reset(token)
-    assert mock_get_llm.call_args.kwargs["model"] == "main-model"
+    # ctx deep_thinking 默认 False → thinking=False（非 None，故新建而非复用）
+    mock_build_chat.assert_called_once_with("main", thinking=False, model="main-model")

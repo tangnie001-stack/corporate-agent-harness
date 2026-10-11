@@ -166,3 +166,15 @@ def validate_config(
             raise RuntimeError(
                 f"provider {resolved.provider.name} 缺密钥：请设置 {resolved.provider.api_key_env}"
             )
+        # 被绑定 provider 的 thinking_style 必须有已实现的翻译分支：新增枚举形状
+        # 却漏加 thinking_extra_body 分支时，在此 fail-fast（而非请求期才 ValueError）。
+        # 局部 import 规避 spec↔thinking 的循环依赖。
+        from src.infra.llm.provider.thinking import thinking_extra_body
+
+        try:
+            thinking_extra_body(resolved.provider, False)
+        except ValueError as e:
+            raise RuntimeError(
+                f"provider {resolved.provider.name} 的 thinking_style "
+                f"{resolved.provider.thinking_style} 无已实现分支: {e}"
+            ) from e

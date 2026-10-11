@@ -27,6 +27,8 @@ from src.config.response_codes import Code
 from src.core import logging as core_logging
 from src.core.log_events import Event
 from src.core.logging import setup_logging
+from src.infra.llm.provider.factory import _registry
+from src.infra.llm.provider.spec import validate_config
 from src.infra.llm.token_count import warm_token_encoder
 from src.infra.llm.tracing import configure_tracing, flush_tracing
 from src.middleware.auth import auth_middleware
@@ -45,6 +47,9 @@ async def lifespan(app: FastAPI):
     启动阶段校验 prompt 模板集（`validation.validate_all`）：任一校验失败
     向上抛出 `TemplateLoadError`，进程启动失败，不留请求期降级分支。
 
+    启动阶段校验 provider 配置（`validate_config`）：解析每个角色的 provider/
+    模型/密钥，缺失或未知即抛 `RuntimeError`，进程启动失败（fail-fast）。
+
     启动阶段清空残留的 chat_lock:* 键：重启后进程内无任何生成任务，
     残留锁（来自被杀进程，TTL 兜底 180s）会阻塞新请求的并发锁获取。
 
@@ -60,6 +65,7 @@ async def lifespan(app: FastAPI):
     section_chars = validation.validate_all()
     core_logging.log_event(Event.PROMPT_VALIDATED, section_chars=section_chars)
     await _clear_stale_chat_locks()
+    validate_config(_registry())
     configure_tracing()
     await wecom_service.start()
     yield

@@ -24,6 +24,9 @@ from src.config import settings
 from src.config.const import MAX_DELEGATE_BONUS, TURN_INPUT_TOKEN_LIMIT
 from src.core import logging as core_logging
 from src.core.log_events import Event
+from src.infra.llm.provider.factory import _registry
+from src.infra.llm.provider.spec import resolve_role
+from src.infra.llm.provider.thinking import thinking_extra_body
 from src.infra.llm.request_context import current_request_ctx
 from src.infra.llm.token_count import count_messages_tokens
 from src.infra.llm.token_usage import estimate_usage
@@ -75,14 +78,20 @@ class ModelParamsMiddleware(AgentMiddleware):
     state_schema = LoopState
 
     def _settings(self, request: Any) -> dict[str, Any]:
-        """算出本次调用的 model_settings（档位判据见类 docstring）。"""
+        """算出本次调用的 model_settings（档位判据见类 docstring）。
+
+        extra_body 经 `thinking_extra_body` 产**完整** dict（含 preserve 标志）——
+        per-call extra_body 在 langchain-openai 中整体覆盖构造期 extra_body，
+        只有与构造期同源（同一 `thinking_extra_body`）产出才不丢字段（D8）。
+        """
         ctx = current_request_ctx.get()
         if ctx is not None:
             kb_bound = ctx.kb_bound
         else:
             kb_bound = bool(request.state.get("kb_id"))
         deep_thinking = bool(request.state.get("deep_thinking"))
-        extra_body = {"enable_thinking": deep_thinking}
+        spec = resolve_role("main", _registry()).provider
+        extra_body = thinking_extra_body(spec, deep_thinking)
         if kb_bound:
             return {"extra_body": extra_body}
         return {
