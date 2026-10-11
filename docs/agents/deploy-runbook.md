@@ -136,7 +136,7 @@ Git 提交 ──▶ ① 构建并推送 app 镜像 ──▶ ② 打包部署�
 
 **新建/复制流水线时最容易漏的就是这组变量** —— 若构建期报"索引里查不到任何包"，先回来核对本节。
 
-> ⚠️ `LLM_MODEL` 之类的流水线变量注入的是**目标机的环境变量**；而 **app 容器只读 `env_file: .env`**（compose 的 `environment:` 段没列 `LLM_MODEL`）。所以**改模型要改服务器上的 `.env` 并重跑部署**，改流水线变量对 app 无效。
+> ⚠️ `LLM_MODEL` 之类的流水线变量注入的是**目标机的环境变量**；而 **app 容器只读 `env_file: .env`**（compose 的 `environment:` 段没列 `LLM_MODEL`）。所以**改模型 / 切换 provider 要改服务器上的 `.env` 并重跑部署（切 provider 见 §2.7）**，改流水线变量对 app 无效。
 
 ### 2.3 构建步骤字段口径
 
@@ -217,6 +217,23 @@ cd /opt/www/corporate_rag && bash scripts/deploy/deploy.sh clean
 
 > 该 SDK 的用法与约束（只调公开接口、禁止 `run()`）见 `docs/agents/code-map.md` 的「官方 aibot SDK 用法与约束」。
 
+### 2.7 切换 LLM provider（模型供应商）
+
+provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定价 / 窗口）已收敛到单一层 `src/infra/llm/provider/`，事实写在数据面 **`registry.yaml`**（随 app 镜像发布，见 ADR-0021）。**切换 provider 不改代码**，只改目标机 `.env` 后重跑部署：
+
+1. **选 provider + 给密钥**：设 `LLM_PROVIDER=<provider 名>`（如 `deepseek`；缺省 `dashscope`），并设对应密钥 `<PROVIDER>_API_KEY`（如 `DEEPSEEK_API_KEY`）。被绑定 provider **缺密钥会在启动期 fail-fast**（`validate_config`，日志 `[provider] validate ...`）。
+2. **删掉旧键**（否则静默出错）：
+   - `LLM_BASE_URL` / `LLM_API_KEY` —— 单 provider 时代的"软迁移"键；留着会把请求**指回旧 provider**；
+   - `LLM_MODEL` / `CLASSIFY_MODEL` —— 写死的旧模型名；留着会把旧名**发到新 provider**（如 `kimi-k3` 发去 DeepSeek → 404）。
+3. **角色级覆盖（可选）**：`<ROLE>_PROVIDER`（`main` / `classify` / `summary` / `judge` / `embedding` / `rerank`）。缺省分两族 —— `main` / `classify` / `summary` **跟随 `LLM_PROVIDER`**；`embedding` / `rerank` / `judge` **独立缺省 `dashscope`**（如 DeepSeek 无 embedding / rerank 端点 ⇒ 向量化与精排**必须留在百炼**，否则启动期校验拒绝）。
+4. **模型名**：缺省取 `registry.yaml` 的 `models.<role>`，可用 `<ROLE>_MODEL` 覆盖。**`.env` 里不必再写任何模型名**（这正是"切 provider 只改指针"的由来）。
+5. **定价 / 窗口 / tokenizer 系数**：同来自 `registry.yaml` 的 `catalog`。**无需手动 seed 定价** —— 应用启动期会按 `catalog.pricing` **幂等 ensure** Langfuse 模型定义（无价模型记 WARNING）。
+6. **同步 + 重跑**：`scp .env root@<ECS-IP>:/opt/www/corporate_rag/.env`（§1.4），再按 §2.0 走一次发布（或目标机 `bash scripts/deploy/deploy.sh start`）。⚠️ `docker compose restart` **不吃 `.env`**，须 `up -d --force-recreate app`（§2.5 第 4 条）。
+7. **验证判据**：目标机日志出现 `[provider] validate state=on`，且真实对话出现 `[agent] model turn model=<新 provider 的模型>`。
+8. **回退**：把 `LLM_PROVIDER` 改回旧值即可（`.env` 改动可逆）；**跨版本回滚必须镜像与 `.env` 一起回**（见 §7 —— 新旧版对 `.env` 键的期待不同）。
+
+> 例（百炼 → DeepSeek）：`.env` 设 `LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY`，**删** `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` / `CLASSIFY_MODEL`；保留 `DASHSCOPE_API_KEY` / `EMBEDDING_*` / `RERANK_*`（embedding / rerank 仍走百炼）。
+
 ---
 
 ## 3. 首次上机
@@ -274,7 +291,7 @@ cd /opt/www/corporate_rag && bash scripts/deploy/deploy.sh clean
 
 **正常发布流程见 §2.0**（推代码 `dev-wsl` → Codeup 镜像同步 → 流水线自动跑完并发布；**仅"匹配不到发布单"时**才需人工到部署页创建一次，之后自动）。之后日常只需：
 
-- 改 `LLM_MODEL` 等运行配置、或**新增环境变量** → **同步目标机 `.env`**（当前为人工 `scp`，见 §1.4）→ 重跑部署（或 `deploy.sh start`）；只推代码不改 `.env` 时，新键不会生效；
+- 改 `LLM_PROVIDER` / `LLM_MODEL` 等运行配置、或**新增环境变量** → **同步目标机 `.env`**（当前为人工 `scp`，见 §1.4）→ 重跑部署（或 `deploy.sh start`）；**切换 provider 见 §2.7**（须删 `LLM_BASE_URL` / `LLM_API_KEY` 等旧键）；只推代码不改 `.env` 时，新键不会生效；
 - 单独体检：`bash scripts/deploy/deploy.sh health_check`；
 - 临时停服（维护 / 下线）：`bash scripts/deploy/deploy.sh stop`（**人工运维用**，别接进流水线停止槽位）；
 - 回收磁盘：`bash scripts/deploy/deploy.sh clean`（保留最近 2 个 app 镜像 + 清悬空镜像与残留包）。
