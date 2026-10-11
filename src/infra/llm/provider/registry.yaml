@@ -1,0 +1,15 @@
+# Provider 兼容层数据面（design D2）：以 provider 为键声明事实与模型目录。
+# 密钥不入库：此处只写 env 名（api_key_env），真值来自 .env。
+#
+# 本文件是 Task 1 的最小可加载骨架；Phase 1 只接 dashscope，
+# models / catalog 等字段由 Task 2 补全。
+providers:
+  dashscope:
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+    thinking_style: dashscope
+    reasoning_field: reasoning_content
+    capabilities:
+      tools: true
+    models: {}
+    catalog: {}
