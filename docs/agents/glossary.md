@@ -191,9 +191,18 @@
 | delegate end `ok/reason` | 委派结束事件语义：`ok=true` 文案"领域专家分析完成"；`ok=false` 携带 reason，文案"分析中断·原因" | ❌ 无条件推"完成"（原实现缺陷） |
 | task `type=plan|execution` | 任务看板条目类型：`plan`=主 agent 经 Task 工具建的跟踪项；`execution`=delegate 自动登记的执行追踪（`task_id=delegate_id`） | ❌ 两类混排不区分、互相覆盖 |
 
+## Provider 兼容层
+
+> 代码落点 `src/infra/llm/provider/`；决策见 `docs/adr/0021-provider-compat-layer.md`。
+
+- **Provider 兼容层（provider compat layer）**：`src/infra/llm/provider/` 单一包，把各家 provider 的差异（思考参数形状 / reasoning 字段名 / 端点 / 密钥 / 定价 / 窗口）收敛到一层，调用侧只认 `build_chat` / `build_embeddings` / `build_rerank` 三个门面。**它不是网关**：不做多 provider 路由 / fallback / 限流 / 计费聚合（那是 ADR-0020 否决的网关职责）。provider 事实收进数据面 `registry.yaml`，切换 provider = 改 `.env`、新增 provider = 加一条数据。
+- **角色（role）**：兼容层里「一类用途的模型绑定」的抽象，取值 `main`（主对话）/ `classify`（轻量分类）/ `summary`（跨轮摘要）/ `judge`（RAGAS 裁判）/ `embedding` / `rerank`。每个角色解析出 provider + 模型 + 端点 + 密钥；缺省分两族 —— `main` / `classify` / `summary` 跟随 `LLM_PROVIDER`，`embedding` / `rerank` / `judge` **独立缺省 `dashscope`**（DeepSeek 无 embedding/rerank；judge 是离线评测角色）。
+- **思考形状（thinking shape / `ThinkingStyle`）**：同一「思考开关」在不同 provider 落成的请求参数形状。本仓归一化为 `thinking: bool`（on/off），由纯函数 `thinking_extra_body(spec, enabled)` 翻译成目标形状（dashscope → `{"enable_thinking": X}`；deepseek → `{"thinking": {"type": "enabled"/"disabled"}}`），并是**唯一**产生思考参数的地方。**始终显式发开关**（provider 默认值相反，不显式即静默变贵）。
+- **reasoning 字段名（`reasoning_field`）**：provider 声明思考文本落在哪个 delta 字段（多为 `reasoning_content`，OpenRouter 等用 `reasoning`）；为空则整条回传链路跳过（不给不认该字段的 provider 塞多余字段）。
+
 ## 推理思考文本
 
-- **reasoning_content**：模型的流式思考文本（chain-of-thought）。DashScope 等第三方把思考增量放在 `delta.reasoning_content`，OpenRouter 等用 `delta.reasoning`；`ChatQwenWithReasoning` 统一累积到 `AIMessageChunk.additional_kwargs["reasoning_content"]`，供上层读取与展示
+- **reasoning_content**：模型的流式思考文本（chain-of-thought）。DashScope 等第三方把思考增量放在 `delta.reasoning_content`，OpenRouter 等用 `delta.reasoning`；`ReasoningPreservingChat` 统一累积到 `AIMessageChunk.additional_kwargs["reasoning_content"]`，供上层读取与展示
 
 ## 过程回放
 

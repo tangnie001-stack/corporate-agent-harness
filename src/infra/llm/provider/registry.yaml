@@ -1,0 +1,65 @@
+# Provider 兼容层注册表（数据面）。随镜像打包（Dockerfile: COPY src/ src/）。
+# 密钥不入库：本文件只写 env 名，真实密钥在 .env 的 <PROVIDER>_API_KEY。
+#
+# 角色图例：
+#   main      主对话/生成（agent 主循环）
+#   classify  轻量分类：相对时间词解析(rag_tools) + 文档实体抽取(document_service)
+#   summary   跨轮历史摘要
+#   judge     RAGAS 评估裁判（独立缺省 dashscope）
+#   embedding 向量化
+#   rerank    精排（DashScope 专有）
+providers:
+  dashscope:
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+    thinking_style: dashscope
+    reasoning_field: reasoning_content
+    capabilities:
+      tools: true
+    models:
+      main: kimi-k3
+      classify: kimi-k3
+      summary: kimi-k3
+      judge: qwen3.8-max
+      embedding: qwen3.7-text-embedding-flash
+      rerank: qwen3.7-text-rerank
+    catalog:
+      kimi-k3:
+        context_window: 262144
+        pricing: { input: 0.0000008, output: 0.0000027 }  # 每 token；沿用现 .env 口径
+        tokens_per_cjk_char: 0.6
+      qwen3.8-max:
+        context_window: 262144
+      qwen3.7-text-embedding-flash:
+        embedding_dimension: 1024
+        embedding_batch_size: 20
+
+  # ---------------------------------------------------------------------------
+  # DeepSeek（OpenAI 兼容端点）—— 可切换目标（Phase 2）
+  #   · 官方模型名：deepseek-flash（DeepSeek-V4.1-Flash）/ deepseek-v4-pro（DeepSeek-V4-Pro-0813）
+  #   · 默认「思考模式开」，非思考档由层显式发 thinking.type=disabled（见 thinking_style）
+  #   · 无 embedding / rerank 端点 ⇒ 这两类角色绑到本 provider 会被启动校验拦截
+  # ---------------------------------------------------------------------------
+  deepseek:
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    thinking_style: deepseek               # 形状：thinking.type = enabled / disabled
+    reasoning_field: reasoning_content
+    capabilities:
+      tools: true
+    models:
+      main: deepseek-flash
+      classify: deepseek-flash
+      summary: deepseek-flash
+      judge: deepseek-v4-pro               # judge 缺省 dashscope，但可由 RAGAS_PROVIDER 显式绑本 provider
+      # 无 embedding / rerank 角色
+    catalog:
+      deepseek-flash:
+        context_window: 1048576            # 仅观测用途（system 段占比告警）
+        # 峰时价（保守，不低估成本）；闲时减半。口径：cache-miss input + output
+        # 价源：https://api-docs.deepseek.com/quick_start/pricing
+        pricing: { input: 0.0000003, output: 0.0000012 }  # 每 token
+        tokens_per_cjk_char: 0.6           # DeepSeek 官方：1 个中文字符 ≈ 0.6 token
+      deepseek-v4-pro:
+        context_window: 1048576
+        pricing: { input: 0.00000132, output: 0.00000396 }  # 峰时价；闲时减半

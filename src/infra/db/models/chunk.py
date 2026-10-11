@@ -21,6 +21,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from src.infra.db.base import Base
 
+# 向量列维度；须与 registry 声明的 embedding_dimension 一致
+# （一致性由 tests/infra/llm/provider/test_dimension_consistency.py 守护）。
+# 改维度属于 DDL 变更，须配迁移，不得只改本常量。
+EMBEDDING_DIMENSION = 1024
+
 
 class ChunkModel(Base):
     """分块表：一张表承载全部知识库的分块，以 kb_id 列表达归属。"""
@@ -49,7 +54,9 @@ class ChunkModel(Base):
     )
     # DashScope text-embedding-v3；列注释与 baseline 逐字一致，改动会触发漂移
     embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(1024), nullable=True, comment="DashScope text-embedding-v3"
+        Vector(EMBEDDING_DIMENSION),
+        nullable=True,
+        comment="DashScope text-embedding-v3",
     )
     # server_default 用 text() 传原始 SQL 片段，与 baseline 的 sa.text(...) 逐字对齐
     # （普通字符串会被 SQLAlchemy 加引号，例如 "'{}'::jsonb" 会变成带引号的字面量）

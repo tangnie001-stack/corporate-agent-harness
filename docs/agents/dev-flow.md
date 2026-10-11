@@ -19,7 +19,7 @@
 | ② 完善需求 | `openspec-explore` | `grilling`；`/grill-with-docs`（边拷问边产 ADR / 术语） | 需求模糊需要逼问；要在拷问同时产出 ADR 或术语时改用后者 |
 | ③ 出方案 | `openspec-propose` | `codebase-design`、`domain-modeling` | 需要定模块边界 / 领域模型时 |
 | ④ 验证可行性 | `architecture-review` | `prototype`（跑起来证伪）；`research` 或 `firecrawl-deep-research`（补外部事实） | **必配**；数值或状态类假设纸上推不准时加 `prototype` |
-| ⑤ 生成文件 | `writing-plans`（落 `docs/superpowers/plans/`）**或** `openspec-propose` 的 tasks | **worktree 前置**（进入本环节前先问，见下节） | **二选一，不可都写**，否则一事两档 |
+| ⑤ 生成文件 | `writing-plans`（落 `docs/superpowers/plans/`）**和/或** `openspec-propose` 的 tasks | **worktree 前置**（进入本环节前先问，见下节） | **步骤单一真源**：plan 与 `tasks.md` 不得含**同一套可执行步骤**（通常 plan 承载步骤、`tasks.md` 退化为范围 / 验收索引） |
 | ⑥ 执行 | `executing-plans` 或 `openspec-apply-change` | `verification-before-completion` → `requesting-code-review`；收尾 `finishing-a-development-branch`（worktree 已在 ⑤ 前定） | 两道闸门必走 |
 
 ## ⑤ 开工前置：进入「生成文件」前问「要不要建 worktree」
@@ -53,13 +53,18 @@
 
 **代价要知道，别把它当万能**：worktree **只隔离 git**（HEAD / index / 工作区 / 闸门扫描范围），**不隔离 Docker**（工程名、容器名、卷、端口全部写死）→ 两个工作区**不能各跑一套**容器；从 worktree 起 compose 会把 `app` / `nginx` 重建成指向 worktree 的 `src`。所以它解决的是"**提交与闸门互踩**"，不是"运行环境隔离"。
 
-## ⑤ 的例外：分阶段变更是「change 承载规格 + plan 承载步骤」
+## ⑤ 的产物分工：change 承载规格，plan 承载步骤
 
-跨子系统**且按判据二需要拆分**的变更，会同时用到 ⑤ 的两个产物，**不构成"一事两档"**。判据只有一条：**同一份文件里不出现两套可执行的步骤清单**。
+⑤ 的两个产物**可以并存**，唯一硬约束是**步骤单一真源**：
 
-- openspec change 只承载**为什么 + 规格**（`proposal.md` / `design.md` / `specs/`）
-- `tasks.md` **不再承载任务清单**，退化为「**执行档索引**」：列出各执行档（计划文件，或"计划外动作"）与其完成标准，并指向落在 `docs/superpowers/plans/` 的计划文件
-- 实施计划落在 `docs/superpowers/plans/`，由 ⑥ 执行（拆分时一份/阶段；不拆分时一份到底）
+> **同一套「可执行步骤」不得同时出现在 plan 与 `tasks.md` 里。** 否则两份会漂移，执行时可能照旧的那份做 —— 正是本条要防的 change ↔ plan ↔ 代码 三方不一致。
+
+- **plan**（`docs/superpowers/plans/`）承载**步骤**：改哪个文件、写什么测试、怎么跑、怎么提交。
+- **openspec change** 承载**为什么 + 规格**（`proposal.md` / `design.md` / `specs/`）。
+- **`tasks.md`** 承载**范围 / 验收索引**（交付项 + 完成标准 + 指向 plan）；**MUST NOT** 复制 plan 的步骤级内容。只要不与 plan 重复步骤，保留 `tasks.md` 是**允许且有用**的（归档时仍要看它）。
+- 实施计划落在 `docs/superpowers/plans/`，由 ⑥ 执行（拆分时一份/阶段；不拆分时一份到底）。
+
+该约束**与规模无关**：是否跨子系统只影响"**要不要拆阶段**"（见下面判据一/二与「上限判据」），**不**决定"要不要收窄 `tasks.md`"；后者只由"是否与 plan 重复步骤"决定。
 
 ### 判据一：是否跨子系统（满足任一即是）
 

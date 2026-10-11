@@ -63,24 +63,27 @@ Evaluation SHALL be invoked via `python -m src.cli.eval_ragas`. The Markdown sum
 #### Scenario: Samples without retrieval skip context metrics
 
 - **WHEN** 某问答未检索到任何材料（上下文为空）
-- **THEN** 依赖材料的 `faithfulness` / `context_precision` / `context_recall` SHALL 被跳过，不产生无效数值，也不拉低其他题的指标均值
+- **THEN** 依赖材料的 `faithfulness` / `context_precision` / `context_recall` SHALL 被跳过并**显式标记为 `skipped`**（与"计算失败"区分），跳过值置空且不计入均值
 - **AND** 不依赖上下文的 `answer_relevancy` 与答案正确性 SHALL 照常计算
+
+#### Scenario: Sample composition and retrieval coverage reported
+
+- **WHEN** 一次评测完成
+- **THEN** 报告 SHALL 列出「纯 KB / 含 web / 无检索」三类样本计数与检索覆盖率（有检索样本占比）
+
+#### Scenario: Gate uses the main score
+
+- **WHEN** 以 `--gate` 运行评测
+- **THEN** 门禁 SHALL 依据主分（纯 KB 样本的指标均值）判定，而非全量样本均值
 
 ### Requirement: Answer correctness metric
 
-评测 SHALL 计算最终回答相对参考答案（test set 的 `reference`）的正确性指标，作为区别于忠实度（faithfulness）与相关性（answer_relevancy）的独立维度。
+评测 SHALL 用与现有四指标同一条 `evaluate()` 路径的答案正确性指标，对最终回答与参考答案（test set 的 `reference`）计算，作为区别于忠实度（faithfulness）与相关性（answer_relevancy）的独立维度。测试集样本的 `reference` 恒存在。
 
-当样本缺少参考答案时，评测 SHALL 跳过该指标而非产生无效数值。
+#### Scenario: Correctness computed for each sample
 
-#### Scenario: Correctness computed when reference present
-
-- **WHEN** 测试集样本含参考答案且被测系统给出回答
-- **THEN** 评测结果为该题输出答案正确性分数
-
-#### Scenario: Correctness skipped without reference
-
-- **WHEN** 测试集样本缺少参考答案
-- **THEN** 评测跳过答案正确性指标，且不产生无效数值
+- **WHEN** 评测运行且被测系统给出回答
+- **THEN** 评测结果为每题输出答案正确性分数
 
 ### Requirement: Agent trajectory captured as diagnostic metadata
 

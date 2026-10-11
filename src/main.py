@@ -1,5 +1,6 @@
 """FastAPI 应用入口 — app 工厂、CORS、生命周期管理。"""
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -27,6 +28,8 @@ from src.config.response_codes import Code
 from src.core import logging as core_logging
 from src.core.log_events import Event
 from src.core.logging import setup_logging
+from src.infra.llm.provider.factory import _registry
+from src.infra.llm.provider.spec import validate_config
 from src.infra.llm.token_count import warm_token_encoder
 from src.infra.llm.tracing import configure_tracing, flush_tracing
 from src.middleware.auth import auth_middleware
@@ -45,6 +48,9 @@ async def lifespan(app: FastAPI):
     启动阶段校验 prompt 模板集（`validation.validate_all`）：任一校验失败
     向上抛出 `TemplateLoadError`，进程启动失败，不留请求期降级分支。
 
+    启动阶段校验 provider 配置（`validate_config`）：解析每个角色的 provider/
+    模型/密钥，缺失或未知即抛 `RuntimeError`，进程启动失败（fail-fast）。
+
     启动阶段清空残留的 chat_lock:* 键：重启后进程内无任何生成任务，
     残留锁（来自被杀进程，TTL 兜底 180s）会阻塞新请求的并发锁获取。
 
@@ -52,6 +58,10 @@ async def lifespan(app: FastAPI):
     `configure_tracing()`。configure 必须在任何 flush 之前 —— SDK 的 flush 经
     `LangfuseSingleton` 惰性构造客户端，先 flush 会造出默认 enabled=True 的客户端，
     绕过 `settings.LANGFUSE_ENABLE`。
+
+    启动阶段对被绑定角色模型做一次幂等定价 ensure（`ensure_model_pricing`）：非阻塞，
+    `LANGFUSE_ENABLE=false` 跳过，Langfuse 不可用等异常降级记 warning；放在
+    `configure_tracing()` 之后取 `client_instance`，避免造出未受开关约束的客户端。
     """
     core_logging.log_event(Event.APP_STARTING)
     # 预热 token 分词器：首次获取需联网下载词表（实测约 4s），放启动期可避免
@@ -60,7 +70,9 @@ async def lifespan(app: FastAPI):
     section_chars = validation.validate_all()
     core_logging.log_event(Event.PROMPT_VALIDATED, section_chars=section_chars)
     await _clear_stale_chat_locks()
+    validate_config(_registry())
     configure_tracing()
+    await _ensure_model_pricing()
     await wecom_service.start()
     yield
     core_logging.log_event(Event.APP_STOPPING)
@@ -90,6 +102,33 @@ async def _clear_stale_chat_locks() -> None:
             core_logging.log_event(Event.STALE_LOCKS_CLEARED, count=len(keys))
     except Exception as e:  # noqa: BLE001
         core_logging.log_event(Event.STALE_LOCKS_CLEAR_FAILED, err=str(e))
+
+
+async def _ensure_model_pricing() -> None:
+    """启动期对被绑定角色的模型做一次幂等定价 ensure（非阻塞）。
+
+    必须在 `configure_tracing()` **之后**取 `client_instance`：SDK 惰性构造客户端，
+    先取会造出默认 enabled=True、绕过 `settings.LANGFUSE_ENABLE` 的客户端。
+
+    用 `asyncio.to_thread` 跑同步 SDK 调用 —— **不得**在 async lifespan 里
+    `asyncio.run`（当前已有运行中的事件循环，会抛嵌套 loop 错误）。定价 ensure 本身
+    已吞异常降级，这里不再重复处理。
+    """
+    from src.config import settings
+    from src.infra.llm.provider.pricing_seed import ensure_model_pricing
+
+    # 开关关闭时连 client_instance 都不取：SDK 惰性构造会缓存客户端，白白构造是浪费，
+    # 也可能让后续对开关状态的判断失真（见 tracing.configure_tracing 的顺序契约）。
+    if not settings.LANGFUSE_ENABLE:
+        return
+
+    from langfuse.decorators import langfuse_context
+
+    await asyncio.to_thread(
+        ensure_model_pricing,
+        _registry(),
+        client=langfuse_context.client_instance,
+    )
 
 
 app = FastAPI(

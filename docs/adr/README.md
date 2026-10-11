@@ -115,7 +115,8 @@ docs/adr/NNNN-<kebab-case-短标题>.md
 | [0017](0017-context-ladder-and-memory-scope.md) | 上下文治理采用四层阶梯（L0 写入侧→L1 瘦身→L2 摘要→L3 记忆）；窗口按 per-model 解析；长期记忆限 episodic + user-semantic，事实仍走 RAG | Accepted | **决策 3 记忆底座已被 0018 取代**；L0/L1 复用 0016 的 middleware 机制；记忆底座沿用 0004 的单 PostgreSQL（pgvector） |
 | [0018](0018-history-vs-memory-keep-own-truth-source.md) | 对话历史与 Agent 记忆分轴；短期记忆真源不迁 LangGraph checkpointer，长期记忆底座自建、不用 Store | Accepted | 局部取代 0017 的决策 3 |
 | [0019](0019-langfuse-public-exposure.md) | Langfuse 放开公网访问（`:3000` 对外），接受 EOL 服务的暴露风险 | Accepted | 局部取代 0011 的「暴露面收敛到仅回环」 |
-| [0020](0020-no-model-gateway-direct-provider.md) | 不启用 LiteLLM 模型网关，三类模型直连 Provider | Accepted | 与 `model-config` / `model-gateway` 规格相关；不取代任何在先 ADR |
+| [0020](0020-no-model-gateway-direct-provider.md) | 不启用 LiteLLM 模型网关，三类模型直连 Provider | Accepted | 与 `model-config` / `model-gateway` 规格相关；不取代任何在先 ADR；**0021 在其『不引入替代网关』边界内引入应用内 provider 兼容层** |
+| [0021](0021-provider-compat-layer.md) | 引入应用内 provider 兼容层（registry 数据面 + 思考形状归一化 + 角色解析），拒绝网关 | Accepted | 在 0020 之上构建，非网关；不取代任何在先 ADR |
 
 ## 模板
 

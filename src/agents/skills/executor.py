@@ -10,15 +10,16 @@
   user message；执行者人设只用会话选定智能体（无 skill.agent 可查）；工具面的
   allowed-tools 收窄项为空（仅继承只读面）。其余 fork 机制（超时/轮次/取消/引用池）完全复用。
 
-可观测性（design D11）：fork 子代理复用主 agent 的 llm 实例（或 get_llm 新建实例）——
+可观测性（design D11）：fork 子代理复用主 agent 的 llm 实例（或门面 `get_llm` 新建实例）——
 与主 agent **同级观测**（同一实例自带 callbacks；Langfuse 是否捕获取决于网关层，应用层
 不新增 Langfuse 工作，见 design Risks「create_agent 观测缺口」）。子代理事件消费
 实现见 fork_stream.consume_fork_events（本模块只保留装配与控制流）。
 
-模型/思考（spec delegate-execution-controls）：skill 声明 model → get_llm(model=...)
-新建；model 空 → 继承主 agent 的 model_name。请求上下文可及 → 新建实例携带
-extra_body.enable_thinking=ctx.deep_thinking（思考跟随请求档）；不可得（无 ctx）→
-复用主 agent 实例（思考走模型默认）。
+模型/思考（spec delegate-execution-controls）：skill 声明 model 或请求上下文可及 →
+门面 `get_llm(model=…, extra_body=thinking_extra_body(spec_main, ctx.deep_thinking))`
+新建（门面保留 temperature 与内容日志 callback）；两者均不可得（无 ctx 且未声明 model）→
+复用主 agent 实例（思考走模型默认）。思考参数形状**出自 provider 层**
+（`thinking_extra_body`，完整 dict 含 preserve），与主链路请求期同源（D8）。
 
 防失控（design D13 + spec delegate-execution-controls，三层）：事件级空闲超时
 （DELEGATE_MAX_IDLE_S，流式增量不误杀）+ 总时长保险丝（asyncio.wait_for，deep_thinking
@@ -63,10 +64,13 @@ from src.config.prompts import (
     FORK_EXECUTION_CONTRACT,
     FORK_TASK_APPEND_TMPL,
 )
+from src.infra.llm.provider.factory import _registry
+from src.infra.llm.provider.spec import resolve_role
+from src.infra.llm.provider.thinking import thinking_extra_body
 from src.infra.llm.request_context import current_request_ctx
 from src.infra.llm.tool_trace import ToolTraceCollector
 from src.infra.llm.trace_context import current_trace_id
-from src.models import get_llm  # 模块级 import：测试需 patch executor.get_llm
+from src.models import get_llm  # 模块级：测试需 patch executor.get_llm
 
 
 class SkillExecutor:
@@ -409,12 +413,12 @@ class SkillExecutor:
 
         Returns:
             llm 实例：
-            - 声明 model → get_llm(model=record.model) 新建（请求上下文可及则
-              附 extra_body.enable_thinking=ctx.deep_thinking）
-            - 未声明 model 但请求上下文可及 → get_llm(model=主 agent model_name,
-              extra_body.enable_thinking=ctx.deep_thinking) 新建
+            - 声明 model 或请求上下文可及（thinking 非 None）→ 门面 `get_llm`（保留
+              temperature 与内容日志 callback）新建，思考经 `extra_body` 注入
             - 两者均不可得（无 ctx 且未声明 model）→ 复用主 agent llm 实例
-            enable_thinking 取值：ctx.deep_thinking（请求级档位）
+
+        思考参数形状**出自 provider 层**（`thinking_extra_body`，完整 dict 含 preserve），
+        与主链路请求期同源（D8）；`get_llm` 负责构造期的 temperature 与 callbacks（等值）。
         """
         ctx = current_request_ctx.get()
         if ctx is None:
@@ -434,7 +438,8 @@ class SkillExecutor:
         elif self._main_model_name is not None:
             kwargs["model"] = self._main_model_name
         if thinking is not None:
-            kwargs["extra_body"] = {"enable_thinking": thinking}
+            spec = resolve_role("main", _registry()).provider
+            kwargs["extra_body"] = thinking_extra_body(spec, thinking)
         return get_llm(**kwargs)
 
     def _truncate(self, text: str) -> str:

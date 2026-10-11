@@ -1,13 +1,11 @@
 """LLM 连通性测试 API — 直接调用 LLM 验证模型可用性和响应速度。"""
 
-from fastapi import APIRouter, Depends
-from langchain_openai import ChatOpenAI
+from fastapi import APIRouter
 from loguru import logger
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel
 
-from src.api.dependencies import get_app_service
 from src.api.schema import ResponseModel
-from src.services.app_service import AppService
+from src.models import get_llm
 
 router = APIRouter()
 
@@ -21,30 +19,31 @@ class LlmTestRequest(BaseModel):
 
 
 @router.post("/llm/test", response_model=ResponseModel)
-async def llm_test(body: LlmTestRequest, svc: AppService = Depends(get_app_service)):
+async def llm_test(body: LlmTestRequest):
     """测试 LLM 连通性 — 发送一条简单请求验证模型可用性和响应耗时。
 
+    模型经 provider 兼容层解析（`get_llm`）：空 `model` → `registry.models[main]`
+    兜底。不再依赖 `settings.LLM_MODEL` —— 它按 design D3 是"可选覆盖"，默认空串，
+    直接当模型名会以空名调用而失败。
+
     Args:
-        model: 模型名（默认 settings.LLM_MODEL）
+        model: 模型名；空值表示 registry 默认绑定
         prompt: 测试提示词
         temperature: 生成温度
 
     Returns:
         ResponseModel: data 包含 model, response, latency_seconds
     """
-    model_name = body.model or svc.settings.LLM_MODEL
+    model_override = body.model or None
+    model_name = body.model or "(registry default)"
     logger.info("LLM test requested: model={} prompt={}", model_name, body.prompt[:50])
 
     import time
 
     start = time.time()
     try:
-        llm = ChatOpenAI(
-            model=model_name,
-            temperature=body.temperature,
-            api_key=SecretStr(svc.settings.LLM_API_KEY),
-            base_url=svc.settings.LLM_BASE_URL,
-        )
+        llm = get_llm(model=model_override, temperature=body.temperature)
+        model_name = llm.model_name
         result = llm.invoke(body.prompt)
         elapsed = round(time.time() - start, 2)
         logger.info("LLM test OK: model={} latency={}s", model_name, elapsed)

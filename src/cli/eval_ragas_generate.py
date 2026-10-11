@@ -328,11 +328,15 @@ def run_generate(
     )
 
     # ---- 3. 初始化 RAGAS 组件（带 DiskCacheBackend 缓存） ----
-    eval_model = model or settings.RAGAS_LLM_MODEL
-    if not eval_model:
-        core_logging.log_event(Event.RAGAS_MODEL_MISSING)
-        print("✗ RAGAS_LLM_MODEL 未配置，可通过 --model 或环境变量指定")
-        sys.exit(1)
+    # 生成用 LLM 走 judge 角色绑定：--model 显式指定 > RAGAS_LLM_MODEL env > registry
+    # 默认；两者均空时由 registry 兜底，故不再需要前置空值守卫。
+    from src.models import get_judge_llm
+
+    judge_model: str | None = model
+    if not judge_model:
+        judge_model = None
+    _langchain_llm = get_judge_llm(model=judge_model)
+    eval_model = _langchain_llm.model_name
     core_logging.log_event(
         Event.GENERATOR_INIT,
         model=eval_model,
@@ -348,10 +352,7 @@ def run_generate(
     from ragas.llms.base import LangchainLLMWrapper as _LLMWrapper
     from ragas.testset import Testset
 
-    from src.models import get_llm
-
     _cache = DiskCacheBackend(cache_dir=settings.RAGAS_LLM_CACHE_DIR)
-    _langchain_llm = get_llm(model=eval_model, temperature=0)
     ragas_llm = _LLMWrapper(_langchain_llm, cache=_cache, bypass_n=True)
     embeddings_wrapper = _EmbeddingsWrapper(get_embeddings())
 

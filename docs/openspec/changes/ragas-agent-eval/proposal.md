@@ -10,7 +10,7 @@ Agent 已就绪（工具 / 技能 / 多轮），但现有 RAGAS 评测**鉴定�
 ## What Changes
 
 - **修 `F-32`**：评测链路在每题调用图之前注入 `RequestContext`（eval 侧 seed，镜像 `turn_runner._run_with_finalize`），使工具收集的检索材料进入图状态，恢复 context 类指标。
-- **含联网样本处置**：仅**纯知识库样本**（检索材料不含 `kind=web` 块）参与常规上下文指标（主分）；含联网材料的样本标记为「降级联网」并从主分排除（「是否降级联网」记入诊断元数据）；`contexts` 为空的样本**跳过** context 类指标（单列为「无检索直答」）。
+- **含联网样本处置与聚合口径**：按 `kind` 分「纯 KB / 含 web / 无检索」三类；**主分 = 纯 KB 样本指标均值**，含联网样本标记「降级联网」并从主分排除，无检索样本跳过 `{faithfulness, context_precision, context_recall}`（显式标记 `skipped`）但照算 `answer_relevancy` 与答案正确性；报告三类样本计数与检索覆盖率，`--gate` 读主分。
 - **新增答案正确性指标**：用 **legacy `from ragas.metrics import AnswerCorrectness`**（与现有四指标同一条 `evaluate()` 路径，对 `reference` 计算，输出 0–1）补上「答对没」这一维度（区别于忠实度与相关性）。准则式 `RubricsScoreWithReference`（可定制 + feedback）推迟为后续增强。
 - **采集 Agent 消息轨迹**：把 `state.messages`（含每次工具调用）转成评测侧结构，工具调用序列 / 迭代次数作为**诊断元数据**保存，**不单独评分**（常规检索轮路径近似恒定，无区分度）。
 - **评测结果回写 Langfuse**：每题分数回写到对应 trace（沿用既有接线口径）。
@@ -34,3 +34,4 @@ Agent 已就绪（工具 / 技能 / 多轮），但现有 RAGAS 评测**鉴定�
 - **数据**：**无测试集 schema 变更**（答案正确性只需已有 `reference`）；**不改数据库**（不扩 `eval_report` 表、不改前端）。
 - **行为**：评测报告多出「答案正确性」与按来源分流的 context 指标；Langfuse 出现新的 score 记录。
 - **不改**：`src/agents/graph/agent_node.py`（F-32 由 eval 侧 seed 解决，不碰生产节点）、`eval_report` 表 / `kb_eval` API / 前端。
+- **既有测试与 A/B 契约同步**：`tests/cli/test_eval_ragas.py` 的「恰 4 指标」断言需更新；`src/cli/compare_retrieval.py` 经 stdout 解析评测指标均值的契约需同步（主分语义变更）。
