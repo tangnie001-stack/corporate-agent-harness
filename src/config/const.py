@@ -486,3 +486,15 @@ WECOM_NS: Final[uuid.UUID] = uuid.UUID("a3f1c2d4-5e6b-4c7d-8e9f-0a1b2c3d4e5f")
 # 反馈回执事件名（回执帧字段路径为 body.event.feedback_event.{id,type}；
 # 实测见 docs/agents/wecom-sdk-facts.md 的 E10）
 WECOM_EVENT_FEEDBACK: Final[str] = "feedback_event"
+
+# ── RAGAS 评测打分 ──
+# 评测样本按检索来源分类（用途：主分聚合与指标跳过判据）
+SAMPLE_CLASS_PURE_KB: str = "pure_kb"  # 检索材料全部来自知识库
+SAMPLE_CLASS_WEB: str = "web"  # 检索材料含联网块（降级联网）
+SAMPLE_CLASS_EMPTY: str = "empty"  # 未检索到任何材料
+# 依赖 contexts 的指标列（无材料样本上跳过；answer_relevancy/answer_correctness 不在此列）
+CONTEXT_METRIC_COLUMNS: tuple[str, ...] = (
+    "faithfulness",
+    "context_precision",
+    "context_recall",
+)
