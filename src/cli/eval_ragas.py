@@ -790,6 +790,14 @@ def main() -> None:
             trajectories=trajectories,
         )
 
+        # 行序契约：write_scores 按 enumerate 下标把 masked_df 第 i 行写到
+        # trace_ids[i]，两序列必须等长同序（均由 generate_answers_and_contexts
+        # 按题序产出）。行数不一致即错配，会把分数静默写到别的 trace 上，故此处
+        # 快速失败而非带病回写。
+        assert len(masked_df) == len(trace_ids), (
+            f"eval rows ({len(masked_df)}) != trace_ids ({len(trace_ids)})"
+        )
+
         # 逐题指标分数显式回写 Langfuse（按 trace_id）：评分在批量 evaluate 之后
         # 才产出、逐题 @observe 已关闭，故回写必须显式定位 trace，不能依赖
         # 「当前 trace」的隐式上下文。值取已掩码表（空材料样本的 context 指标为
