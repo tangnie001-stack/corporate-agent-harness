@@ -63,7 +63,7 @@ Evaluation SHALL be invoked via `python -m src.cli.eval_ragas`. The Markdown sum
 #### Scenario: Samples without retrieval skip context metrics
 
 - **WHEN** 某问答未检索到任何材料（上下文为空）
-- **THEN** 依赖材料的 `faithfulness` / `context_precision` / `context_recall` SHALL 被跳过并**显式标记为 `skipped`**（与"计算失败"区分），跳过值置空且不计入均值
+- **THEN** 依赖材料的 `faithfulness` / `context_precision` / `context_recall` SHALL 被跳过并**显式标记为 `skipped`**（与"计算失败"区分），跳过值置空为 `NaN`（不计入均值，且不得为 `None` / 空串）
 - **AND** 不依赖上下文的 `answer_relevancy` 与答案正确性 SHALL 照常计算
 
 #### Scenario: Sample composition and retrieval coverage reported
@@ -75,6 +75,11 @@ Evaluation SHALL be invoked via `python -m src.cli.eval_ragas`. The Markdown sum
 
 - **WHEN** 以 `--gate` 运行评测
 - **THEN** 门禁 SHALL 依据主分（纯 KB 样本的指标均值）判定，而非全量样本均值
+
+#### Scenario: Gate fails on low coverage or empty main score
+
+- **WHEN** 检索覆盖率低于阈值，或主分样本数为 0（无纯 KB 样本）
+- **THEN** 门禁 SHALL 判定失败
 
 ### Requirement: Answer correctness metric
 
