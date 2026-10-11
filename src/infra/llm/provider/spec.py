@@ -144,3 +144,25 @@ def resolve_role(
     return ResolvedModel(
         role=role, provider=spec, model=model, base_url=base_url, api_key=api_key
     )
+
+
+def validate_config(
+    registry: dict[str, ProviderSpec], env: Mapping[str, str] | None = None
+) -> None:
+    """启动期 fail-fast。仅在应用启动（lifespan）调用；import 不触发（design D12）。"""
+    if env is None:
+        env = os.environ
+    if env.get("PROVIDER_VALIDATE", "on").lower() in ("0", "off", "false"):
+        return
+    for role in ROLES:
+        try:
+            resolved = resolve_role(role, registry, env)
+        except KeyError as e:
+            msg = str(e).strip("'\"")
+            if msg.startswith("未知 provider"):
+                raise RuntimeError(msg) from e
+            raise RuntimeError(f"角色 {role} 解析失败: {msg}") from e
+        if not resolved.api_key:
+            raise RuntimeError(
+                f"provider {resolved.provider.name} 缺密钥：请设置 {resolved.provider.api_key_env}"
+            )
