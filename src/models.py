@@ -119,8 +119,8 @@ def get_llm(
 
     角色 `main` 的 provider/模型/端点由 registry 解析（`LLM_MODEL` 等 env 可覆盖）。
     思考参数不在此注入：主链路的思考档位由请求期 middleware 经 thinking_extra_body
-    提供，fork 子代理经 build_chat("main", thinking=…) 提供，避免构造期与请求期两处
-    各写一份。
+    提供；fork 子代理经本门面 `get_llm(model=…, extra_body=…)` 新建，其 extra_body
+    同样由 provider 层的 thinking_extra_body 产出，避免构造期与请求期两处各写一份。
 
     Args:
         model: 覆盖 registry/env 解析出的模型名；None 表示默认绑定。
@@ -147,8 +147,8 @@ def get_llm(
 def get_classify_llm() -> ChatOpenAI:
     """创建分类/路由专用 LLM 实例（小模型，关闭思考模式）。
 
-    用于实体抽取（DocumentEntityExtractor）、意图/缺失维度判定（QueryRouter）、
-    相对时间词解析（parse_temporal）等轻量分类任务；与生成回答的大模型分离，
+    用于实体抽取（DocumentEntityExtractor）、相对时间词解析（parse_temporal）等
+    轻量分类任务；与生成回答的大模型分离，
     避免大模型在简单分类任务上浪费推理时间。
 
     Returns:
