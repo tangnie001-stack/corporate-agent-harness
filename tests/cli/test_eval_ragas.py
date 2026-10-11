@@ -37,7 +37,69 @@ def _fake_retrieve_kb(query: str) -> str:
 
 @pytest.mark.asyncio
 async def test_f32_seeded_ctx_populates_tool_contexts(eval_graph_factory) -> None:
-    """守卫 (A)：seeded ctx 下，工具收集的材料应回到 state.tool_contexts。
+    """守卫 (A)：经 **真实修复路径** `generate_answers_and_contexts` 驱动。
+
+    `generate_answers_and_contexts` 为每题 seed `RequestContext`，工具
+    （`_fake_retrieve_kb`）据此把材料写进 `ctx.tool_contexts`，收尾节点
+    `agent_finalize` 再回填 `state.tool_contexts`，最终成为 `contexts[0]`。
+    若去掉函数内的 seed，`ctx` 为 None，工具抛错被 except 吞掉、`contexts[0]`
+    恒空 ⇒ 本用例必失败。故它是 F-32 真实修复点的护栏（此前在测试内自行 seed
+    的版本绕过了该修复点，pre-fix 也会通过）。
+
+    断言只看 contexts 长度，不受"最终回答需带 `[1]` 以过 verify 护栏"影响。
+
+    Args:
+        eval_graph_factory: conftest 提供的真图工厂（注入真工具 + 真 ctx 传播）
+    """
+    from src.cli.eval_ragas import generate_answers_and_contexts
+
+    graph = eval_graph_factory([_fake_retrieve_kb])
+    (
+        _answers,
+        contexts,
+        _trace_ids,
+        _details,
+        _sample_classes,
+    ) = await generate_answers_and_contexts(graph, "kb1", "s1", ["问题"])
+    assert len(contexts[0]) > 0
+
+
+@pytest.mark.asyncio
+async def test_f32_no_retrieval_leaves_contexts_empty(eval_graph_factory) -> None:
+    """守卫 (B)：无工具时 `contexts[0]` 为空，且调用后 ctx 已复位（防泄漏）。
+
+    同样经 `generate_answers_and_contexts` 真实路径驱动；空工具图下无人写
+    收集器 ⇒ `contexts[0] == []`。附带断言调用结束后 `current_request_ctx`
+    已复位为 None，锁住每题 finally 里的 reset（缺失时会把最后一个样本的 ctx
+    泄漏给调用方）。
+
+    Args:
+        eval_graph_factory: conftest 提供的真图工厂（空工具 = agent 直答）
+    """
+    from src.cli.eval_ragas import generate_answers_and_contexts
+
+    graph = eval_graph_factory([])  # 无工具，agent 直答
+    (
+        _answers,
+        contexts,
+        _trace_ids,
+        _details,
+        _sample_classes,
+    ) = await generate_answers_and_contexts(graph, "kb1", "s1", ["问题"])
+    assert contexts[0] == []
+    assert current_request_ctx.get() is None
+
+
+# ---- 传播契约用例（`_answer_one_question` 层，测试内自行 seed）----
+# 与上面的 F-32 守卫互补：这两个用例隔离"图是否把 ctx 材料回填 state.tool_contexts"
+# 这一传播契约（不经评测链路的 seed），便于区分"seed 缺失"与"图传播损坏"两类回归。
+
+
+@pytest.mark.asyncio
+async def test_propagation_graph_populates_state_tool_contexts(
+    eval_graph_factory,
+) -> None:
+    """传播契约：测试内手动 seed ctx 后，图的收尾节点应回填 state.tool_contexts。
 
     Args:
         eval_graph_factory: conftest 提供的真图工厂（注入真工具 + 真 ctx 传播）
@@ -57,8 +119,10 @@ async def test_f32_seeded_ctx_populates_tool_contexts(eval_graph_factory) -> Non
 
 
 @pytest.mark.asyncio
-async def test_f32_no_retrieval_leaves_contexts_empty(eval_graph_factory) -> None:
-    """守卫 (B)：未调用任何检索工具时 contexts 为空（防跨样本泄漏）。
+async def test_propagation_no_tool_keeps_state_contexts_empty(
+    eval_graph_factory,
+) -> None:
+    """传播契约：无检索工具时 state.tool_contexts 为空。
 
     Args:
         eval_graph_factory: conftest 提供的真图工厂（空工具 = agent 直答）
