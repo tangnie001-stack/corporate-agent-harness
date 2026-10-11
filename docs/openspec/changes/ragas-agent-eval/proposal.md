@@ -10,8 +10,8 @@ Agent 已就绪（工具 / 技能 / 多轮），但现有 RAGAS 评测**鉴定�
 ## What Changes
 
 - **修 `F-32`**：评测链路在每题调用图之前注入 `RequestContext`（eval 侧 seed，镜像 `turn_runner._run_with_finalize`），使工具收集的检索材料进入图状态，恢复 context 类指标。
-- **上下文按来源分流**：`tool_contexts` 按 `RAGContext.kind` 拆为知识库 / 联网两组；`contexts` 为空的样本**跳过** context 类指标（单列为「无检索直答」一类），不污染均值。
-- **新增答案正确性指标**：对最终回答与测试集 `reference` 比对，补上「答对没」这一维度（区别于忠实度与相关性）。
+- **含联网样本处置**：仅**纯知识库样本**（检索材料不含 `kind=web` 块）参与常规上下文指标（主分）；含联网材料的样本标记为「降级联网」并从主分排除（「是否降级联网」记入诊断元数据）；`contexts` 为空的样本**跳过** context 类指标（单列为「无检索直答」）。
+- **新增答案正确性指标**：用 `RubricsScoreWithReference`（准则式 LLM 打分，1–5 + feedback）对最终回答与测试集 `reference` 比对，补上「答对没」这一维度（区别于忠实度与相关性）。
 - **采集 Agent 消息轨迹**：把 `state.messages`（含每次工具调用）转成评测侧结构，工具调用序列 / 迭代次数作为**诊断元数据**保存，**不单独评分**（常规检索轮路径近似恒定，无区分度）。
 - **测试集 schema 扩可选字段**：`reference_tool_calls` / `reference_topics`（缺失即跳过对应指标，旧测试集仍可读）。
 - **评测结果回写 Langfuse**：每题分数回写到对应 trace（沿用既有接线口径）。
@@ -25,7 +25,7 @@ Agent 已就绪（工具 / 技能 / 多轮），但现有 RAGAS 评测**鉴定�
 
 ### Modified Capabilities
 
-- `evaluation-pipeline`：① MODIFY「QA test pair coverage」对齐按 KB 生成测试集；② MODIFY「Evaluation report archival」对齐实际命令与报告路径；③ REMOVE「Chunk size comparison」（路径已死）并 ADD「Retrieval configuration comparison」承接；④ ADD 评测链路检索材料收集（修 F-32）+ 按来源分流；⑤ ADD 答案正确性指标；⑥ ADD Agent 轨迹作为诊断元数据。
+- `evaluation-pipeline`：① MODIFY「QA test pair coverage」对齐按 KB 生成测试集；② MODIFY「Evaluation report archival」对齐实际命令与报告路径；③ REMOVE「Chunk size comparison」（路径已死）并 ADD「Retrieval configuration comparison」承接；④ ADD 评测链路检索材料收集（修 F-32）+ 纯 KB 样本出主分 / 含联网样本另标；⑤ ADD 答案正确性指标；⑥ ADD Agent 轨迹作为诊断元数据。
 - `llm-tracing`：ADD「评测结果回写为 trace 分数」。
 
 ## Impact

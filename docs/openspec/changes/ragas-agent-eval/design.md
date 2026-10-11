@@ -41,11 +41,12 @@
 
 **D3 — 指标集：保留 4 RAG 指标 + 新增「答案正确性」；工具/轨迹降为诊断（选定）**
 - 保留（修 `F-32` 后恢复）：`faithfulness` / `context_precision` / `context_recall` / `answer_relevancy`。
-- 新增：**答案正确性**（对 `reference`）——这是「Agent 回答准确性」的正解；现有四指标无一测「答对没」。
+- 新增：**答案正确性**，采用 ragas `RubricsScoreWithReference`（准则式 LLM 打分：1–5 分 + feedback，准则可自定义以强调「数字/期间与原文一致、不编造条款」）。选它而非 `AnswerAccuracy`（口径严格二值、每题 2 次 LLM）与 `SemanticSimilarity`（只测措辞相似、不判对错）。这是「Agent 回答准确性」的正解；现有四指标无一测「答对没」。**量纲归一**：1–5 需先归一到 0–1 再与其它指标聚合。
 - `ToolCallAccuracy` / `AgentGoalAccuracy`：本场景（单轮、期望路径近似 `[retrieve_kb]`）**信号极弱**（命中率近恒 1），不纳入评分，仅把**工具调用序列 / 迭代次数**作为诊断元数据保存供低分下钻。
 
-**D4 — 上下文按来源分流（选定）**
-`tool_contexts` 按 `RAGContext.kind` 拆为 `kb` / `web` 两组分别统计；`contexts` 为空的样本**跳过** context 类指标并单列一类（「无检索直答」）。理由：常规检索轮也可能因知识库不足而自主降级联网（`kind=web`），混算会丢失归因、拉偏均值。
+**D4 — 含联网样本处置：纯 KB 出主分 + web 另标（选定）**
+仅由知识库材料构成的样本（检索材料不含 `RAGContext.kind=web` 块）参与常规上下文指标（主分）；**含联网材料的样本 SHALL 被标记为「降级联网」并从主分中排除**，其「是否降级联网」记入诊断元数据。`contexts` 为空的样本**跳过** context 类指标并单列一类（「无检索直答」）。
+未选「按 `kind` 分算」的理由：常规检索轮会因知识库不足而自主降级联网（`kind=web`），而对单组算 `context_recall`/`faithfulness` 有**语义陷阱**——参考信息或答案事实本就来自另一组，会把「合理降级」系统性判低，污染主分与门禁。web 样本的正式评测留给后续（联网轮 / 多轮）change。
 
 **D5 — score 回写：归 `llm-tracing`，沿用既有 client 口径（选定）**
 每题结束后用 `langfuse_context.score_current_trace(...)`（或 `Langfuse.score`）把指标分数写回对应 trace；client 一律取 `langfuse_context.client_instance`，**不得 `new Langfuse()`**（否则绕过 `LANGFUSE_ENABLE` 开关与关停 flush）。`LANGFUSE_ENABLE` 关闭时整条路径短路。
@@ -56,7 +57,8 @@
 ## Risks / Trade-offs
 
 - **与 `prompt-layering` 同 capability** → 我们只改第 1/2/3 条、ADD 新条，**不碰第 6 条**；两个 change 落在不同 requirement，非硬冲突。缓解：在计划顶部写排序声明，归档时按序 apply。
-- **答案正确性指标依赖 `reference` 质量** → 测试集 `reference` 由 ragas synthesizer 生成，存在同音错字（已有 `_clean_garbled_questions` 校对）；正确性分数会受其影响。缓解：把指标选型（见 Open Questions）与校对环节一并考虑。
+- **答案正确性指标依赖 `reference` 质量** → 测试集 `reference` 由 ragas synthesizer 生成，存在同音错字（已有 `_clean_garbled_questions` 校对）；正确性分数会受其影响。缓解：准则里显式要求「数字一致」以降低对错字的敏感度，校对环节保留。
+- **现代 LLM 接口接线** → `collections` 指标需 `llm_factory`（结构化输出走 `instructor`），与现有 legacy `LangchainLLMWrapper` 不同源；`instructor` 已随 `ragas` 装上（1.15.4）但不在 `pyproject`。缓解：为裁判补一条现代 `llm_factory` 接线，指向同一 judge 模型（`RAGAS_LLM_MODEL`）。
 - **faithfulness 基线随 prompt 渲染漂移** → 本 change 建立的新基线需在 prompt 渲染稳定后采；缓解：baseline 采集时点挂在 `prompt-layering` 收口之后。
 - **宿主侧跑 CLI 连不上 Langfuse** → `.env` 的 `LANGFUSE_HOST` 是容器内地址；缓解：宿主跑评测时覆写 `LANGFUSE_HOST=http://localhost:3000`。
 - **`F-32` 修复可能掩盖** → 若只 seed ctx 而不加守卫，未来再次断链会静默回到空 contexts。缓解：补「`contexts > 0`（对有检索的样本）」守卫断言。
@@ -69,7 +71,7 @@
 
 ## Open Questions
 
-1. **答案正确性指标的具体选型**：`AnswerAccuracy`（NVIDIA，二值/需 reference）vs `RubricsScoreWithReference`（准则式，企业域更可控）vs `SemanticSimilarity`（最轻）。需定一个默认 + 是否可配。
-2. **含 web 的常规轮样本处置**：统一按 `kind` 分算（保留），还是把含 web 的样本单独标记、v1 只在纯 KB 样本上出主分？
+1. ~~答案正确性指标选型~~ **已定：`RubricsScoreWithReference`**（见 D3）。待定：是否允许经配置切换到 `AnswerAccuracy`。
+2. ~~含 web 的常规轮样本处置~~ **已定：(b) 纯 KB 出主分 + web 另标**（见 D4）。待定：「纯 KB」判定口径是否取「检索材料不含 web 块」。
 3. **`F-32` 守卫断言的形式**：纯断言「有检索的样本 contexts 必非空」，还是同时断言「无检索样本 contexts 为空」。
 4. **`compare_retrieval` 是否要在规格里正式承接**「分块尺寸对比」被移除后的对比能力，或仅作为 Migration 说明。

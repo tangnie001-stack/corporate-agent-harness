@@ -41,17 +41,22 @@ Evaluation SHALL be invoked via `python -m src.cli.eval_ragas`. The Markdown sum
 
 评测链路 SHALL 为每次评测的单题生成注入请求上下文，使被测 Agent 经工具（知识库检索 / 联网搜索）收集的检索材料能被评测读取，而不再走「评测入口从不设置上下文」的失效路径。
 
-每条被读取的检索材料 SHALL 携带其来源类型（知识库 / 联网），评测 SHALL 能按来源类型分别统计。
+每条被读取的检索材料 SHALL 携带其来源类型（知识库 / 联网）。评测 SHALL 仅让**纯知识库样本**（检索材料不含联网块）参与常规上下文指标（主分）；**含联网材料的样本** SHALL 被标记为「降级联网」并从主分中排除，且其是否降级联网 SHALL 记入诊断元数据。
 
 #### Scenario: Retrieval material is captured
 
 - **WHEN** 评测一次绑定知识库的单轮问答
 - **THEN** 评测侧读到的该问答检索材料非空，且逐条带来源类型
 
-#### Scenario: Material split by source kind
+#### Scenario: Pure knowledge-base sample contributes to main score
 
-- **WHEN** 某问答的检索材料同时包含知识库块与联网块
-- **THEN** 评测 SHALL 能按来源类型分别输出该题的上下文指标
+- **WHEN** 某问答的检索材料全部来自知识库（不含联网块）
+- **THEN** 该题参与常规上下文指标，其结果计入主分聚合
+
+#### Scenario: Web-bearing sample excluded from main score
+
+- **WHEN** 某问答的检索材料含联网块
+- **THEN** 该题 SHALL 被标记为「降级联网」，其上下文指标 SHALL NOT 计入主分聚合，且该标记 SHALL 记入诊断元数据
 
 #### Scenario: Samples without retrieval skip context metrics
 
