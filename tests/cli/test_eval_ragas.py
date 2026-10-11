@@ -13,6 +13,68 @@ import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.tools import tool
+
+from src.infra.llm.request_context import RequestContext, current_request_ctx
+from src.rag.context import RAGContext
+
+
+@tool
+def _fake_retrieve_kb(query: str) -> str:
+    """测试用 retrieval 工具：把材料写进当前请求上下文的收集器。
+
+    Args:
+        query: 查询文本
+    """
+    ctx = current_request_ctx.get()
+    if ctx is None:
+        raise RuntimeError("测试桩要求调用方已 seed RequestContext")
+    ctx.tool_contexts.append(
+        RAGContext(content="hit", source="doc", page=1, doc_id="d", chunk_id="c")
+    )
+    return "[1] hit"
+
+
+@pytest.mark.asyncio
+async def test_f32_seeded_ctx_populates_tool_contexts(eval_graph_factory) -> None:
+    """守卫 (A)：seeded ctx 下，工具收集的材料应回到 state.tool_contexts。
+
+    Args:
+        eval_graph_factory: conftest 提供的真图工厂（注入真工具 + 真 ctx 传播）
+    """
+    from src.cli.eval_ragas import _answer_one_question
+
+    graph = eval_graph_factory([_fake_retrieve_kb])
+    ctx = RequestContext(session_id="s1", kb_id="kb1")
+    token = current_request_ctx.set(ctx)
+    try:
+        _answer, contexts, _details = await _answer_one_question(
+            graph, "kb1", "s1", "q", "trace_1"
+        )
+    finally:
+        current_request_ctx.reset(token)
+    assert len(contexts) > 0
+
+
+@pytest.mark.asyncio
+async def test_f32_no_retrieval_leaves_contexts_empty(eval_graph_factory) -> None:
+    """守卫 (B)：未调用任何检索工具时 contexts 为空（防跨样本泄漏）。
+
+    Args:
+        eval_graph_factory: conftest 提供的真图工厂（空工具 = agent 直答）
+    """
+    from src.cli.eval_ragas import _answer_one_question
+
+    graph = eval_graph_factory([])  # 无工具，agent 直答
+    ctx = RequestContext(session_id="s1", kb_id="kb1")
+    token = current_request_ctx.set(ctx)
+    try:
+        _answer, contexts, _details = await _answer_one_question(
+            graph, "kb1", "s1", "q", "trace_1"
+        )
+    finally:
+        current_request_ctx.reset(token)
+    assert contexts == []
 
 
 class TestParseArgs:
@@ -81,7 +143,7 @@ class TestGenerateAnswers:
 
         mock_graph.ainvoke = AsyncMock(side_effect=mock_ainvoke)
 
-        answers, contexts, trace_ids, retrieval_details = asyncio.run(
+        answers, contexts, trace_ids, retrieval_details, sample_classes = asyncio.run(
             generate_answers_and_contexts(
                 mock_graph,
                 "test_kb",
@@ -94,6 +156,7 @@ class TestGenerateAnswers:
         assert len(contexts) == 2
         assert len(trace_ids) == 2
         assert len(retrieval_details) == 2
+        assert len(sample_classes) == 2
         assert trace_ids[0].startswith("eval_")
         assert "Answer for" in answers[0]
         assert len(contexts[0]) == 2
@@ -134,7 +197,7 @@ class TestGenerateAnswers:
 
         mock_graph.ainvoke = AsyncMock(side_effect=mock_ainvoke)
 
-        answers, contexts, trace_ids, retrieval_details = asyncio.run(
+        answers, contexts, trace_ids, retrieval_details, sample_classes = asyncio.run(
             generate_answers_and_contexts(
                 mock_graph,
                 "kb",
@@ -146,6 +209,7 @@ class TestGenerateAnswers:
         assert len(answers) == 3
         assert len(trace_ids) == 3
         assert len(retrieval_details) == 3
+        assert len(sample_classes) == 3
         assert "[ERROR]" in answers[1]
         assert contexts[1] == []
         # 失败的问题也要有 trace_id，便于回溯；检索明细异常分支为空列表

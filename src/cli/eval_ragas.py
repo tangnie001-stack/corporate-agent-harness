@@ -25,10 +25,13 @@ from typing import Any
 
 from langfuse.decorators import langfuse_context, observe
 
+from src.cli.eval_scoring import classify_sample
 from src.config import settings
+from src.config.const import SAMPLE_CLASS_EMPTY
 from src.core import logging as core_logging
 from src.core.log_events import Event
 from src.core.logging import setup_logging
+from src.infra.llm.request_context import RequestContext, current_request_ctx
 from src.infra.llm.trace_context import current_trace_id
 from src.infra.llm.tracing import configure_tracing, flush_tracing
 
@@ -158,7 +161,7 @@ async def generate_answers_and_contexts(
     kb_id: str,
     session_id: str,
     questions: list[str],
-) -> tuple[list[str], list[list[str]], list[str], list[list[dict]]]:
+) -> tuple[list[str], list[list[str]], list[str], list[list[dict]], list[str]]:
     """对每个问题生成回答，并收集检索到的上下文.
 
     Args:
@@ -168,7 +171,7 @@ async def generate_answers_and_contexts(
         questions: 问题列表
 
     Returns:
-        (answers, contexts, trace_ids, retrieval_details) 元组：
+        (answers, contexts, trace_ids, retrieval_details, sample_classes) 元组：
         - answers: 每个问题的完整回答文本列表
         - contexts: 每个问题对应的检索上下文列表（每个元素是文档片段列表）
         - trace_ids: 每个问题对应的 trace_id 列表（与 answers/contexts 一一对应，
@@ -176,11 +179,14 @@ async def generate_answers_and_contexts(
         - retrieval_details: 每个问题对应的结构化检索明细列表（与 answers/contexts
           一一对应；每个元素是该 query 最终上下文（rerank 后）的
           [{source, score, kind}, ...]，供 detail_json 低分下钻）
+        - sample_classes: 每个问题按检索来源分的样本类别（见 eval_scoring.classify_sample）；
+          异常分支记为 SAMPLE_CLASS_EMPTY
     """
     answers: list[str] = []
     contexts: list[list[str]] = []
     trace_ids: list[str] = []
     retrieval_details: list[list[dict]] = []
+    sample_classes: list[str] = []
 
     for i, q in enumerate(questions):
         core_logging.log_event(Event.QA_ANSWER_START, index=i + 1, query=q)
@@ -189,7 +195,11 @@ async def generate_answers_and_contexts(
         # 把它注入到该问题期间的所有日志行，Langfuse trace 也以它为 id
         trace_id = f"eval_{uuid.uuid4().hex[:12]}"
         trace_ids.append(trace_id)
-        token = current_trace_id.set(trace_id)
+        trace_token = current_trace_id.set(trace_id)
+        # F-32：镜像 turn_runner，seed 请求上下文，使 retrieve_kb 等工具收集的
+        # 材料可经 agent_finalize 回填 state.tool_contexts（否则 context 指标恒空）
+        req_ctx = RequestContext(session_id=session_id, kb_id=kb_id)
+        ctx_token = current_request_ctx.set(req_ctx)
 
         try:
             answer, ctx_list, details = await _answer_one_question(
@@ -205,6 +215,7 @@ async def generate_answers_and_contexts(
             answers.append(answer)
             contexts.append(ctx_list)
             retrieval_details.append(details)
+            sample_classes.append(classify_sample(req_ctx.tool_contexts))
             core_logging.log_event(
                 Event.QA_ANSWER_DONE,
                 index=i + 1,
@@ -216,10 +227,12 @@ async def generate_answers_and_contexts(
             answers.append(f"[ERROR] {e}")
             contexts.append([])
             retrieval_details.append([])
+            sample_classes.append(SAMPLE_CLASS_EMPTY)
         finally:
-            current_trace_id.reset(token)
+            current_request_ctx.reset(ctx_token)
+            current_trace_id.reset(trace_token)
 
-    return answers, contexts, trace_ids, retrieval_details
+    return answers, contexts, trace_ids, retrieval_details, sample_classes
 
 
 def run_evaluation(
@@ -589,7 +602,7 @@ def main() -> None:
             core_logging.log_event(Event.VECTOR_STORE_EMPTY, kb_id=kb_id)
             print("Knowledge base is empty")
             sys.exit(1)
-        answers, contexts, trace_ids, retrieval_details = generated
+        answers, contexts, trace_ids, retrieval_details, _sample_classes = generated
         # 生成段结束即 flush：--gate 路径会提前 sys.exit，晚 flush 等于丢数据
         flush_tracing()
 
