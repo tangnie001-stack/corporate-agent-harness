@@ -498,3 +498,5 @@ CONTEXT_METRIC_COLUMNS: tuple[str, ...] = (
     "context_precision",
     "context_recall",
 )
+# 门禁：检索覆盖率下限（低于此值判失败，杜绝"不检索即跳空 context 指标"的规避）
+EVAL_RETRIEVAL_COVERAGE_MIN: float = 0.5

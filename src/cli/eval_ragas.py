@@ -1,10 +1,12 @@
 """RAGAS 评估脚本 — 对 RAG 系统的检索和生成质量进行标准化评估.
 
-本脚本使用 RAGAS 库计算四个核心指标：
+本脚本使用 RAGAS 库计算五个核心指标（报告 / stdout / 门禁统一采用「主分」口径，
+即仅纯 KB 样本的指标均值；含联网或无检索的样本不计入主分）：
   - faithfulness: 回答是否忠实于检索到的上下文（有无幻觉）
   - answer_relevancy: 回答与问题的相关性
   - context_recall: 检索到的上下文是否覆盖了参考答案所需的信息
   - context_precision: 检索到的上下文中有多少是真正有用的
+  - answer_correctness: 回答与参考答案的事实/语义一致性
 
 运行方式：
   python -m src.cli.eval_ragas --kb-id <kb-uuid>                          # 评估（最新测试集）
@@ -17,17 +19,29 @@
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import pandas as pd
 from langfuse.decorators import langfuse_context, observe
 
-from src.cli.eval_scoring import classify_sample, summarize_trajectory
+from src.cli.eval_scoring import (
+    apply_sample_masks,
+    classify_sample,
+    main_score_means,
+    retrieval_coverage,
+    summarize_trajectory,
+)
 from src.config import settings
-from src.config.const import SAMPLE_CLASS_EMPTY
+from src.config.const import (
+    EVAL_RETRIEVAL_COVERAGE_MIN,
+    SAMPLE_CLASS_EMPTY,
+    SAMPLE_CLASS_PURE_KB,
+)
 from src.core import logging as core_logging
 from src.core.log_events import Event
 from src.core.logging import setup_logging
@@ -303,7 +317,7 @@ def run_evaluation(
     llm_wrapper: Any,
     embeddings_wrapper: Any,
 ) -> Any:
-    """运行 RAGAS 四指标评估.
+    """运行 RAGAS 五指标评估.
 
     每个指标内部会多次调用 LLM（非简单的一次一问一答），
     因此评估耗时明显长于回答生成：
@@ -311,6 +325,7 @@ def run_evaluation(
       - answer_relevancy: 从回答反向生成候选项问题，M 次 LLM
       - context_recall: 逐条判断上下文是否覆盖参考答案，P 次 LLM
       - context_precision: 逐条判断上下文是否与问题相关，Q 次 LLM
+      - answer_correctness: 比对回答与参考答案的事实/语义一致性，R 次 LLM
     综上，评估阶段 LLM 调用次数 = 指标内调用次数 × 指标数 × QA 对数。
 
     Args:
@@ -370,6 +385,7 @@ def run_evaluation(
             "answer_relevancy",
             "context_recall",
             "context_precision",
+            "answer_correctness",
         ]:
             core_logging.log_event(
                 Event.METRIC_MEAN,
@@ -385,6 +401,7 @@ def run_evaluation(
         "answer_relevancy",
         "context_recall",
         "context_precision",
+        "answer_correctness",
     ]
     nan_counts = {
         col: int(df[col].isna().sum())
@@ -403,8 +420,13 @@ def save_results_csv(
     ground_truth: list[str],
     output_path: str,
     trace_ids: list[str] | None = None,
+    sample_classes: list[str] | None = None,
+    trajectories: list[dict] | None = None,
 ) -> str:
-    """将评估结果保存为 CSV 文件.
+    """将评估结果保存为 CSV 文件（含样本类别、跳过标记与轨迹列）.
+
+    传入 sample_classes 时先按样本类别掩码（无材料样本的三项 context 指标置
+    NaN 并记 skipped），使落盘结果与「主分」口径一致。
 
     Args:
         result: RAGAS evaluate() 返回的结果对象
@@ -413,17 +435,26 @@ def save_results_csv(
         output_path: 输出文件路径
         trace_ids: 每个问题对应的 trace_id（与 questions 一一对应），
             传入后在 CSV 中新增 trace_id 列，便于按 trace 回溯
+        sample_classes: 每个问题的样本类别（与 questions 一一对应），
+            传入后新增 sample_class / skipped 两列
+        trajectories: 每个问题的轨迹诊断摘要（与 questions 一一对应），
+            传入后新增 trajectory 列（JSON 字符串）
 
     Returns:
         实际写入的文件路径
     """
     df = result.to_pandas()
 
+    if sample_classes is not None:
+        df = apply_sample_masks(df, sample_classes)
+
     # 添加元信息列
     df.insert(0, "question", questions)
     df.insert(1, "ground_truth", ground_truth)
     if trace_ids is not None:
         df.insert(2, "trace_id", trace_ids)
+    if trajectories is not None:
+        df["trajectory"] = [json.dumps(t, ensure_ascii=False) for t in trajectories]
 
     # 确保输出目录存在
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -433,13 +464,66 @@ def save_results_csv(
     return output_path
 
 
+def _build_markdown_table(
+    df: pd.DataFrame,
+    metric_cols: list[str],
+    trace_ids: list[str] | None,
+    trajectories: list[dict] | None,
+) -> list[str]:
+    """渲染 MD 报告的逐题表格（表头 + 分隔行 + 每题一行）.
+
+    Args:
+        df: 已掩码的结果表（可能含 sample_class / skipped 列）
+        metric_cols: 实际存在的指标列（按固定顺序）
+        trace_ids: 每题的 trace_id（None 则不展示该列）
+        trajectories: 每题的轨迹摘要（None 则不展示 trajectory 列）
+
+    Returns:
+        Markdown 表格行列表
+    """
+    header = ["Question"] + metric_cols
+    if trace_ids is not None:
+        header.append("trace_id")
+    for col in ("sample_class", "skipped"):
+        if col in df.columns:
+            header.append(col)
+    if trajectories is not None:
+        header.append("trajectory")
+
+    lines = ["| " + " | ".join(header) + " |"]
+    lines.append("|" + "|".join("---" for _ in header) + "|")
+    for i in range(len(df)):
+        vals = [f"Q{i + 1}"] + [f"{df[m].iloc[i]:.4f}" for m in metric_cols]
+        if trace_ids is not None:
+            if i < len(trace_ids):
+                vals.append(trace_ids[i])
+            else:
+                vals.append("")
+        for col in ("sample_class", "skipped"):
+            if col in df.columns:
+                vals.append(str(df[col].iloc[i]))
+        if trajectories is not None:
+            if i < len(trajectories):
+                vals.append(json.dumps(trajectories[i], ensure_ascii=False))
+            else:
+                vals.append("")
+        lines.append("| " + " | ".join(vals) + " |")
+    return lines
+
+
 def save_markdown_report(
     result: Any,
     questions: list[str],
     output_path: str,
     trace_ids: list[str] | None = None,
+    sample_classes: list[str] | None = None,
+    trajectories: list[dict] | None = None,
 ) -> str:
     """将评估结果保存为 Markdown 摘要报告，与 CSV 同路径（.md 后缀）.
+
+    均值行统一写「主分」（仅纯 KB 样本的指标均值），与 CSV / stdout / 门禁
+    口径一致；传入 sample_classes 时先按样本类别掩码，报告携带
+    sample_class / skipped 列。
 
     Args:
         result: RAGAS evaluate() 返回的结果对象
@@ -447,18 +531,25 @@ def save_markdown_report(
         output_path: CSV 输出路径（用于推导 .md 路径）
         trace_ids: 每个问题对应的 trace_id（与 questions 一一对应），
             传入后在表格中新增 trace_id 列
+        sample_classes: 每个问题的样本类别（与 questions 一一对应），
+            传入后新增 sample_class / skipped 列并按类别掩码指标
+        trajectories: 每个问题的轨迹诊断摘要（与 questions 一一对应），
+            传入后新增 trajectory 列（JSON 字符串）
 
     Returns:
         实际写入的 .md 文件路径
     """
     md_path = output_path.rsplit(".", 1)[0] + ".md"
     df = result.to_pandas()
+    if sample_classes is not None:
+        df = apply_sample_masks(df, sample_classes)
 
     metric_cols = [
         "faithfulness",
         "answer_relevancy",
         "context_precision",
         "context_recall",
+        "answer_correctness",
     ]
     actual_metrics = [c for c in metric_cols if c in df.columns]
 
@@ -475,25 +566,13 @@ def save_markdown_report(
     lines.append(f"**QA Pairs:** {len(questions)}")
     lines.append("")
 
-    # 表头
-    header = ["Question"] + actual_metrics
-    if trace_ids is not None:
-        header.append("trace_id")
-    lines.append("| " + " | ".join(header) + " |")
-    lines.append("|" + "|".join("---" for _ in header) + "|")
-
-    # 每行数据
-    for i in range(len(df)):
-        row_vals = [f"Q{i + 1}"] + [f"{df[m].iloc[i]:.4f}" for m in actual_metrics]
-        if trace_ids is not None:
-            row_vals.append(trace_ids[i] if i < len(trace_ids) else "")
-        lines.append("| " + " | ".join(row_vals) + " |")
-
+    lines.extend(_build_markdown_table(df, actual_metrics, trace_ids, trajectories))
     lines.append("")
 
-    # 平均值
-    avg_parts = ", ".join(f"{m}={df[m].mean():.4f}" for m in actual_metrics)
-    lines.append(f"**Averages:** {avg_parts}")
+    # 均值行统一写主分（纯 KB 样本均值），与 CSV / stdout / 门禁口径一致
+    means = main_score_means(df)
+    avg_parts = ", ".join(f"{m}={means[m]:.4f}" for m in means)
+    lines.append(f"**Main scores (pure-KB):** {avg_parts}")
     lines.append("")
 
     os.makedirs(os.path.dirname(md_path) or ".", exist_ok=True)
@@ -504,42 +583,49 @@ def save_markdown_report(
     return md_path
 
 
-def check_gate(result: Any, questions: list[str]) -> None:
-    """检查评估结果是否通过质量门禁阈值.
+def check_gate(df: pd.DataFrame, questions: list[str]) -> None:
+    """按主分（纯 KB 样本）判质量门禁；覆盖率不足或主分为空即失败.
 
-    对 GATE_THRESHOLDS 中每个指标打印 PASS/FAIL，
-    任一指标不达标时列出未通过的问题并退出码为 1。
+    门禁口径统一为主分：先因「纯 KB 样本数为 0」或「检索覆盖率 <
+    EVAL_RETRIEVAL_COVERAGE_MIN」判失败（杜绝"不检索即跳空 context 指标"的
+    规避），再逐指标比对 GATE_THRESHOLDS。任一不达标即 exit 1。
 
     Args:
-        result: RAGAS evaluate() 返回的结果对象
-        questions: 问题列表
+        df: 经 apply_sample_masks 掩码、含 sample_class 列的结果表
+        questions: 问题列表（沿用既有门禁签名；主分判据不再逐题定位失败样本）
     """
-    df = result.to_pandas()
-    failing_indices: list[int] = []
-    all_pass = True
+    classes = list(df["sample_class"])
+    cov = retrieval_coverage(classes)
+    pure_kb_count = 0
+    for c in classes:
+        if c == SAMPLE_CLASS_PURE_KB:
+            pure_kb_count += 1
 
+    if pure_kb_count == 0:
+        print("  gate FAIL: no pure-KB samples (main score undefined)")
+        sys.exit(1)
+    if cov < EVAL_RETRIEVAL_COVERAGE_MIN:
+        print(
+            f"  gate FAIL: retrieval coverage {cov:.2f} < {EVAL_RETRIEVAL_COVERAGE_MIN}"
+        )
+        sys.exit(1)
+
+    means = main_score_means(df)
+    all_pass = True
     for metric, threshold in GATE_THRESHOLDS.items():
-        if metric not in df.columns:
-            print(f"  {metric}: N/A (metric not in evaluation results)")
+        if metric not in means:
+            print(f"  {metric}: N/A")
             all_pass = False
             continue
-
-        score = df[metric].mean()
+        score = means[metric]
         passed = score >= threshold
-        status = "PASS" if passed else "FAIL"
-        print(f"  {metric}: {score:.4f} {status}")
-
-        if not passed:
+        if passed:
+            print(f"  {metric}: {score:.4f} PASS")
+        else:
+            print(f"  {metric}: {score:.4f} FAIL")
             all_pass = False
-            for i in range(len(df)):
-                if df[metric].iloc[i] < threshold and i not in failing_indices:
-                    failing_indices.append(i)
 
     if not all_pass:
-        if failing_indices:
-            print(f"\nFailing questions ({len(failing_indices)} total):")
-            for idx in failing_indices:
-                print(f"  Q{idx + 1}: {questions[idx][:80]}")
         sys.exit(1)
 
     sys.exit(0)
@@ -669,8 +755,8 @@ def main() -> None:
             contexts,
             trace_ids,
             retrieval_details,
-            _sample_classes,
-            _trajectories,
+            sample_classes,
+            trajectories,
         ) = generated
         # 生成段结束即 flush：--gate 路径会提前 sys.exit，晚 flush 等于丢数据
         flush_tracing()
@@ -684,22 +770,38 @@ def main() -> None:
             embeddings_wrapper,
         )
 
+        # 统一「主分」口径：报告 / stdout / 门禁都读同一张已掩码表（纯 KB 样本）。
+        masked_df = apply_sample_masks(result.to_pandas(), sample_classes)
+
         # 指标均值输出到 stdout：compare_retrieval 等 A/B 脚本以
         # 子进程方式调用本脚本，靠 stdout 解析指标（parse_metrics）；logger 只写
         # 文件不落 stdout，故此处显式 print。--gate 模式下 check_gate 已打印指标行。
         if not args.gate:
-            _print_metric_averages(result)
+            _print_metric_averages(masked_df)
 
         output_path = save_results_csv(
-            result, questions, ground_truth, output_path, trace_ids
+            result,
+            questions,
+            ground_truth,
+            output_path,
+            trace_ids,
+            sample_classes,
+            trajectories,
         )
-        save_markdown_report(result, questions, output_path, trace_ids)
+        save_markdown_report(
+            result,
+            questions,
+            output_path,
+            trace_ids,
+            sample_classes,
+            trajectories,
+        )
 
         # _save_eval_report 需要 questions 长度
         _save_eval_report(kb_id, result, len(questions), output_path, retrieval_details)
 
         if args.gate:
-            check_gate(result, questions)
+            check_gate(masked_df, questions)
 
         core_logging.log_event(Event.EVALUATION_DONE)
     finally:
@@ -707,26 +809,19 @@ def main() -> None:
         flush_tracing()
 
 
-def _print_metric_averages(result: Any) -> None:
-    """把四指标均值逐行打印到 stdout（供 A/B 子进程解析）。
+def _print_metric_averages(df: pd.DataFrame) -> None:
+    """把主分（纯 KB 样本均值）逐指标打印到 stdout（供 A/B 子进程解析）.
 
-    compare_retrieval 通过 subprocess 调用本脚本并用
-    parse_metrics 解析 stdout 里的指标均值；logger 只写日志文件，因此
-    均值需显式 print。行格式与 check_gate 对齐：一行一指标、
+    compare_retrieval 通过 subprocess 调用本脚本并用 parse_metrics 解析
+    stdout 里的指标均值；logger 只写日志文件，因此均值需显式 print。
+    口径与 check_gate / 报告一致，均为主分；每指标只打一行，行格式
     `指标名: 数值`，便于按指标名前缀匹配取值。
 
     Args:
-        result: RAGAS evaluate() 返回的结果对象
+        df: 经 apply_sample_masks 掩码、含 sample_class 列的结果表
     """
-    df = result.to_pandas()
-    for col in [
-        "faithfulness",
-        "answer_relevancy",
-        "context_precision",
-        "context_recall",
-    ]:
-        if col in df.columns:
-            print(f"  {col}: {df[col].mean():.4f}")
+    for metric, value in main_score_means(df).items():
+        print(f"  {metric}: {value:.4f}")
 
 
 def _save_eval_report(

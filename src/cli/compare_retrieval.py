@@ -82,6 +82,9 @@ def run_eval(retrieval_k: int, rerank_k: int, kb_id: str) -> dict:
 def parse_metrics(stdout: str) -> dict[str, float]:
     """从 eval_ragas 的标准输出中解析 RAGAS 指标均值。
 
+    口径说明：eval_ragas 的 stdout 只打「主分」一行/指标（仅纯 KB 样本的
+    指标均值，与报告 / 门禁一致），故此处解析到的即主分。
+
     Args:
         stdout: eval_ragas 的原始标准输出。
 

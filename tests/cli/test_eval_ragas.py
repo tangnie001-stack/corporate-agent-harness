@@ -301,6 +301,65 @@ class TestGenerateAnswers:
         assert retrieval_details[1] == []
         assert trajectories[1] == {"tool_calls": [], "iterations": 0}
 
+    def test_generate_collects_trajectory_from_messages(self) -> None:
+        """图 state 含工具调用消息时，轨迹应含工具名/入参/迭代数。
+
+        覆盖 Task 5 遗留缺口：此前 mock 图不回填 messages，只验证了空轨迹；
+        此处让 ``ainvoke`` 返回含 ``AIMessage(tool_calls=[...])`` + ``ToolMessage``
+        的 messages，断言 ``summarize_trajectory`` 经真实链路产出的工具名与迭代数。
+        """
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        from src.cli.eval_ragas import generate_answers_and_contexts
+
+        mock_graph = MagicMock()
+
+        async def mock_ainvoke(state: dict) -> dict:
+            return {
+                "answer": "最终回答[1]",
+                "tool_contexts": [
+                    MagicMock(
+                        to_prompt_text=lambda: "ctx",
+                        source="s.pdf",
+                        score=0.5,
+                        kind="kb",
+                    )
+                ],
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "retrieve_kb",
+                                "args": {"query": "茅台营收"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    ToolMessage(content="工具输出正文", tool_call_id="call_1"),
+                    AIMessage(content="最终回答[1]"),
+                ],
+            }
+
+        mock_graph.ainvoke = AsyncMock(side_effect=mock_ainvoke)
+
+        (
+            _answers,
+            _contexts,
+            _trace_ids,
+            _details,
+            _sample_classes,
+            trajectories,
+        ) = asyncio.run(
+            generate_answers_and_contexts(mock_graph, "kb", "sess", ["问题"])
+        )
+
+        assert trajectories[0]["tool_calls"][0]["name"] == "retrieve_kb"
+        assert trajectories[0]["tool_calls"][0]["args"] == {"query": "茅台营收"}
+        # 两条 AIMessage ⇒ 迭代 2 轮（ToolMessage 不计入）
+        assert trajectories[0]["iterations"] == 2
+
 
 class TestRunEvaluation:
     """RAGAS 评估流程测试（全 mock）。"""
@@ -388,21 +447,30 @@ class TestSaveResults:
     """结果保存测试。"""
 
     def test_save_csv(self) -> None:
-        """CSV 保存应包含所有必要列。"""
+        """CSV 应含掩码新列（sample_class/skipped）、answer_correctness 与轨迹列。"""
         import pandas as pd
 
         from src.cli.eval_ragas import save_results_csv
+        from src.config.const import SAMPLE_CLASS_EMPTY, SAMPLE_CLASS_PURE_KB
 
         mock_df = pd.DataFrame(
             {
-                "faithfulness": [0.95],
-                "answer_relevancy": [0.88],
-                "context_recall": [0.92],
-                "context_precision": [0.85],
+                "faithfulness": [0.95, 0.90],
+                "answer_relevancy": [0.88, 0.86],
+                "context_recall": [0.92, 0.88],
+                "context_precision": [0.85, 0.83],
+                "answer_correctness": [0.91, 0.89],
             }
         )
         mock_result = MagicMock()
         mock_result.to_pandas.return_value = mock_df
+        trajectories = [
+            {
+                "tool_calls": [{"name": "retrieve_kb", "args": {"query": "x"}}],
+                "iterations": 1,
+            },
+            {"tool_calls": [], "iterations": 0},
+        ]
 
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
             tmp_path = tmp.name
@@ -410,15 +478,22 @@ class TestSaveResults:
         try:
             save_results_csv(
                 mock_result,
-                ["Q1"],
-                ["GT1"],
+                ["Q1", "Q2"],
+                ["GT1", "GT2"],
                 output_path=tmp_path,
+                sample_classes=[SAMPLE_CLASS_PURE_KB, SAMPLE_CLASS_EMPTY],
+                trajectories=trajectories,
             )
 
             with open(tmp_path, "r") as f:
                 content = f.read()
 
             assert "faithfulness" in content
+            assert "answer_correctness" in content
+            assert "sample_class" in content
+            assert "skipped" in content
+            assert "trajectory" in content
+            assert "retrieve_kb" in content
 
         finally:
             os.unlink(tmp_path)
@@ -457,18 +532,67 @@ class TestSaveResults:
         finally:
             os.unlink(tmp_path)
 
+    def test_save_markdown_report_includes_new_columns(self) -> None:
+        """MD 报告应含 answer_correctness、sample_class、skipped、trajectory 列。"""
+        import pandas as pd
+
+        from src.cli.eval_ragas import save_markdown_report
+        from src.config.const import SAMPLE_CLASS_EMPTY, SAMPLE_CLASS_PURE_KB
+
+        mock_df = pd.DataFrame(
+            {
+                "faithfulness": [0.95, 0.90],
+                "answer_relevancy": [0.88, 0.86],
+                "context_recall": [0.92, 0.88],
+                "context_precision": [0.85, 0.83],
+                "answer_correctness": [0.91, 0.89],
+            }
+        )
+        mock_result = MagicMock()
+        mock_result.to_pandas.return_value = mock_df
+
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+            csv_path = tmp.name
+        md_path = csv_path.rsplit(".", 1)[0] + ".md"
+
+        try:
+            save_markdown_report(
+                mock_result,
+                ["Q1", "Q2"],
+                csv_path,
+                sample_classes=[SAMPLE_CLASS_PURE_KB, SAMPLE_CLASS_EMPTY],
+                trajectories=[
+                    {"tool_calls": [], "iterations": 1},
+                    {"tool_calls": [], "iterations": 0},
+                ],
+            )
+
+            with open(md_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            assert "answer_correctness" in content
+            assert "sample_class" in content
+            assert "skipped" in content
+            assert "trajectory" in content
+
+        finally:
+            if os.path.exists(md_path):
+                os.unlink(md_path)
+            os.unlink(csv_path)
+
 
 # ---- --gate 标志测试 ----
 
 
 def test_gate_passes_with_high_scores() -> None:
-    """--gate exits 0 when all metrics meet thresholds."""
+    """--gate 在全为纯 KB 且主分达标时 exits 0。"""
     import pandas as pd
 
     from src.cli.eval_ragas import check_gate
+    from src.cli.eval_scoring import apply_sample_masks
+    from src.config.const import SAMPLE_CLASS_PURE_KB
 
-    mock_result = MagicMock()
-    mock_df = pd.DataFrame(
+    raw_df = pd.DataFrame(
         {
             "faithfulness": [0.95, 0.90],
             "context_precision": [0.85, 0.90],
@@ -476,21 +600,23 @@ def test_gate_passes_with_high_scores() -> None:
             "answer_relevancy": [0.90, 0.88],
         }
     )
-    mock_result.to_pandas.return_value = mock_df
+    # 门禁接收已掩码的 DataFrame（含 sample_class 列）
+    df = apply_sample_masks(raw_df, [SAMPLE_CLASS_PURE_KB, SAMPLE_CLASS_PURE_KB])
 
     with pytest.raises(SystemExit) as exc_info:
-        check_gate(mock_result, ["Q1", "Q2"])
+        check_gate(df, ["Q1", "Q2"])
     assert exc_info.value.code == 0
 
 
 def test_gate_fails_with_low_scores() -> None:
-    """--gate exits 1 when a metric is below threshold."""
+    """--gate 在主分低于阈值时 exits 1。"""
     import pandas as pd
 
     from src.cli.eval_ragas import check_gate
+    from src.cli.eval_scoring import apply_sample_masks
+    from src.config.const import SAMPLE_CLASS_PURE_KB
 
-    mock_result = MagicMock()
-    mock_df = pd.DataFrame(
+    raw_df = pd.DataFrame(
         {
             "faithfulness": [0.50, 0.45],
             "context_precision": [0.85, 0.90],
@@ -498,8 +624,57 @@ def test_gate_fails_with_low_scores() -> None:
             "answer_relevancy": [0.90, 0.88],
         }
     )
-    mock_result.to_pandas.return_value = mock_df
+    df = apply_sample_masks(raw_df, [SAMPLE_CLASS_PURE_KB, SAMPLE_CLASS_PURE_KB])
 
     with pytest.raises(SystemExit) as exc_info:
-        check_gate(mock_result, ["Q1", "Q2"])
+        check_gate(df, ["Q1", "Q2"])
+    assert exc_info.value.code == 1
+
+
+def test_gate_fails_when_main_score_empty() -> None:
+    """无纯 KB 样本时门禁必须失败（不能因全量均值而通过）。"""
+    import pandas as pd
+
+    from src.cli.eval_ragas import check_gate
+
+    df = pd.DataFrame(
+        {
+            "faithfulness": [float("nan")],
+            "context_precision": [float("nan")],
+            "context_recall": [float("nan")],
+            "answer_relevancy": [0.9],
+            "answer_correctness": [0.9],
+            "sample_class": ["empty"],
+            "skipped": ["faithfulness;context_precision;context_recall"],
+        }
+    )
+    with pytest.raises(SystemExit) as e:
+        check_gate(df, ["Q1"])
+    assert e.value.code == 1
+
+
+def test_gate_fails_when_retrieval_coverage_below_min() -> None:
+    """检索覆盖率低于下限时门禁失败（否则会拿空 context 指标蒙混过关）。"""
+    import pandas as pd
+
+    from src.cli.eval_ragas import check_gate
+    from src.cli.eval_scoring import apply_sample_masks
+    from src.config.const import SAMPLE_CLASS_EMPTY, SAMPLE_CLASS_PURE_KB
+
+    raw_df = pd.DataFrame(
+        {
+            "faithfulness": [0.95, 0.90, 0.90],
+            "context_precision": [0.85, 0.90, 0.90],
+            "context_recall": [0.75, 0.80, 0.80],
+            "answer_relevancy": [0.90, 0.88, 0.88],
+        }
+    )
+    # 1 个纯 KB / 3 样本 = 0.33 < 0.5；主分本身全部达标，仍须因覆盖率失败
+    df = apply_sample_masks(
+        raw_df,
+        [SAMPLE_CLASS_PURE_KB, SAMPLE_CLASS_EMPTY, SAMPLE_CLASS_EMPTY],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_gate(df, ["Q1", "Q2", "Q3"])
     assert exc_info.value.code == 1
