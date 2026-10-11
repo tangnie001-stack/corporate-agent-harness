@@ -55,12 +55,13 @@
 **D4 — 含联网样本处置与聚合口径（选定）**
 - **样本三分**：按 `RAGContext.kind` 分「纯 KB / 含 web / 无检索」。
 - **主分口径**：**主分 = 纯 KB 样本的全部适用指标均值**；含 web 样本标记「降级联网」并从主分排除；**无检索样本不进主分**（其 `answer_relevancy` / 答案正确性仅单列参考）。
-- **跳过集合**：依赖 `contexts` 的 `{faithfulness, context_precision, context_recall}` 在无材料样本上**跳过并显式标记 `skipped`**（与"计算失败"区分，置空且不计入均值）；不依赖上下文的 `answer_relevancy` 与答案正确性**照常计算**。
-- **防规避**：报告 SHALL 列出三类样本计数与**检索覆盖率**（有检索样本占比）；`--gate` SHALL 依据**主分**判定。否则"不检索即可把 context 指标整批跳空"会绕过评测。
+- **跳过集合**：依赖 `contexts` 的 `{faithfulness, context_precision, context_recall}` 在无材料样本上**跳过并显式标记 `skipped`**（与"计算失败"区分）；跳过值**置空为 `NaN`**（**非** `None`/`pd.NA` —— 否则 `_save_eval_report` 的 `float(df[col].iloc[i])` 会抛 `TypeError` 被吞，导致 `eval_report` 静默不落库），`NaN` 不计入 `.mean()`；不依赖上下文的 `answer_relevancy` 与答案正确性**照常计算**。
+- **防规避**：报告 SHALL 列出三类样本计数与**检索覆盖率**（有检索样本占比）；`--gate` SHALL 依据**主分**判定（**非**全量样本均值）；**门禁判据**：检索覆盖率低于阈值、**或主分样本数为 0**（空上下文无法区分"未检索"与"检索返回空"），均判**失败**。
 - 未选「按 `kind` 分算」的理由：对单组算 `context_recall`/`faithfulness` 有语义陷阱（参考信息或答案事实本就来自另一组），会把「合理降级」系统性判低。
 
 **D5 — score 回写：显式 `client_instance.score(trace_id=…)`，归 `llm-tracing`（选定）**
 指标在**批量 `evaluate()` 之后**才算出，此时每题 `@observe` 已关闭 ⇒ `score_current_trace` 无当前 trace、且它**吞异常**（静默 no-op）。故必须用 **`langfuse_context.client_instance.score(trace_id=<该题 trace_id>, name=…, value=…)`** 显式回写；client 一律取 `langfuse_context.client_instance`，**不得 `new Langfuse()`**。`LANGFUSE_ENABLE` 关闭时整条路径短路。**验收**：启用时断言 trace 上**出现分数**（不能只看"没报错"）。
+- 注：`client_instance.score` **自身亦吞异常** ⇒ "回写失败"仍不可编程感知；靠 tasks 7.4 的活体断言兜底，不额外造机制。
 
 **D6 — 不改测试集 schema（选定）**
 答案正确性只需已有 `reference`；轨迹取**实际** `state.messages`。故 v1 **不新增任何测试集字段**。
@@ -69,6 +70,7 @@
 - **(A)** 调过 `retrieve_kb` 且其返回非空 ⇒ 该样本 `contexts` **非空**（靶向 `F-32` 复发）；
 - **(B)** 未调 `retrieve_kb` 且未调 `search_web` ⇒ 该样本 `contexts` **为空**（靶向漏 `reset` 的跨样本泄漏 / 多收）。
 - **形态**：至少 (A) 用**真图 + 真工具**跑一条绑定 KB 的问答来断言（假图会绕过 ctx 传播与工具累加这两条真路径，属自证、证伪不了 F-32）；(B) 可同样用真图跑一条不检索的问答。可另加 mock 单测作补充，但**不能只靠 mock**。
+- **"真图"定义**（消解与 CLAUDE.md「测试 mock 外部依赖」的冲突，**CLAUDE.md 优先**）：真 `StateGraph` + 真工具函数 + 真 `RequestContext` 传播；但 `vector_store` / `llm` / `reranker` 用 fake（**不发真实网络调用**）。
 
 ## Risks / Trade-offs
 
@@ -76,7 +78,8 @@
 - **评测可被「不检索」规避** → 若不对无检索样本设约束，context 三指标可被整批跳空。缓解：D4 的三类计数 + 检索覆盖率断言 + `--gate` 读主分。
 - **跳过与失败同形** → 单次 `evaluate()` 无法按样本跳过；掩码后「跳过 nan」与「真失败 nan」不可区分。缓解：输出显式 `skipped` 标记列，跳过值置空并排除均值。
 - **答案正确性依赖 `reference` 质量** → `AnswerCorrectness` 做 claim 级比对，对 `reference` 依赖强；测试集 `reference` 由 synthesizer 生成，存在同音错字（已有 `_clean_garbled_questions` 校对）。缓解：保留校对；报告保留逐题原值以便复核。
-- **DB 与 CSV/MD 口径分叉** → `_save_eval_report` 仍按**旧 4 指标**加权算 `overall_score` 并写 `eval_report` 表（Non-Goal：不动表），且**未按样本分流**；CSV/MD 会多出答案正确性、且主分只含纯 KB 样本。缓解：Markdown 报告显式写明差异。
+- **DB 与 CSV/MD 口径分叉** → `_save_eval_report` 仍按**旧 4 指标**加权算 `overall_score` 并写 `eval_report` 表（Non-Goal：不动表），且**未按样本分流**；CSV/MD 会多出答案正确性、且主分只含纯 KB 样本。缓解：Markdown 报告显式写明差异；跳过值用 `NaN` 而非 `None`/`pd.NA`（否则 DB 落库静默失败）。
+- **stdout 与报告/门禁口径分叉** → `_print_metric_averages`（stdout，供 `compare_retrieval` 的 `parse_metrics` 子串匹配取最后一行）若仍打**全量**、而报告/门禁用**主分**，同名指标会出两个数且解析取错。缓解：**三处统一为主分**，每指标只打一行。
 - **既有测试与 A/B 契约受影响** → `tests/cli/test_eval_ragas.py:198-205` 断言"恰 4 指标"（加指标必红）；`src/cli/compare_retrieval.py:66-82` 的子进程 `parse_metrics` 吃 eval stdout 均值（主分语义变更会污染 A/B 基线）。缓解：同步更新测试与契约（见 tasks）。
 - **faithfulness 基线漂移** → 新基线需在 prompt 渲染稳定后采（挂 `prompt-layering` 收口后）。
 - **宿主侧跑 CLI 连不上 Langfuse** → `ragas` 在 `[dev]` 依赖下 ⇒ 评测只在宿主 dev 跑；`.env` 的 `LANGFUSE_HOST` 是容器内地址。缓解：**代码级判空回退 localhost + 启动校验**（不止写注释）。
