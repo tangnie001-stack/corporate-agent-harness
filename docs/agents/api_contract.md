@@ -863,10 +863,17 @@ CASCADE 级联删除：知识库 → 文档 → 对话历史。
 | `report.answer_relevancy` | float | 答案相关性 |
 | `report.context_precision` | float | 上下文精确率 |
 | `report.context_recall` | float | 上下文召回率 |
-| `report.overall_score` | float | 加权综合分（0.3×faith + 0.3×recall + 0.2×precision + 0.2×relevancy） |
+| `report.overall_score` | float | 加权综合分（0.3×faith + 0.3×recall + 0.2×precision + 0.2×relevancy）；口径为**全量（未按样本分流）**，见下注 |
 | `report.passed` | bool | 是否达标（≥ 0.70） |
 | `report.report_path` | str\|null | CSV 报告路径 |
-| `report.detail_json` | list\|null | 逐条 QA 得分 `[{"q_index":0, "faithfulness":0.95}, ...]` |
+| `report.detail_json` | list\|null | 逐条 QA 得分；每条含 `q_index`、**全部 `RAGAS_METRIC_COLUMNS`**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`）与可选 `retrieval_details`（该 query 精排后 `[{source, score, kind}, ...]`）；**全量（未掩码）口径**，见下注。`NaN` **仅在 ragas 自身对该题该指标产出 NaN 时出现**（本路径不主动置 NaN）。注意 `NaN` 是 Python `json.dumps` 的非标准扩展，**严格 JSON 解析器（如浏览器 `JSON.parse`）会拒绝**；见 §8.4 |
+
+> **口径注（全量 vs 主分）**：本表落库路径读的是**未掩码**的 `result.to_pandas()`
+> 全样本，故 `detail_json` / `faithfulness` 等四列 / `overall_score` 均为
+> **全量（未按样本分流）**口径——`web`、`empty` 样本也计入。这与 CLI
+> 报告 / stdout / 门禁的「**主分**」（仅 `pure_kb` 样本，见 §8.4）**不是同一个数**。
+> 前端按 `overall_score` 解读时须知道二者存在口径差异。原「跳过值一律 `NaN`」的
+> 表述不准确：只有 ragas 自身返回 `NaN`（如指标超时/额度耗尽）时该键才为 `NaN`。
 
 ### 3.7 `EvalRepo.get_latest_report(kb_id) → EvalReportModel | None`
 
@@ -1302,3 +1309,71 @@ python -m src.cli.eval_ragas --list-kbs
 
 综合加权分 = 0.3×faithfulness + 0.3×context_recall + 0.2×context_precision + 0.2×answer_relevancy
 综合分 ≥ 0.70 视为通过。
+
+门禁（`--gate`）判据在阈值之外还有两条前置：**纯 KB 样本数为 0** 或
+**检索覆盖率 < `EVAL_RETRIEVAL_COVERAGE_MIN`（0.5）** 直接判失败（杜绝"不检索
+即跳空 context 指标"的规避）。覆盖率 = 非 `empty` 样本占比，见 §8.4。
+
+### 8.4 评测报告产物契约（CSV / MD / stdout / 落库）
+
+**样本三类**（`const.SAMPLE_CLASS_*`，由每题工具收集到的材料来源判定）：
+
+| 类别 | 判据 | 是否进主分 |
+|------|------|-----------|
+| `pure_kb` | 全部材料来自知识库 | ✅ 进 |
+| `web` | 材料中含联网块（降级联网） | ❌ 不进（但 context 指标不置空） |
+| `empty` | 未检索到任何材料 | ❌ 不进，且三项 context 指标置 `NaN` 并记 `skipped` |
+
+**CSV**（`--output`，默认 `{RAGAS_REPORT_DIR}/ragas_eval_<timestamp>.csv`）列
+（**按列名消费，勿按位解析**——`df.to_csv(index=True)` 使**文件首列为 pandas 索引
+列**，故 `question` 起为**第 2 列**，其后依次 `ground_truth`（第 3 列）、
+`trace_id`（第 4 列））：
+
+| 列 | 说明 |
+|----|------|
+| `question` / `ground_truth` | 题面与参考答案 |
+| `trace_id` | 该题 trace，可按 trace 回溯 / 定位回写的分数 |
+| 五个指标列 | `faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`；**CSV 保持 ragas 原生列序**（实测为 `context_precision`→`context_recall`→`faithfulness`→`answer_relevancy`→`answer_correctness`），**与 `const.RAGAS_METRIC_COLUMNS` 的顺序不同**——只有 **MD / stdout / 落库**按 `RAGAS_METRIC_COLUMNS` 排序 |
+| `sample_class` | 该题样本类别（上表三类之一） |
+| `skipped` | 被掩码跳过的指标名，`;` 分隔；未跳过为空串 |
+| `trajectory` | Agent 轨迹诊断摘要 JSON：`{"tool_calls":[{"name","args"}, ...], "iterations":N}`，**不含工具输出正文** |
+| 其余既有列 | `user_input` / `retrieved_contexts` / `response` / `reference` 为 ragas 原始字段，沿用不改 |
+
+**MD**（与 CSV 同路径的 `.md`）：含新增列（`trace_id` / `sample_class` / `skipped` /
+`trajectory`）与 CSV 同名同义，**不含** CSV 的 `ground_truth` / `user_input` /
+`retrieved_contexts` / `response` / `reference`；指标列按 `RAGAS_METRIC_COLUMNS`
+排序。末尾一行 `**Main scores (pure-KB):** <指标=值, ...>`，与 stdout / 门禁同口径。
+
+**stdout 口径 = 主分（契约，勿改）**：主分 = **仅 `pure_kb` 样本**的指标均值
+（`web` / `empty` 不计入），每指标**只打一行**，行形如
+`  <指标名>: <数值4位小数>`，指标取 `RAGAS_METRIC_COLUMNS` 白名单（防止额外
+数值列混入），行序即白名单顺序。`--gate` 模式下改由 `check_gate` 打印
+`  <指标名>: <值> PASS|FAIL`（仅 `GATE_THRESHOLDS` 子集的四个指标）及覆盖率 /
+纯 KB 前置判据行。`src/cli/compare_retrieval.py` 以子进程调用本脚本、按指标名
+从 stdout 解析取值做 A/B 对比（`parse_metrics`），**故"口径=主分"与"每指标一行"
+是跨进程契约，改动会静默改变 A/B 结论**。
+
+**落库（`eval_report` 表）**：`_build_eval_detail` 产出的逐题 `detail` 与各指标
+`avg` 均含**全部** `RAGAS_METRIC_COLUMNS`（含新增 `answer_correctness`）；表内
+四列指标、`overall_score` 加权公式与 `passed` 阈值沿用 §3.6 不变 ——
+`answer_correctness` **不进加权综合分**（表结构未扩展）。
+
+**注意 DB 与 stdout 口径分叉**：落库读的是**未掩码**的 `result.to_pandas()` 全
+样本，故 DB 的 `detail_json` / 四列指标 / `overall_score` 为**全量（未按样本分流）**
+口径（`web` / `empty` 样本也计入），**与 CSV / MD / stdout / 门禁的「主分」（仅
+`pure_kb`）不是同一个数**。二者同源于一次运行但分母不同；MD 报告在均值行下会
+输出一行 Note 标注此分叉。属已知取舍（Non-Goal：本次不改 `eval_report` 表语义），
+消费方勿把 `overall_score` 与 stdout 主分直接对比。
+
+### 8.5 宿主侧运行前提
+
+`.env` 内的 `POSTGRES_HOST=postgres` 与 `LANGFUSE_HOST=http://langfuse-web:3000`
+是**容器内**服务名，宿主（WSL）侧直接跑 CLI 必须覆写为宿主可达地址：
+
+```bash
+POSTGRES_HOST=localhost LANGFUSE_HOST=http://localhost:3000 python -m src.cli.eval_ragas --kb-id <uuid>
+```
+
+`RAGAS_TESTSET_DIR` / `RAGAS_REPORT_DIR` 默认是 cwd 相对路径（`data/ragas/...`）；
+在 git worktree 里 `data/` 不入库、可能不存在，需用这两个环境变量指向已有测试集 /
+期望的报告输出目录。
