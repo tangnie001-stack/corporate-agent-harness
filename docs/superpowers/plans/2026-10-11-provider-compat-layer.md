@@ -1,8 +1,13 @@
-# provider-compat-layer Phase 1 (等值重构 + D8 一处显式修复) Implementation Plan
+# provider-compat-layer Implementation Plan（Part A Phase 1 → Part B Phase 2 → Part C Phase 3 边界）
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 建立一个单一的 provider 兼容层包（`src/infra/llm/provider/`），把 provider 特有的思考参数形状、reasoning 回传、角色→模型/端点解析收敛到一层，使 handler 侧只认稳定接口；Phase 1 只接 `dashscope`，行为与今天一致（**唯一例外**：主链路恢复 `preserve_thinking`，见 Task 9）。
+
+**本 plan 覆盖三个连续部分**，执行器应**连续推进、不在部分边界停留**，只在 Part B 的两个**人工闸门**（G1 切换确认 / G2 机器人回话确认）处停下：
+- **Part A = Phase 1**（纯代码，TDD，Task 1–14）—— 建层，行为等值 + D8 一处修复。
+- **Part B = Phase 2**（运维「计划外动作」，本机一条龙 B0–B5）—— 注册 deepseek + 切本机活系统 + 重建 + 冒烟。
+- **Part C = Phase 3**（边界声明，**不执行**）—— 延后项，另行立 plan。
 
 **Architecture:** 数据面 = `registry.yaml`（provider 事实 + 模型目录，随镜像）；逻辑面 = 一个纯函数 `thinking_extra_body(spec, enabled)`（唯一产生思考参数处）+ 一个 provider-aware 的 `ReasoningPreservingChat` + 三个 `build_*` 工厂。`src/models.py` 的既有门面（`get_llm` 等）改为薄委托，签名向后兼容。角色解析：`main`/`classify`/`summary` 跟随 `LLM_PROVIDER`；`embedding`/`rerank`/`judge` 独立缺省 `dashscope`。
 
@@ -1334,6 +1339,140 @@ git commit -m "chore(provider-compat): 删旧类 + 陈旧 docstring + ADR-0021 +
 
 ---
 
+## Part B — Phase 2：切换到 DeepSeek（运维「计划外动作」，本机一条龙）
+
+> **执行器注意**：本段**不是 TDD 任务**，是**运维动作**，按 B0→B5 顺序做。**两个显式人工闸门（G1 / G2）** 处必须停下等用户确认 —— 这是本 plan 唯一的"打断点"。
+> **前置**：Part A 的 Task 1–14 全部完成、`.venv/bin/python -m pytest tests/infra/llm/provider -q` 全绿、已提交。
+
+### B0. 前置核对（Important 1：三 key 是否相等）
+
+- [ ] 读本机 `.env` 的三个 key：
+
+```bash
+grep -E '^(LLM_API_KEY|EMBEDDING_API_KEY|RERANK_API_KEY|DASHSCOPE_API_KEY)=' .env
+```
+
+- **判定**：若 `LLM_API_KEY` / `EMBEDDING_API_KEY` / `RERANK_API_KEY` **存在且互不相等** → 本段**保留** `<ROLE>_API_KEY` 覆盖，**不要删**（收敛会鉴权失败）；若三者相等（或都未设、只靠 `DASHSCOPE_API_KEY`）→ 可安全收敛。
+
+### B1. registry 加 `deepseek`（数据 + 一个测试）
+
+**Files:** Modify `src/infra/llm/provider/registry.yaml`；Create `tests/infra/llm/provider/test_deepseek_entry.py`
+
+- [ ] 在 `providers:` 下追加：
+
+```yaml
+  deepseek:
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    thinking_style: deepseek
+    reasoning_field: reasoning_content
+    capabilities:
+      tools: true
+    models:
+      main: deepseek-flash
+      classify: deepseek-flash
+      summary: deepseek-flash
+      judge: deepseek-v4-pro
+    # 无 embedding / rerank 角色 ⇒ 这两类不可绑 deepseek（启动校验拦截）
+    catalog:
+      deepseek-flash:
+        context_window: 1000000
+        pricing: { input: 0.00000015, output: 0.0000006 }  # 闲时价；峰时为 2×
+        tokens_per_cjk_char: 0.6
+      deepseek-v4-pro:
+        context_window: 1000000
+        pricing: { input: 0.00000066, output: 0.00000198 }
+```
+
+- [ ] 写测试 `tests/infra/llm/provider/test_deepseek_entry.py`：
+
+```python
+from src.infra.llm.provider.spec import load_registry, resolve_role
+
+REG = load_registry()
+
+
+def test_deepseek_serves_main_family():
+    for role in ("main", "classify", "summary", "judge"):
+        r = resolve_role(role, REG, {"LLM_PROVIDER": "deepseek", "DEEPSEEK_API_KEY": "k"})
+        assert r.provider.name == "deepseek"
+
+
+def test_embedding_rerank_judge_stay_dashscope():
+    env = {"LLM_PROVIDER": "deepseek", "DEEPSEEK_API_KEY": "k"}
+    for role in ("embedding", "rerank", "judge"):
+        assert resolve_role(role, REG, env).provider.name == "dashscope"
+```
+
+> ⚠️ 注意：`judge` 在 `test_embedding_rerank_judge_stay_dashscope` 里既被断言留在 dashscope（独立缺省），B1 又给 deepseek 配了 `models.judge` —— 这不矛盾：`judge` 缺省 dashscope，但**可**由 `RAGAS_PROVIDER=deepseek` 显式绑到 deepseek（故 registry 提供该角色模型是合理的）。
+
+- [ ] 跑：`.venv/bin/python -m pytest tests/infra/llm/provider/test_deepseek_entry.py -v` → **Expected: 2 passed**
+- [ ] 提交：
+
+```bash
+git add src/infra/llm/provider/registry.yaml tests/infra/llm/provider/test_deepseek_entry.py
+git commit -m "feat(provider-compat): 注册 deepseek provider（Phase 2）"
+```
+
+### B2. 改本机 `.env`（＝ 修改活系统读的配置）
+
+> ⚠️ 本 worktree 的 `.env` 是**指向宿主 repo 的 symlink** → 改的就是**宿主 `.env`**，也就是**本机在跑的服务**读的那份。这一步就是"切换活系统"。
+
+- [ ] 设 `LLM_PROVIDER=deepseek`。
+- [ ] 加 `DEEPSEEK_API_KEY=sk-...`（真实 key）——**若本地无真实 key，则 G1 闸门处必须先向用户取 key**。
+- [ ] 保留 `DASHSCOPE_API_KEY`（embedding / rerank / judge 仍用它）。
+- [ ] 按 B0 判定：可收敛则删 `LLM_BASE_URL` / `LLM_API_KEY`；否则保留。
+- [ ] （可选）清空 `LLM_MODEL` → 用 registry 默认 `deepseek-flash`。
+
+### G1 ⛔ 人工闸门：确认切换到活系统
+
+- [ ] **停下**：向用户确认"是否现在把本机在跑的服务切到 DeepSeek"。**用户明确同意后**才继续 B3。
+
+### B3. 重建容器
+
+- [ ] 重建并等启动：
+
+```bash
+docker compose up -d --force-recreate app
+```
+
+- [ ] 等待启动完成（**约 2 分钟**：`prompt validated` → `startup complete`；勿只等 40s）。
+
+```bash
+docker compose logs --tail=80 app
+```
+
+- [ ] 确认日志**无** `provider` 启动校验错误、无缺密钥错误、无 `thinking_style` 报错。
+
+### B4. 冒烟（三场景 + 成本）
+
+- [ ] 非思考档：一次普通 KB 问答（不勾深度思考）→ 正常回话。
+- [ ] 思考档：一次勾深度思考的问答 → 正常回话（DeepSeek `thinking.type=enabled`）。
+- [ ] 工具调用多轮：一次触发检索/多轮的问答 → 无 400（`reasoning_content` 回传完整）。
+- [ ] Langfuse：确认 `deepseek-flash` 成本列**非 NULL**（启动期 ensure 生效）。
+- [ ] 站点入口 + 三台企微机器人回话正常。
+
+### G2 ⛔ 人工闸门：确认机器人回话
+
+- [ ] **停下**：请用户观察三台企微机器人 / 站点回话，确认**无统一脱敏错误文案**。
+
+### B5. 记录
+
+- [ ] 更新 memory：本机 `.env` 已切 `deepseek`（`LLM_PROVIDER` + `DEEPSEEK_API_KEY`）；`--force-recreate` 生效；Phase 2 完成。
+
+---
+
+## Part C — Phase 3（边界声明，**不执行**）
+
+以下为**延后项**，本 plan **不执行、无步骤**（写出来会是 placeholder）。出现真实 provider 需求时**另立 plan**：
+
+- 增加更多 provider（只需「加一条 registry 数据」）。
+- 启用 `vision` / `thinking_style:none` / `supports_disable_thinking`（当前无真实消费者，YAGNI 延后）。
+- `reasoning_effort` 归一化（本仓暂只用 on/off）。
+- `LLM_KWARGS` blob 废弃（本 change 只对含 `extra_body` 的情形告警）。
+
+---
+
 ## Self-Review
 
 **1. Spec coverage（provider-compat / model-config / llm-tracing 的 SHALL 条目 → task）：**
@@ -1357,4 +1496,4 @@ git commit -m "chore(provider-compat): 删旧类 + 陈旧 docstring + ADR-0021 +
 
 **3. Type consistency：** `thinking_extra_body(spec, enabled)`、`resolve_role(role, registry, env=None)`、`build_chat(role, *, thinking=None, model=None, **overrides)`、`decide(model_name, input, output, existing)`、`ReasoningPreservingChat(reasoning_field=...)` 在 Task 3/4/5/6/11 间签名一致。
 
-**遗留说明（不在本 Phase）：** Phase 2（加 deepseek + `.env` 切换 + 冒烟）与 Phase 3（更多 provider / vision / effort）不在本 plan；见 `design.md` Migration Plan。
+**4. Phase 覆盖：** Part A（Task 1–14）＝ Phase 1；Part B（B0–B5）＝ Phase 2（运维，含 G1/G2 人工闸门）；Part C ＝ Phase 3 边界（**不执行**）。三部分**连续推进**，仅在 G1/G2 停下。Phase 3 明细见 `design.md` Migration Plan。
