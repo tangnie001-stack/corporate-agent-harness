@@ -389,22 +389,27 @@ scripts/dev-worktree.sh down
 
 ### Langfuse 模型定价：让成本算出来
 
-**场景**：Langfuse 里 trace 有 token 数但没有成本（`calculated_total_cost` 为空）—— 因为实际使用的模型没有模型定义。
+**场景**：Langfuse 里 trace 有 token 数但没有成本（`calculated_total_cost` 为空）—— 因为实际使用的模型在 Langfuse 里没有模型定义。
 
-**步骤**：
-1. 在 `.env` 填单价，**单位是 USD / 单个 token**（例：$3 per 1M tokens 填 `0.000003`）：
-   `MODEL_INPUT_PRICE_PER_TOKEN=0.000003`、`MODEL_OUTPUT_PRICE_PER_TOKEN=0.000006`。保持 `0` 表示未配置。
-2. **先比对运行时模型名与配置名**（pattern 锚定的是运行时 provider 名，不是配置值）：
-   `docker exec corporate-rag-postgres psql -U langfuse -d langfuse -tAc "SELECT DISTINCT model FROM observations WHERE type='GENERATION'"`
-   与 `src/config/settings.py` 的 `LLM_MODEL`（或 `.env` 覆盖值）比对，**不等则先改配置**，不要放宽 pattern（放宽会误配到形近模型）。
-3. 预演：`docker exec corporate-rag-app python -m src.cli.seed_langfuse_models --dry-run`
-4. 写入：`docker exec corporate-rag-app python -m src.cli.seed_langfuse_models`
+**机制（provider 兼容层之后）**：定价**不再是 `.env` 常量**，而是 provider 注册表里的事实 ——
+`src/infra/llm/provider/registry.yaml` 的 `catalog.<模型名>.pricing`（**每 token**）。两条播种通道：
+1. **启动期自动 ensure**（无需人工）：应用启动时按 `catalog.pricing` 为**被绑定角色**的模型幂等创建 Langfuse 模型定义；**无价**的模型记一条 WARNING（`[provider] pricing seed no_price model=…`）—— 这就是"没配价"的可观测信号。
+2. **手动 CLI**（运维批量 / 首次开通）：`seed_langfuse_models`，读注册表、播种 `catalog` 里**全部**有价模型。
 
-**验证**：`docker exec corporate-rag-postgres psql -U langfuse -d langfuse -c "SELECT model_name, input_price, output_price, unit FROM models WHERE model_name LIKE 'qwen%'"` 有一行；随后发一轮对话，该 generation 的 `calculated_total_cost > 0`。
+**步骤**（给某模型补价）：
+1. 在 `registry.yaml` 的 `catalog.<模型名>` 加 `pricing: { input: <每token>, output: <每token> }`（例：$3 per 1M tokens ⇒ `0.000003`）。
+2. 预演（**与真跑共用同一判据**；"未配价 / 未知模型"会**如实报"将跳过"**）：
+   `docker exec corporate-rag-app python -m src.cli.seed_langfuse_models --dry-run`
+3. 写入：`docker exec corporate-rag-app python -m src.cli.seed_langfuse_models`（或直接重创 app 走启动期 ensure）。
+4. 改了 `registry.yaml` 需**重建镜像并部署**才进容器（数据面随镜像发布）。
+
+**验证**：`docker exec corporate-rag-postgres psql -U langfuse -d langfuse -c "SELECT model_name, input_price, output_price, unit FROM models WHERE model_name = '<模型名>'"` 有一行且价格非 0；随后发一轮对话，该 generation 的 `calculated_total_cost > 0`。
 
 **注意事项**：
 - **重复执行安全**：同名模型已存在则跳过（幂等判据只看 `model_name`）。
-- **单价填成「每 1M」会让成本差 1e6 倍**，而"成本 > 0"的检查照样通过 —— 务必按 Step 1 的口径填。
+- **单价填成「每 1M」会让成本差 1e6 倍**，而"成本 > 0"的检查照样通过 —— 务必按「每 token」填。
+- ⚠️ `.env` 的 `MODEL_INPUT_PRICE_PER_TOKEN` / `MODEL_OUTPUT_PRICE_PER_TOKEN` **已废弃**（不再读取）。
+- 币种口径见 `src/config/settings.py` 的定价注释；DeepSeek 有**峰谷价**（注册表存峰时价、闲时减半）。
 - Langfuse v2 的 `LANGFUSE_INIT_*` **不能播种模型定价**，只能在库里建（故有这条 CLI）。
 
 ## 接入通道（channel）

@@ -69,14 +69,23 @@ core/              日志：logging / log_events / log_event_specs
 config/            settings(环境变量) / const(常量/文案/枚举) / response_codes / wecom_bots(多机器人配置解析/校验)
   └─ prompts/      prompt 模板包：__init__.py(7 条行为键常量 VERIFY_* / FORK_*) / loader.py(唯一读取点) / validation.py(启动期校验) / templates/*.yaml(20 条模板：段模板 + 独立任务模板)
                    —— 段模板(`kind: section`)与独立任务模板(`kind: task`)同处一包；改 prompt 文案改 YAML，改规则的挂载点改代码
-infra/             基础设施：db(engine/DSN + transaction 事务边界 + models + repos + vector_store + lexical_query) / llm(tracing 为 Langfuse 开关/flush/trace id 校验唯一入口；langfuse_purge 为保留期删除的 SQL 后端；token_count 为统一 token 计数入口——tiktoken 近似，encoder 缺失时降级 `len(text)//2` 并记一次 warning) / search(tokenizer 为唯一 jieba 分词入口) / auth / redis_client
+infra/             基础设施：db(engine/DSN + transaction 事务边界 + models + repos + vector_store + lexical_query) / llm(tracing 为 Langfuse 开关/flush/trace id 校验唯一入口；langfuse_purge 为保留期删除的 SQL 后端；token_count 为统一 token 计数入口——tiktoken 近似，encoder 缺失时降级 `len(text)//2` 并记一次 warning；**provider/ 为 provider 兼容层，见下**) / search(tokenizer 为唯一 jieba 分词入口) / auth / redis_client
 middleware/        auth / trace_id / response_processor（统一响应包装）
 cli/               RAGAS 评估、检索对比、trace 回放/清理、症状指标、种子与防腐闸门（check_docs / check_adr）等命令行工具
-models.py          LLM / Embedding / Rerank 工厂（get_llm / get_embedding / get_rerank / get_summary_llm）
+models.py          模型门面（**薄委托** `src/infra/llm/provider/`）：get_llm / get_classify_llm / get_summary_llm / get_judge_llm / get_embeddings / get_rerank
 utils/             sse 事件类型 / errors / desensitize / auth_crypto
 tools/             工具基类（base.py）
 channels/          接入通道：base(通用抽象) / wecom(parse 入站解析 / crypto 加解密 / callback 回调驱动 / long_connection(长连接驱动，封装官方 aibot SDK))
 ```
+
+> **provider 兼容层** —— `src/infra/llm/provider/`：把各家 LLM provider 的差异（思考参数形状 / reasoning 字段名 / 端点 / 密钥 / 定价 / 窗口）**收敛到一层**，调用侧只认三个门面。**不是网关**（不做路由 / fallback / 限流，见 ADR-0020 / ADR-0021）。
+> - `registry.yaml` —— **数据面**（随镜像发布）：每个 provider 的 `base_url` / `api_key_env` / `thinking_style` / `reasoning_field` / `capabilities` / `models`(角色→默认模型名) / `catalog`(模型→`context_window` / `pricing` / `tokens_per_cjk_char` / embedding 批大小与维度)。密钥不入库，只写 env 名。
+> - `spec.py` —— `ProviderSpec` / `ThinkingStyle` / `load_registry()` / `resolve_role(role, registry, env)`（角色→provider+模型+端点+密钥，含 `.env` 覆盖与旧键软迁移）/ `validate_config()`（启动期 fail-fast）。
+> - `thinking.py` —— `thinking_extra_body(spec, enabled)`：**唯一**产生思考参数处（`dashscope` 用 `enable_thinking`+`preserve_thinking`；`deepseek` 用 `thinking.type`）。构造期与请求期**同源**，避免互相覆盖丢字段。
+> - `chat.py` —— `ReasoningPreservingChat`（流式提取思考文本 + 请求侧按 `reasoning_field` 回传）。
+> - `factory.py` —— `build_chat` / `build_embeddings` / `build_rerank`（`src/models.py` 门面即薄委托到此）。
+> - `pricing_seed.py` —— 启动期按 `catalog.pricing` **幂等 ensure** Langfuse 模型定义（无价记 WARNING，不阻断启动）。
+> - 角色缺省分两族：`main`/`classify`/`summary` 跟随 `LLM_PROVIDER`；`embedding`/`rerank`/`judge` **独立缺省 `dashscope`**。**切换 provider 只改 `.env`**（操作见 `deploy-runbook.md` §2.7）。
 
 > **官方 `aibot` SDK（长连接）用法与约束** —— 依赖 `wecom-aibot-python-sdk`（导入名 `aibot`）。
 > SDK 承担：连接认证（`aibot_subscribe`）、心跳保活、断线重连、事件分发、流式回复、模板卡片、文件解密。
@@ -256,7 +265,9 @@ Nginx 容器把本目录挂到 `/usr/share/nginx/html` 直接托管，**无 npm 
 | 加/改一个 HTTP 接口 | `src/api/<模块>.py`（路由）+ `src/api/model/request.py`/`response.py`（契约）+ 对应 `services/` 编排；同步 `docs/agents/api_contract.md` + 测试断言 + **前端消费方 `deploy/nginx/html/`** |
 | 改一次生成的编排 / 事件转换 | `src/services/agent_service.py`（`_run_generation` / `_convert_event`） |
 | 改工具观测（工具 span 的字段 / 归组 / 过滤） | `src/infra/llm/tool_trace.py`（`ToolTraceCollector`）；消费点在 `src/services/agent_service.py::_run_generation` 的事件循环。口径见 ADR-0015 |
-| 改模型定价 / 让 Langfuse 出成本 | `src/config/settings.py`（`MODEL_*_PRICE_PER_TOKEN`，USD/单 token）+ `src/cli/seed_langfuse_models.py`；操作步骤见 `cookbook.md` |
+| 改模型定价 / 让 Langfuse 出成本 | `src/infra/llm/provider/registry.yaml` 的 `catalog.pricing`（**每 token**）；CLI 播种 `src/cli/seed_langfuse_models.py`；**启动期**由 `src/infra/llm/provider/pricing_seed.py` 幂等 ensure（`.env` 的 `MODEL_*_PRICE_PER_TOKEN` 已废弃） |
+| **切/加 LLM provider（百炼 / DeepSeek / …）** | **数据面** `src/infra/llm/provider/registry.yaml`（加一条 provider 条目 ≈ 零代码）；**逻辑面** `spec.py` / `thinking.py`。**切换只改 `.env` 的 `LLM_PROVIDER`**；操作见 `deploy-runbook.md` §2.7，决策见 ADR-0021 |
+| 改思考参数形状 / reasoning 回传 | `src/infra/llm/provider/thinking.py`（唯一产生 `extra_body`）+ `chat.py`（`_get_request_payload` 按 `reasoning_field` 回传） |
 | 改 agent 循环 / 提示词 | 文案改 `src/config/prompts/templates/*.yaml`（经 `loader.py` 唯一读取）；循环装配与四件套 middleware 改 `src/agents/graph/agent_factory.py`、`middleware.py`；首轮组装与规则挂载点改 `src/agents/graph/agent_node.py`、`nodes.py`、`src/rag/prompt.py` |
 | 改跨轮历史摘要（触发阈值 / 摘要提示词 / 调度） | 切分口径 `src/agents/graph/history_window.py`；摘要核心 `src/chat/history_summary.py` + 模板 `templates/task-summary-system.yaml`；调度 `src/services/summary_scheduler.py`；锁 `src/services/summary_lock.py`；存储 `src/chat/summary_store.py`；阈值在 `src/config/const.py` |
 | 加/改工具 | `src/agents/tools/`（实现 + 在 `rag_tools.py` 注册）；工具描述文案入 `src/config/` |
