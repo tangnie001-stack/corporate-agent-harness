@@ -137,7 +137,7 @@ def test_no_price_warns_and_skips(monkeypatch):
         _logger.remove(sink_id)
 
     assert models.created == []
-    assert any("[provider]" in m and "无定价" in m for m in messages)
+    assert any("[provider]" in m and "no_price" in m for m in messages)
 
 
 def test_existing_model_not_recreated(monkeypatch):
@@ -162,7 +162,7 @@ def test_backend_unavailable_is_swallowed(monkeypatch):
     finally:
         _logger.remove(sink_id)
 
-    assert any("[provider]" in m and "降级" in m for m in messages)
+    assert any("[provider]" in m and "degraded" in m for m in messages)
 
 
 def test_disabled_langfuse_skips(monkeypatch):

@@ -64,7 +64,7 @@ def ensure_model_pricing(registry: dict[str, ProviderSpec], *, client: Any) -> N
                 price = facts.pricing
             if not price:
                 logger.warning(
-                    "[provider] 模型 {} 无定价，成本将为 NULL", resolved.model
+                    "[provider] pricing seed no_price model={}", resolved.model
                 )
                 continue
             if decide(resolved.model, price[0], price[1], existing) == "created":
@@ -72,4 +72,4 @@ def ensure_model_pricing(registry: dict[str, ProviderSpec], *, client: Any) -> N
                 models.create(request=CreateModelRequest(**request))
                 existing.add(resolved.model)
     except Exception as e:  # noqa: BLE001 - 启动期降级：任何失败都只记 warning，不阻断
-        logger.warning("[provider] 启动期定价 ensure 降级: {}", e)
+        logger.warning("[provider] pricing seed degraded err={}", e)
