@@ -215,7 +215,7 @@ async def test_fork_reuses_main_llm_when_model_empty():
 
 @pytest.mark.asyncio
 async def test_fork_model_override_builds_new_llm():
-    """fork 且声明 model：get_llm(model=record.model) 新建实例。"""
+    """fork 且声明 model：门面 get_llm(model=record.model) 新建实例。"""
     fake_llm = MagicMock()
     fake_sub = _fake_sub_agent(
         _event("on_chat_model_start"),
@@ -239,6 +239,7 @@ async def test_fork_model_override_builds_new_llm():
             model="qwen3.8-max",
         )
         out = await exe.execute(rec, task="分析")
+        # 无 ctx（thinking=None）且声明 model → 仅传 model，不注入思考 extra_body
         mock_get_llm.assert_called_once_with(model="qwen3.8-max")
         args, _kwargs = mock_build.call_args
         assert args[0] is fake_llm
@@ -247,7 +248,10 @@ async def test_fork_model_override_builds_new_llm():
 
 @pytest.mark.asyncio
 async def test_fork_thinking_follows_ctx_deep_thinking_true():
-    """ctx.deep_thinking=True：新建 llm 带 enable_thinking=True（思考跟随请求档）。"""
+    """ctx.deep_thinking=True：extra_body 含 enable_thinking 与 preserve_thinking。
+
+    形状出自 provider 层（`thinking_extra_body`），与主链路请求期同源（D8）。
+    """
     fake_llm = MagicMock()
     fake_llm.model_name = "main-model"
     fake_sub = _fake_sub_agent(
@@ -279,7 +283,10 @@ async def test_fork_thinking_follows_ctx_deep_thinking_true():
         current_request_ctx.reset(token)
     kwargs = mock_get_llm.call_args.kwargs
     assert kwargs["model"] == "main-model"
-    assert kwargs["extra_body"] == {"enable_thinking": True}
+    assert kwargs["extra_body"] == {
+        "enable_thinking": True,
+        "preserve_thinking": True,
+    }
 
 
 @pytest.mark.asyncio
@@ -857,4 +864,7 @@ async def test_generic_execute_none_record_skips_record_model():
             await exe.execute(None, task="分析")
     finally:
         current_request_ctx.reset(token)
+    # ctx deep_thinking 默认 False → thinking=False（非 None，故新建而非复用）；
+    # extra_body 形状出自 provider 层
     assert mock_get_llm.call_args.kwargs["model"] == "main-model"
+    assert mock_get_llm.call_args.kwargs["extra_body"] == {"enable_thinking": False}

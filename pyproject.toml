@@ -54,6 +54,9 @@ dependencies = [
     "alembic==1.19.0",
     # 企微智能机器人长连接：官方客户端 SDK（WebSocket，含认证/心跳/重连/流式/事件分发）
     "wecom-aibot-python-sdk==1.0.2",
+    # provider 兼容层数据面：src/infra/llm/provider/registry.yaml 用 YAML（带注释）。
+    # 此前仅由传递依赖提供，直接 import yaml 故显式声明。
+    "pyyaml==6.0.3",
 ]
 
 [project.optional-dependencies]

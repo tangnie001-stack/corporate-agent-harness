@@ -130,7 +130,11 @@ async def test_unbound_kb_passes_explicit_temperature():
 
 @pytest.mark.asyncio
 async def test_deep_thinking_switch_comes_from_seeded_state():
-    """思考开关取 seeded 的 deep_thinking（漏 seed 会静默关闭）。"""
+    """思考开关取 seeded 的 deep_thinking（漏 seed 会静默关闭）。
+
+    deep_thinking=True 档的请求体是**完整** dict——经 `thinking_extra_body` 产出，
+    除 enable_thinking 外还必须含 preserve_thinking（D8，见下）。
+    """
     _RecordingModel.seen_kwargs = []
     model = _RecordingModel(messages=iter([AIMessage(content="ok")]))
     agent = build_agent(
@@ -139,7 +143,37 @@ async def test_deep_thinking_switch_comes_from_seeded_state():
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")], "kb_id": "", "deep_thinking": True}
     )
-    assert _RecordingModel.seen_kwargs[-1]["extra_body"] == {"enable_thinking": True}
+    assert _RecordingModel.seen_kwargs[-1]["extra_body"] == {
+        "enable_thinking": True,
+        "preserve_thinking": True,
+    }
+
+
+def test_main_link_extra_body_includes_preserve_on_deep_thinking(monkeypatch):
+    """D8 显式修复：主链路 deep_thinking 档 extra_body 必须**完整**含 preserve_thinking。
+
+    `_settings` 产出的 `model_settings.extra_body` 在 langchain-openai 中会**整体覆盖**
+    构造期 extra_body（浅合并），故必须与 `thinking_extra_body` 同源产出完整 dict；
+    若退化为只含 `{"enable_thinking": …}`，请求期会丢掉构造期的 preserve_thinking。
+    """
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "k")
+    from src.infra.llm.provider import factory
+
+    monkeypatch.setattr(factory, "_REGISTRY", None)
+    from src.agents.graph.middleware import ModelParamsMiddleware
+
+    mw = ModelParamsMiddleware()
+
+    class _Req:
+        def __init__(self) -> None:
+            self.state = {"kb_id": "", "deep_thinking": True}
+            self.model_settings = None
+
+    settings_map = mw._settings(_Req())  # type: ignore[arg-type]
+    assert settings_map["extra_body"] == {
+        "enable_thinking": True,
+        "preserve_thinking": True,
+    }
 
 
 @tool

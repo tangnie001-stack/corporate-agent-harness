@@ -385,7 +385,7 @@ data: {}
 |------|---------|------|
 | `status` | agent 循环按事件类型接线 | stage 取值：`agent`（on_chat_model_start "正在思考..."）、`retrieve`（on_tool_start/end "正在检索相关文档..." / "检索完成，正在分析..."）、`web_search`（on_tool_start/end "正在联网搜索..." / "联网搜索完成，正在分析..."，KB 不达标时走 search_web 兜底才出现）、`turn_agent` / `turn_skill`（每轮来源声明，见下文「status.stage 来源声明」） |
 | `token` | LLM 生成中 | LLM 生成文本片段，前端逐段追加 |
-| **`reasoning`** | **agent 节点 LLM 流式输出思考增量（enable_thinking=true 且模型返回 reasoning_content，经 ChatQwenWithReasoning 提取）** | **思考过程增量（data: {"delta": "..."}），前端累积渲染 Think 折叠行；每轮 LLM 调用一个，默认收起；收到正文 token/状态/ask_user/abstention/done 时定型** |
+| **`reasoning`** | **agent 节点 LLM 流式输出思考增量（enable_thinking=true 且模型返回 reasoning_content，经 `ReasoningPreservingChat` 提取）** | **思考过程增量（data: {"delta": "..."}），前端累积渲染 Think 折叠行；每轮 LLM 调用一个，默认收起；收到正文 token/状态/ask_user/abstention/done 时定型** |
 | **`delegate`** | **delegate_task 委派 fork skill 时产生（inline 命中不推）** | **fork 子代理过程事件：`action=start`（开始）\| `delta`（过程增量，`kind=thinking`\|`content`、`delta`=增量文本）\| `end`（结束，`ok` 区分完成/中断）。前端按 delegate_id 分节渲染"分析过程"折叠区，增量不进主 token 流/full_answer（详见「delegate 事件详情」）** |
 | **`task`** | **任务注册表 create/update/mark_terminal 变更（src/chat/task_registry.py 的 `emit_task_event`）** | **任务/进度看板增量事件：`action=created`（建项）\| `updated`（非终态更新）\| `terminal`（进入终态）；`task`=任务快照 dict（task_id/title/type/status/stage/summary/delegate_id/dependencies/reason/created_at/updated_at，`TaskItem.to_dict()`）。前端据此增量渲染看板（详见「task 事件详情」）** |
 | `citation` | format 节点完成 | 引用来源，按 source+page 去重；data 含 `kind`（`kb` 知识库 / `web` 网络搜索，默认 `kb`），前端按来源类型区分展示 |

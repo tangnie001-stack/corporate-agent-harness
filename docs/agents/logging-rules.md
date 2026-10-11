@@ -18,6 +18,7 @@
 | `[delegate]` | fork 子代理委派（skills/delegate_task + executor；事件：delegate start / delegate model turn / delegate end） |
 | `[wecom]` | 企业微信智能机器人通道（services/wecom_service + channels/wecom/{callback,long_connection,presenter,handler,session,bounded_map}）；启动锚点 `bots connected n=<认证就绪台数> total=<配置台数>` |
 | `[clarify]` | 澄清答案解析（services/clarify_service；事件：resolve miss / resolve already done / resolve raced / resolved） |
+| `[provider]` | 模型 provider 兼容层（infra/llm/provider；启动期定价 ensure 的无价告警与降级告警，均直调 logger，非 Event） |
 
 新语义面前缀：先登记 `src/core/log_events.py` 的 `LOG_PREFIXES` + 本表加一行后启用，不预建。
 

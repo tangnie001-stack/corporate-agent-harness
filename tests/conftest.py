@@ -16,6 +16,14 @@ import os
 # 此后再设等于无效。没有这一行，测试会构造真实 Langfuse 客户端并向外上报。
 os.environ["LANGFUSE_ENABLE"] = "false"
 
+# 同理，把 provider 选择钉成 registry 默认（dashscope），使测试与开发者宿主
+# `.env` 的 `LLM_PROVIDER` 解耦 —— 否则开发者一旦把 `.env` 切到别的 provider
+# （如 Phase 2 切 deepseek），一批断言 provider 形状/默认模型的用例会随环境变红。
+# `load_dotenv()` 默认**不覆盖**已存在的环境变量，故这一行（先于其执行）生效。
+# 需要测其它 provider 的用例请显式 `monkeypatch.setenv("LLM_PROVIDER", …)`
+# 或给 `resolve_role` / `build_*` 传 `env` 参数。
+os.environ["LLM_PROVIDER"] = "dashscope"
+
 
 def _is_resolvable(host: str, port: int) -> bool:
     """host:port 能否被本进程解析（只做 DNS，不发起连接）。

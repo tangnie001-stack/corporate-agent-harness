@@ -541,26 +541,24 @@ def main() -> None:
         from src.infra.db.engine import run_and_dispose
         from src.infra.db.vector_store import VectorStore
         from src.infra.llm.prompt_manager import PromptManager
-        from src.models import get_embeddings, get_llm, get_rerank
+        from src.models import get_embeddings, get_judge_llm, get_llm, get_rerank
 
         core_logging.log_event(Event.RAG_COMPONENT_INIT)
         vector_store = VectorStore()
 
-        if not settings.RAGAS_LLM_MODEL:
-            core_logging.log_event(Event.RAGAS_MODEL_MISSING)
-            sys.exit(1)
         # 选手/裁判分离：
         # - 选手（被测系统）= 生产模型 get_llm()（LLM_MODEL），评估结果反映线上质量
-        # - 裁判（评估器）  = RAGAS_LLM_MODEL，独立于选手评分，避免自我评价偏置
-        core_logging.log_event(
-            Event.EVAL_MODEL_INIT,
-            sut=settings.LLM_MODEL,
-            judge=settings.RAGAS_LLM_MODEL,
-        )
+        # - 裁判（评估器）  = judge 角色绑定（RAGAS_LLM_MODEL 可覆盖），独立于选手
+        #   评分，避免自我评价偏置；模型名空/None 时由 registry 兜底。
         llm = get_llm()  # 选手：生产模型（含生产 temperature）
         reranker = get_rerank()
         embeddings = get_embeddings()
-        judge_llm = get_llm(model=settings.RAGAS_LLM_MODEL, temperature=0)
+        judge_llm = get_judge_llm()
+        core_logging.log_event(
+            Event.EVAL_MODEL_INIT,
+            sut=settings.LLM_MODEL,
+            judge=judge_llm.model_name,
+        )
         llm_wrapper = LangchainLLMWrapper(judge_llm, bypass_n=True)
         embeddings_wrapper = LangchainEmbeddingsWrapper(embeddings)
 

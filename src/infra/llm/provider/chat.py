@@ -1,12 +1,16 @@
-"""ChatOpenAI 子类：保留第三方模型流式 chunk 的 reasoning_content 思考文本。
+"""provider-aware 的 ChatOpenAI 子类：保留/回传第三方思考内容（design D8/D9）。
 
-langchain-openai 1.3.3 只解析官方 OpenAI 字段，第三方（DashScope 等）的
-reasoning_content 被丢弃。本子类重写 _convert_chunk_to_generation_chunk，
-把 delta 里的 reasoning_content（fallback reasoning）累积到
-AIMessageChunk.additional_kwargs["reasoning_content"]，供上层读取。
+langchain-openai 只解析官方 OpenAI 字段，第三方 provider 的思考文本（字段名由
+provider 决定，见 `ProviderSpec.reasoning_field`）会被丢弃或被拒。本子类：
+- 流式侧把 delta 里的思考字段累积到 `AIMessageChunk.additional_kwargs`；
+- 请求侧把 assistant 消息的思考文本回传给 provider。
+
+`reasoning_field` 决定字段名，为 None 时整条链路跳过（provider 不支持思考）。
 
 参考：langchain-ai/langchain issue #38764 的 ReasoningChatOpenAI 实现。
 """
+
+from __future__ import annotations
 
 from typing import Any
 
@@ -17,16 +21,15 @@ from langchain_openai import ChatOpenAI
 from loguru import logger
 
 
-class ChatQwenWithReasoning(ChatOpenAI):
-    """保留 reasoning_content / reasoning 字段的 ChatOpenAI 子类。"""
+class ReasoningPreservingChat(ChatOpenAI):
+    """保留 reasoning 字段的 ChatOpenAI；字段名来自 `reasoning_field`。"""
+
+    reasoning_field: str | None = "reasoning_content"
 
     def _convert_chunk_to_generation_chunk(
-        self,
-        chunk: dict,
-        default_chunk_class: type,
-        base_generation_info: dict | None,
+        self, chunk: dict, default_chunk_class: type, base_generation_info: dict | None
     ) -> ChatGenerationChunk | None:
-        """转换流式 chunk 为生成块，并提取 reasoning 文本到 additional_kwargs。
+        """转换流式 chunk，并提取思考文本到 additional_kwargs。
 
         Args:
             chunk: openai SDK chunk 的 dict（含 choices[0].delta）
@@ -36,23 +39,19 @@ class ChatQwenWithReasoning(ChatOpenAI):
         Returns:
             ChatGenerationChunk：正常解析结果；无法转换时返回 None
         """
-        # 父类原生解析（content / tool_calls / usage 等）
         generation_chunk = super()._convert_chunk_to_generation_chunk(
             chunk, default_chunk_class, base_generation_info
         )
-        if generation_chunk is None:
-            return None
-
+        if generation_chunk is None or not self.reasoning_field:
+            return generation_chunk
         # 兼容两种外层 chunk 结构（普通流式 / beta stream）
         choices = chunk.get("choices", [])
         if not choices and chunk.get("chunk"):
             choices = chunk["chunk"].get("choices", [])
         if not choices:
             return generation_chunk
-
         delta = choices[0].get("delta", {}) or {}
-        reasoning = delta.get("reasoning_content") or delta.get("reasoning") or ""
-
+        reasoning = delta.get(self.reasoning_field) or delta.get("reasoning") or ""
         if reasoning and isinstance(generation_chunk.message, AIMessageChunk):
             prev = generation_chunk.message.additional_kwargs.get(
                 "reasoning_content", ""
@@ -62,32 +61,6 @@ class ChatQwenWithReasoning(ChatOpenAI):
             )
         return generation_chunk
 
-
-class ReasoningPreservingChatQwen(ChatQwenWithReasoning):
-    """在 chunk 侧 reasoning 提取之上，增加请求侧 reasoning_content 回传。
-
-    DashScope 要求：深度思考模式多轮工具调用时，assistant 消息须携带
-    reasoning_content（省略降低工具调用准确性），请求须启用 preserve_thinking。
-    覆写点为 _get_request_payload（实例方法，langchain-openai 1.3.3 的
-    _convert_message_to_dict 是模块级函数不可覆写）。
-    """
-
-    def __init__(self, **kwargs) -> None:
-        """构造时按需向 extra_body 注入 preserve_thinking=True（不覆盖用户显式配置）。
-
-        仅当请求未显式关闭思考（extra_body.enable_thinking 不为 False）时注入：
-        enable_thinking=False 的调用方（fork 子代理、RAGAS 选手/裁判等）请求体
-        保持原样，避免 400 或评估基线漂移。
-
-        Args:
-            **kwargs: 透传给 ChatQwenWithReasoning 的构造参数
-        """
-        extra = dict(kwargs.pop("extra_body", None) or {})
-        if extra.get("enable_thinking") is not False:
-            extra.setdefault("preserve_thinking", True)
-        kwargs["extra_body"] = extra
-        super().__init__(**kwargs)
-
     def _get_request_payload(
         self,
         input_: LanguageModelInput,
@@ -95,7 +68,7 @@ class ReasoningPreservingChatQwen(ChatQwenWithReasoning):
         stop: list[str] | None = None,
         **kwargs: Any,
     ) -> dict:
-        """构建请求 payload，并把 assistant 消息的 reasoning_content 注入其中。
+        """构建请求 payload，并把 assistant 消息的思考文本注入其中。
 
         Args:
             input_: 模型输入（消息列表或 LangChain 支持的其他输入形式）
@@ -103,16 +76,18 @@ class ReasoningPreservingChatQwen(ChatQwenWithReasoning):
             **kwargs: 透传给父类的额外请求参数
 
         Returns:
-            dict：openai 兼容请求 payload，assistant 消息按需携带 reasoning_content
+            dict：openai 兼容请求 payload，assistant 消息按需携带思考字段
         """
         messages = self._convert_input(input_).to_messages()
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        if not self.reasoning_field:
+            return payload
         payload_messages = payload.get("messages", [])
         if len(messages) != len(payload_messages):
             # 数量不一致说明两侧消息形态分歧，无法一一对应，跳过注入保证请求安全
             logger.warning(
-                "reasoning_content injection skipped: message count mismatch "
-                "({} vs {})",
+                "[provider] reasoning injection skipped reason=count_mismatch "
+                "self_msgs={} payload_msgs={}",
                 len(messages),
                 len(payload_messages),
             )
@@ -121,6 +96,6 @@ class ReasoningPreservingChatQwen(ChatQwenWithReasoning):
             if msg_dict.get("role") != "assistant":
                 continue
             reasoning = msg.additional_kwargs.get("reasoning_content", "")
-            if reasoning and not msg_dict.get("reasoning_content"):
-                msg_dict["reasoning_content"] = reasoning
+            if reasoning and not msg_dict.get(self.reasoning_field):
+                msg_dict[self.reasoning_field] = reasoning
         return payload

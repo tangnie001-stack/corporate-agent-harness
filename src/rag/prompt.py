@@ -17,6 +17,8 @@ from src.core import logging as core_logging
 from src.core.log_events import Event
 from src.infra.llm.chat_message import ChatMessage
 from src.infra.llm.prompt_manager import PromptManager, _with_current_date
+from src.infra.llm.provider.factory import _registry
+from src.infra.llm.provider.spec import resolve_role
 from src.rag.context import RAGContext
 
 # 段组装顺序（spec「五段按固定顺序组装」）
@@ -172,10 +174,26 @@ def _render_all_sections(ctx: AssemblyContext) -> tuple[dict[str, str], str]:
     return sections, persona_source
 
 
+def _resolve_tokens_per_cjk_char() -> float:
+    """经层取主模型的中文 token 换算系数。
+
+    来源：registry 为主模型声明的 tokens_per_cjk_char（design D3）。该值属
+    「跨模型借用」经验系数、非本模型分词器实测，仅作量级估算。
+
+    Returns:
+        registry 声明值；主模型未声明时回退 settings.PROMPT_TOKENS_PER_CJK_CHAR
+    """
+    resolved = resolve_role("main", _registry())
+    facts = resolved.provider.catalog.get(resolved.model)
+    if facts is None or not facts.tokens_per_cjk_char:
+        return settings.PROMPT_TOKENS_PER_CJK_CHAR
+    return facts.tokens_per_cjk_char
+
+
 def _warn_if_section_share_high(section_chars: dict[str, int]) -> None:
     """system 段估算占 context window 比例超阈值时记 warning（**不阻断**）。
 
-    换算系数为跨模型借用的经验值、阈值为推断值（见 settings 的中文注释），
+    换算系数经层取（registry 声明，回退 settings 缺省）、阈值为推断值，
     仅作量级参考，不构成契约。
 
     Args:
@@ -185,7 +203,7 @@ def _warn_if_section_share_high(section_chars: dict[str, int]) -> None:
     if settings.MODEL_CONTEXT_WINDOW_TOKENS <= 0:
         return
     total = sum(section_chars.values())
-    est_tokens = int(total * settings.PROMPT_TOKENS_PER_CJK_CHAR)
+    est_tokens = int(total * _resolve_tokens_per_cjk_char())
     share = est_tokens / settings.MODEL_CONTEXT_WINDOW_TOKENS
     if share > settings.PROMPT_CONTEXT_SHARE_WARN:
         core_logging.log_event(

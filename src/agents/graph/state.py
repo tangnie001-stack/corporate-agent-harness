@@ -89,8 +89,8 @@ class LangGraphNode:
     """StateGraph 节点名称与输出字段。
 
     每个节点一个嵌套类，NAME 为节点注册名，其余为该节点输出字段 key。
-    与 AgentState 字段同源：生产侧（nodes/query_router）与消费侧
-    （agent_service）共用同一套 key，避免字段名散落成两套。
+    与 AgentState 字段同源：生产侧（graph/workflow）与消费侧
+    （services/agent_service）共用同一套 key，避免字段名散落成两套。
     """
 
     class Format:
