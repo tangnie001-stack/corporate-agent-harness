@@ -54,6 +54,13 @@
 **D6 — 测试集 schema 向后兼容扩字段（选定）**
 `samples[]` 新增**可选** `reference_tool_calls` / `reference_topics`；解析时缺失即跳过对应指标。旧测试集文件原样可读。
 
+**D7 — `F-32` 守卫：两条轨迹判据断言，都做（选定）**
+守卫以**轨迹**为准（该样本是否调用了 `retrieve_kb` / `search_web`），不用启发式：
+- **(A)** 调过 `retrieve_kb` 且其返回非空 ⇒ 该样本 `contexts` **非空**（靶向 `F-32` 复发）；
+- **(B)** 未调 `retrieve_kb` 且未调 `search_web` ⇒ 该样本 `contexts` **为空**（靶向本次修复自带的风险：漏 `reset` 导致的**跨样本泄漏**、或多收）。
+
+只做 (A) 无法发现泄漏——泄漏只会制造"不该有的非空"，而 (A) 只看"该非空的"。形态：pytest 守卫用例（对评测循环注入假图 / mock 图）；可选外加一条运行时 warning 日志；**不做运行时异常**（一题不满足即中断整轮评测，过脆）。
+
 ## Risks / Trade-offs
 
 - **与 `prompt-layering` 同 capability** → 我们只改第 1/2/3 条、ADD 新条，**不碰第 6 条**；两个 change 落在不同 requirement，非硬冲突。缓解：在计划顶部写排序声明，归档时按序 apply。
@@ -61,7 +68,7 @@
 - **现代 LLM 接口接线** → `collections` 指标需 `llm_factory`（结构化输出走 `instructor`），与现有 legacy `LangchainLLMWrapper` 不同源；`instructor` 已随 `ragas` 装上（1.15.4）但不在 `pyproject`。缓解：为裁判补一条现代 `llm_factory` 接线，指向同一 judge 模型（`RAGAS_LLM_MODEL`）。
 - **faithfulness 基线随 prompt 渲染漂移** → 本 change 建立的新基线需在 prompt 渲染稳定后采；缓解：baseline 采集时点挂在 `prompt-layering` 收口之后。
 - **宿主侧跑 CLI 连不上 Langfuse** → `.env` 的 `LANGFUSE_HOST` 是容器内地址；缓解：宿主跑评测时覆写 `LANGFUSE_HOST=http://localhost:3000`。
-- **`F-32` 修复可能掩盖** → 若只 seed ctx 而不加守卫，未来再次断链会静默回到空 contexts。缓解：补「`contexts > 0`（对有检索的样本）」守卫断言。
+- **`F-32` 修复可能掩盖** → 若只 seed ctx 而不加守卫，未来再次断链会静默回到空 contexts；且漏 `reset` 会造成跨样本泄漏而不被察觉。缓解：见 **D7** 的双向轨迹判据守卫。
 
 ## Migration Plan
 
@@ -73,5 +80,5 @@
 
 1. ~~答案正确性指标选型~~ **已定：`RubricsScoreWithReference`**（见 D3）。待定：是否允许经配置切换到 `AnswerAccuracy`。
 2. ~~含 web 的常规轮样本处置~~ **已定：(b) 纯 KB 出主分 + web 另标**（见 D4）。待定：「纯 KB」判定口径是否取「检索材料不含 web 块」。
-3. **`F-32` 守卫断言的形式**：纯断言「有检索的样本 contexts 必非空」，还是同时断言「无检索样本 contexts 为空」。
-4. **`compare_retrieval` 是否要在规格里正式承接**「分块尺寸对比」被移除后的对比能力，或仅作为 Migration 说明。
+3. ~~`F-32` 守卫断言形式~~ **已定：双向断言（A+B），轨迹判据**（见 D7）。
+4. ~~`compare_retrieval` 是否正式承接~~ **已定：保留规格承接** —— 移除「Chunk size comparison」后，由 ADD 的「Retrieval configuration comparison」如实登记既有 `python -m src.cli.compare_retrieval` 能力。
