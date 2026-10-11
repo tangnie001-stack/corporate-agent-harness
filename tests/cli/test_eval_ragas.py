@@ -333,6 +333,9 @@ class TestRunEvaluation:
             AnswerCorrectness().name,
         }
         assert actual_metric_names == expected_metric_names
+        # 形态断言：AnswerCorrectness.name 类/实例同为 "answer_correctness"，
+        # name 集合无法区分二者，故额外锁死必须传入实例（D3"必须实例化"）。
+        assert isinstance(kwargs["metrics"][-1], AnswerCorrectness)
         assert result is mock_result
 
     @patch("datasets.Dataset.from_dict")
