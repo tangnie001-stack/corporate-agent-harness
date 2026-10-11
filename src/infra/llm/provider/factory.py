@@ -74,12 +74,15 @@ def build_embeddings() -> OpenAIEmbeddings:
     """
     resolved = _resolve_model("embedding")
     facts = resolved.provider.catalog.get(resolved.model)
+    chunk_size = 20
+    if facts is not None and facts.embedding_batch_size:
+        chunk_size = facts.embedding_batch_size
     return OpenAIEmbeddings(
         model=resolved.model,
         api_key=SecretStr(resolved.api_key),
         base_url=resolved.base_url,
         check_embedding_ctx_length=False,
-        chunk_size=(facts.embedding_batch_size if facts else None) or 20,
+        chunk_size=chunk_size,
     )
 
 
@@ -96,9 +99,12 @@ def build_rerank(model: str | None = None, top_n: int | None = None) -> DashScop
     import dashscope
 
     resolved = _resolve_model("rerank")
+    effective_top_n = settings.TOP_K_RERANK
+    if top_n is not None:
+        effective_top_n = top_n
     return DashScopeRerank(
         model=model or resolved.model,
-        top_n=top_n if top_n is not None else settings.TOP_K_RERANK,
+        top_n=effective_top_n,
         api_key=resolved.api_key,
         client=dashscope.TextReRank,
     )
