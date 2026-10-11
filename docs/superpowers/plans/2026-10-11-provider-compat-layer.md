@@ -1346,7 +1346,7 @@ git commit -m "chore(provider-compat): 删旧类 + 陈旧 docstring + ADR-0021 +
 
 ### B0. 前置核对（Important 1：三 key 是否相等）
 
-- [ ] 读本机 `.env` 的三个 key：
+- [x] 读本机 `.env` 的三个 key：
 
 ```bash
 grep -E '^(LLM_API_KEY|EMBEDDING_API_KEY|RERANK_API_KEY|DASHSCOPE_API_KEY)=' .env
@@ -1358,7 +1358,7 @@ grep -E '^(LLM_API_KEY|EMBEDDING_API_KEY|RERANK_API_KEY|DASHSCOPE_API_KEY)=' .en
 
 **Files:** Modify `src/infra/llm/provider/registry.yaml`；Create `tests/infra/llm/provider/test_deepseek_entry.py`
 
-- [ ] 在 `providers:` 下追加：
+- [x] 在 `providers:` 下追加：
 
 ```yaml
   deepseek:
@@ -1384,7 +1384,7 @@ grep -E '^(LLM_API_KEY|EMBEDDING_API_KEY|RERANK_API_KEY|DASHSCOPE_API_KEY)=' .en
         pricing: { input: 0.00000066, output: 0.00000198 }
 ```
 
-- [ ] 写测试 `tests/infra/llm/provider/test_deepseek_entry.py`：
+- [x] 写测试 `tests/infra/llm/provider/test_deepseek_entry.py`：
 
 ```python
 from src.infra.llm.provider.spec import load_registry, resolve_role
@@ -1406,8 +1406,8 @@ def test_embedding_rerank_judge_stay_dashscope():
 
 > ⚠️ 注意：`judge` 在 `test_embedding_rerank_judge_stay_dashscope` 里既被断言留在 dashscope（独立缺省），B1 又给 deepseek 配了 `models.judge` —— 这不矛盾：`judge` 缺省 dashscope，但**可**由 `RAGAS_PROVIDER=deepseek` 显式绑到 deepseek（故 registry 提供该角色模型是合理的）。
 
-- [ ] 跑：`.venv/bin/python -m pytest tests/infra/llm/provider/test_deepseek_entry.py -v` → **Expected: 2 passed**
-- [ ] 提交：
+- [x] 跑：`.venv/bin/python -m pytest tests/infra/llm/provider/test_deepseek_entry.py -v` → **Expected: 2 passed**
+- [x] 提交：
 
 ```bash
 git add src/infra/llm/provider/registry.yaml tests/infra/llm/provider/test_deepseek_entry.py
@@ -1418,47 +1418,47 @@ git commit -m "feat(provider-compat): 注册 deepseek provider（Phase 2）"
 
 > ⚠️ 本 worktree 的 `.env` 是**指向宿主 repo 的 symlink** → 改的就是**宿主 `.env`**，也就是**本机在跑的服务**读的那份。这一步就是"切换活系统"。
 
-- [ ] 设 `LLM_PROVIDER=deepseek`。
-- [ ] 加 `DEEPSEEK_API_KEY=sk-...`（真实 key）——**若本地无真实 key，则 G1 闸门处必须先向用户取 key**。
-- [ ] 保留 `DASHSCOPE_API_KEY`（embedding / rerank / judge 仍用它）。
-- [ ] 按 B0 判定：可收敛则删 `LLM_BASE_URL` / `LLM_API_KEY`；否则保留。
-- [ ] （可选）清空 `LLM_MODEL` → 用 registry 默认 `deepseek-flash`。
+- [x] 设 `LLM_PROVIDER=deepseek`。
+- [x] 加 `DEEPSEEK_API_KEY=sk-...`（真实 key）——**若本地无真实 key，则 G1 闸门处必须先向用户取 key**。
+- [x] 保留 `DASHSCOPE_API_KEY`（embedding / rerank / judge 仍用它）。
+- [x] 按 B0 判定：可收敛则删 `LLM_BASE_URL` / `LLM_API_KEY`；否则保留。
+- [x] （可选）清空 `LLM_MODEL` → 用 registry 默认 `deepseek-flash`。
 
 ### G1 ⛔ 人工闸门：确认切换到活系统
 
-- [ ] **停下**：向用户确认"是否现在把本机在跑的服务切到 DeepSeek"。**用户明确同意后**才继续 B3。
+- [x] **停下**：向用户确认"是否现在把本机在跑的服务切到 DeepSeek"。**用户明确同意后**才继续 B3。
 
 ### B3. 重建容器
 
-- [ ] 重建并等启动：
+- [x] 重建并等启动：
 
 ```bash
 docker compose up -d --force-recreate app
 ```
 
-- [ ] 等待启动完成（**约 2 分钟**：`prompt validated` → `startup complete`；勿只等 40s）。
+- [x] 等待启动完成（**约 2 分钟**：`prompt validated` → `startup complete`；勿只等 40s）。
 
 ```bash
 docker compose logs --tail=80 app
 ```
 
-- [ ] 确认日志**无** `provider` 启动校验错误、无缺密钥错误、无 `thinking_style` 报错。
+- [x] 确认日志**无** `provider` 启动校验错误、无缺密钥错误、无 `thinking_style` 报错。
 
 ### B4. 冒烟（三场景 + 成本）
 
-- [ ] 非思考档：一次普通 KB 问答（不勾深度思考）→ 正常回话。
-- [ ] 思考档：一次勾深度思考的问答 → 正常回话（DeepSeek `thinking.type=enabled`）。
-- [ ] 工具调用多轮：一次触发检索/多轮的问答 → 无 400（`reasoning_content` 回传完整）。
-- [ ] Langfuse：确认 `deepseek-flash` 成本列**非 NULL**（启动期 ensure 生效）。
-- [ ] 站点入口 + 三台企微机器人回话正常。
+- [x] 非思考档：一次普通 KB 问答（不勾深度思考）→ 正常回话。
+- [x] 思考档：一次勾深度思考的问答 → 正常回话（DeepSeek `thinking.type=enabled`）。
+- [x] 工具调用多轮：一次触发检索/多轮的问答 → 无 400（`reasoning_content` 回传完整）。
+- [x] Langfuse：确认 `deepseek-flash` 成本列**非 NULL**（启动期 ensure 生效）。
+- [x] 站点入口 + 三台企微机器人回话正常。
 
 ### G2 ⛔ 人工闸门：确认机器人回话
 
-- [ ] **停下**：请用户观察三台企微机器人 / 站点回话，确认**无统一脱敏错误文案**。
+- [x] **停下**：请用户观察三台企微机器人 / 站点回话，确认**无统一脱敏错误文案**。
 
 ### B5. 记录
 
-- [ ] 更新 memory：本机 `.env` 已切 `deepseek`（`LLM_PROVIDER` + `DEEPSEEK_API_KEY`）；`--force-recreate` 生效；Phase 2 完成。
+- [x] 更新 memory：本机 `.env` 已切 `deepseek`（`LLM_PROVIDER` + `DEEPSEEK_API_KEY`）；`--force-recreate` 生效；Phase 2 完成。
 
 ---
 
