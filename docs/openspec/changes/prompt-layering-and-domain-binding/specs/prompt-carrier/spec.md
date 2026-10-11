@@ -104,31 +104,23 @@
 - **WHEN** 组装一轮 system prompt
 - **THEN** 引用指令 / 委派引导 / 日期 SHALL 各出现一次，SHALL NOT 因两条路径并存而重复
 
-### Requirement: 载体替换的逐字不变量
+### Requirement: 载体替换的逐字不变量（P0 过渡；终态由结构契约承担）
 
 把 prompt 从 Python 常量迁移到 YAML 的过程 SHALL 保持最终 prompt 文本逐字不变。
 
-该不变量 SHALL 由一个**新增的 golden 文本比较测试**证明：
+该不变量是 **P0（纯搬运、未引入段模型）阶段的过渡证明手段，不是终态契约**：其 golden 基线由一次性脚本从**迁移前的常量路径**（不经过 `PromptManager` 的远端分支）产出并提交入库（`e09e126` / `3d54630`）；逐字断言与段模型互斥，故随 P1 引入段模型后**退役**（`ad87dad`，task 2.28）——终态契约由 `prompt-composition` 的「默认行为逐字不变（端到端快照）」改写后的**结构不变**承担。
 
-- **golden 在迁移前生成**：用一次性脚本从**迁移前的常量路径**（不经过 `PromptManager` 的远端分支）产出最终 prompt 文本，作为 golden 文件提交入库。
-- 闸门断言：对同一输入，组装输出 SHALL 与 golden 逐字相同；**golden SHALL NOT 因迁移结果被修改**。
-- 该测试 SHALL NOT 依赖远端 prompt 源，SHALL NOT 发起真实网络调用。
+**仍然有效的约束（终态）**：任何承担该闸门职责的 prompt 组装测试 SHALL 只读取**本地模板**（经唯一加载入口），结果 SHALL 可重复，且 SHALL NOT 发起真实网络调用；`PromptManager` 的远端分支 SHALL NOT 成为测试的事实源。
 
-**为什么基线必须来自迁移前的常量路径**：P0 之前 YAML 模板尚不存在 —— "pin 到本地模板"在时点上不可能成立。唯一能同时覆盖迁移前后的可比对象，是"同一输入下的最终文本"这份 golden。
+**为什么基线必须来自迁移前的常量路径**：P0 之前 YAML 模板尚不存在 —— 此时"pin 到本地模板"不可能成立；唯一能同时覆盖迁移前后的可比对象，是"同一输入下的最终文本"那份 golden。
 
-**现有测试不足以充当该闸门**：`tests/rag/test_prompt_layers.py:24-33` 断言的是 `messages[0].content == PromptManager().get_system_prompt()`，而 `get_system_prompt()` 是**远端 + 本地兜底**且远端只取 latest（`src/infra/llm/prompt_manager.py:167-196`），默认 `LANGFUSE_ENABLE=true`（`src/config/settings.py`）。它不可重复，且在 CI 中会发起真实网络请求（违反项目「测试 mock 外部依赖，不发起真实网络调用」）。本变更 SHALL 同时消除该测试对网络的依赖。
+**为什么这条终态约束仍成立**：`tests/rag/test_prompt_layers.py:24-33` 原断言 `messages[0].content == PromptManager().get_system_prompt()`，而 `get_system_prompt()` 是**远端 + 本地兜底**且远端只取 latest（`src/infra/llm/prompt_manager.py`），默认 `LANGFUSE_ENABLE=true` —— 不可重复，且在 CI 中会发起真实网络请求。本变更 SHALL 消除该测试对网络的依赖（已实现：改用替身并 pin 本地模板）。
 
-#### Scenario: 迁移后最终 prompt 与 golden 逐字相同
-- **WHEN** prompt 载体完成从 Python 常量到 YAML 的迁移
-- **THEN** 闸门测试的最终 prompt 文本 SHALL 与迁移前生成的 golden 完全一致，不接受对 golden 的任何修改
+#### Scenario: 组装测试不依赖远端
 
-#### Scenario: 闸门可重复且不依赖远端
-- **WHEN** 运行 P0 的逐字不变闸门测试
-- **THEN** 该测试 SHALL 只读取本地数据源，结果 SHALL 可重复，且 SHALL 不产生网络请求
-
-#### Scenario: 逐字不变量先于结构调整
-- **WHEN** 还需要调整段归属或改写内容
-- **THEN** 逐字不变量的测试 SHALL 先通过，之后才允许开始结构调整
+- **WHEN** 运行 prompt 组装的契约测试
+- **THEN** 该测试 SHALL 只读取本地模板（经唯一加载入口）
+- **THEN** 结果 SHALL 可重复，且 SHALL NOT 发起网络请求
 
 ### Requirement: 载体数据源可替换（远端读取预留）
 
