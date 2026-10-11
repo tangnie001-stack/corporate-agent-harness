@@ -38,3 +38,49 @@ def test_unimplemented_thinking_style_raises():
 def test_ok_when_thinking_style_implemented():
     """有已实现分支（dashscope）时守卫放行。"""
     validate_config(REG, {"LLM_PROVIDER": "dashscope", "DASHSCOPE_API_KEY": "k"})
+
+
+def test_embedding_dimension_mismatch_raises():
+    """被绑定 embedding 模型声明维度 ≠ chunks.embedding 列维度 → 启动期 RuntimeError。
+
+    伪造一个维度不同的 registry 条目触发（模型名不变、把 catalog 里的
+    embedding_dimension 改掉），验证运行期守卫而非仅单测覆盖。
+    """
+    from dataclasses import replace
+
+    spec = REG["dashscope"]
+    model = spec.models["embedding"]
+    bad_catalog = dict(spec.catalog)
+    bad_catalog[model] = replace(spec.catalog[model], embedding_dimension=1536)
+    bad_spec = replace(spec, catalog=bad_catalog)
+    with pytest.raises(RuntimeError, match="需迁移列定义并重建向量"):
+        validate_config(
+            {"dashscope": bad_spec},
+            {"LLM_PROVIDER": "dashscope", "DASHSCOPE_API_KEY": "k"},
+        )
+
+
+def test_validate_logs_state_on():
+    """校验开启时启动日志打印 state=on。"""
+    from loguru import logger as _logger
+
+    messages: list[str] = []
+    sink_id = _logger.add(lambda m: messages.append(str(m)), level="INFO")
+    try:
+        validate_config(REG, {"LLM_PROVIDER": "dashscope", "DASHSCOPE_API_KEY": "k"})
+    finally:
+        _logger.remove(sink_id)
+    assert any("[provider] validate state=on" in m for m in messages)
+
+
+def test_validate_logs_state_off():
+    """PROVIDER_VALIDATE=off 时跳过校验但仍打印 state=off。"""
+    from loguru import logger as _logger
+
+    messages: list[str] = []
+    sink_id = _logger.add(lambda m: messages.append(str(m)), level="INFO")
+    try:
+        validate_config(REG, {"PROVIDER_VALIDATE": "off"})
+    finally:
+        _logger.remove(sink_id)
+    assert any("[provider] validate state=off" in m for m in messages)

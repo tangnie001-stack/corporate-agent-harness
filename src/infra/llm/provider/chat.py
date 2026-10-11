@@ -86,7 +86,8 @@ class ReasoningPreservingChat(ChatOpenAI):
         if len(messages) != len(payload_messages):
             # 数量不一致说明两侧消息形态分歧，无法一一对应，跳过注入保证请求安全
             logger.warning(
-                "reasoning injection skipped: message count mismatch ({} vs {})",
+                "[provider] reasoning injection skipped reason=count_mismatch "
+                "self_msgs={} payload_msgs={}",
                 len(messages),
                 len(payload_messages),
             )
