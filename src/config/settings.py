@@ -17,6 +17,7 @@ import os
 import urllib.parse
 
 from dotenv import load_dotenv
+from loguru import logger
 
 # 加载项目根目录的 .env 文件（如存在），将键值对注入 os.environ
 load_dotenv()
@@ -31,13 +32,23 @@ DASHSCOPE_BASE_URL: str = os.getenv(
 )
 
 # ====== 模型选择 ======
-# 大语言模型：用于生成最终回答
-LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen3.7-flash-2026-07-15")
+# 模型常量默认一律为**空串**，表示"未配置"：由 provider 兼容层取
+# registry.models[<role>] 兜底（见 src/infra/llm/provider/spec.py 的 resolve_role）。
+# 这几个环境变量降级为**可选覆盖**（仅部署态可覆盖，见 design D3/D10）。
+# 大语言模型：用于生成最终回答（main 角色）
+LLM_MODEL: str = os.getenv("LLM_MODEL", "")
 # LLM API Key（如未设置，自动 fallback 到 DASHSCOPE_API_KEY）
 LLM_API_KEY: str = os.getenv("LLM_API_KEY") or os.getenv("DASHSCOPE_API_KEY", "")
 # LLM API 地址（默认直连 DashScope；如需经 LiteLLM 网关，设为 http://litellm-proxy:4000
 # 并显式启用其 disabled profile —— 见 docs/adr/0020-no-model-gateway-direct-provider.md）
 LLM_BASE_URL: str = os.getenv("LLM_BASE_URL") or DASHSCOPE_BASE_URL
+# Phase 1 软迁移（design D10）：上面两个旧键仍被读取（行为等值），但已废弃；
+# 仅当显式设置时告警。Phase 2 删除，改用 <PROVIDER>_BASE_URL / <PROVIDER>_API_KEY。
+if os.getenv("LLM_BASE_URL") or os.getenv("LLM_API_KEY"):
+    logger.warning(
+        "[config] LLM_BASE_URL/LLM_API_KEY 已废弃（Phase 2 删除），"
+        "改用 <PROVIDER>_BASE_URL/<PROVIDER>_API_KEY"
+    )
 # LLM 温度参数：越低回答越确定性（适合金融场景），0.1 几乎不产生随机性
 LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.1"))
 # 主 agent 采样温度（chat-temperature-policy）：绑 KB 沿用 LLM_TEMPERATURE（默认 0.1）；
@@ -47,8 +58,9 @@ NON_KB_MAIN_TEMPERATURE: float = float(os.getenv("NON_KB_MAIN_TEMPERATURE", "0.6
 LLM_KWARGS: str = os.getenv("LLM_KWARGS", "{}")
 # 分类器温度参数：查询路由分类时使用，略高于 LLM 温度以允许少量分类灵活度
 CLASSIFIER_TEMPERATURE: float = float(os.getenv("CLASSIFIER_TEMPERATURE", "0.1"))
-# 分类/路由专用模型：实体抽取 / 意图判定 / 时间解析使用的小模型（无思考模式）
-CLASSIFY_MODEL: str = os.getenv("CLASSIFY_MODEL", "qwen3.7-flash-2026-07-15")
+# 分类/路由专用模型：实体抽取 / 意图判定 / 时间解析使用的小模型（无思考模式）。
+# 默认空串 → 由 registry.models[classify] 兜底；LLM_MODEL 之外的独立可选覆盖。
+CLASSIFY_MODEL: str = os.getenv("CLASSIFY_MODEL", "")
 # 跨轮历史摘要专用模型：默认沿用主模型，可用 env 覆盖为更便宜的档位。
 # 摘要调用固定关闭思考（实测深思考让输出 token 涨约 2.7 倍，其中 64% 是不可见思考）。
 SUMMARY_MODEL: str = os.getenv("SUMMARY_MODEL", LLM_MODEL)
@@ -99,8 +111,8 @@ MODEL_CONTEXT_WINDOW_TOKENS: int = int(
     os.getenv("MODEL_CONTEXT_WINDOW_TOKENS", "32768")
 )
 
-# 向量化模型：将文本转为向量，用于 pgvector 语义检索
-EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "qwen3.7-text-embedding")
+# 向量化模型：将文本转为向量，用于 pgvector 语义检索。默认空串 → registry.models[embedding] 兜底。
+EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "")
 # Embedding API Key（fallback: DASHSCOPE_API_KEY → LLM_API_KEY）
 EMBEDDING_API_KEY: str = (
     os.getenv("EMBEDDING_API_KEY")
@@ -114,8 +126,8 @@ EMBEDDING_DIMENSION: int = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
 # Embedding API 单次 batch 上限（DashScope 限制 20 条，超出需分批）
 EMBEDDING_BATCH_SIZE: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "20"))
 
-# 重排序模型
-RERANK_MODEL: str = os.getenv("RERANK_MODEL", "qwen3-rerank")
+# 重排序模型（默认空串 → registry.models[rerank] 兜底）
+RERANK_MODEL: str = os.getenv("RERANK_MODEL", "")
 # Rerank API Key（fallback 到 DASHSCOPE_API_KEY，非 LLM_API_KEY）
 RERANK_API_KEY: str = os.getenv("RERANK_API_KEY") or os.getenv("DASHSCOPE_API_KEY", "")
 # Tavily 联网搜索（web-search-fallback） https://www.tavily.com/
@@ -144,7 +156,7 @@ ASK_USER_MODE_DSH: bool = os.getenv("ASK_USER_MODE_DSH", "true").lower() in (
 # 「无思考/非推理模型」的限制属于上方 CLASSIFY_MODEL（分类/路由小模型），
 # 与 RAGAS 评估模型无关。RAGAS_LLM_MODEL 经 LangchainLLMWrapper(bypass_n=True)
 # 包装后强制 n=1，推理模型（如 qwen3.7-max）可正常使用（已实测）。
-RAGAS_LLM_MODEL: str = os.getenv("RAGAS_LLM_MODEL", "qwen3.8-max")
+RAGAS_LLM_MODEL: str = os.getenv("RAGAS_LLM_MODEL", "")
 # RAGAS 测试集生成条数
 RAGAS_TEST_SIZE: int = int(os.getenv("RAGAS_TEST_SIZE", "20"))
 # RAGAS 测试集存储目录
