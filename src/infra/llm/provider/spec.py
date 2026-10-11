@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -73,3 +75,71 @@ def load_registry(path: Path | None = None) -> dict[str, ProviderSpec]:
             catalog=catalog,
         )
     return specs
+
+
+# 独立缺省 dashscope 的角色（不跟随 LLM_PROVIDER，design D4）
+_INDEPENDENT_ROLES = ("embedding", "rerank", "judge")
+_PROVIDER_ENV = {
+    "main": "LLM_PROVIDER",
+    "classify": "CLASSIFY_PROVIDER",
+    "summary": "SUMMARY_PROVIDER",
+    "judge": "RAGAS_PROVIDER",
+    "embedding": "EMBEDDING_PROVIDER",
+    "rerank": "RERANK_PROVIDER",
+}
+_MODEL_ENV = {
+    "main": "LLM_MODEL",
+    "classify": "CLASSIFY_MODEL",
+    "summary": "SUMMARY_MODEL",
+    "judge": "RAGAS_LLM_MODEL",
+    "embedding": "EMBEDDING_MODEL",
+    "rerank": "RERANK_MODEL",
+}
+_DEFAULT_PROVIDER = "dashscope"
+
+
+@dataclass(frozen=True)
+class ResolvedModel:
+    """某角色最终生效的模型绑定（provider 规格 + 模型名 + 端点 + 密钥）。"""
+
+    role: str
+    provider: ProviderSpec
+    model: str
+    base_url: str
+    api_key: str
+
+
+def resolve_role(
+    role: str,
+    registry: dict[str, ProviderSpec],
+    env: Mapping[str, str] | None = None,
+) -> ResolvedModel:
+    """按角色解析出最终生效的模型绑定（design D4）。
+
+    覆盖顺序：provider 选择取角色 env（main→LLM_PROVIDER），缺省时独立角色用
+    dashscope、其余跟随 LLM_PROVIDER；模型取角色 env 覆盖 registry 默认；端点
+    取 `<PROVIDER>_BASE_URL` 覆盖 spec.base_url；密钥取 spec.api_key_env。
+    未知角色 / provider / 无可用模型抛 KeyError，供启动期 fail-fast。
+    """
+    env = os.environ if env is None else env
+    if role not in _PROVIDER_ENV:
+        raise KeyError(f"未知角色: {role}")
+    # provider 选择
+    provider_name = env.get(_PROVIDER_ENV[role]) or ""
+    if not provider_name:
+        if role in _INDEPENDENT_ROLES:
+            provider_name = _DEFAULT_PROVIDER
+        else:
+            provider_name = env.get("LLM_PROVIDER") or _DEFAULT_PROVIDER
+    if provider_name not in registry:
+        raise KeyError(f"未知 provider: {provider_name}（角色 {role}）")
+    spec = registry[provider_name]
+    # 模型：.env 覆盖 else registry 默认
+    model = env.get(_MODEL_ENV[role]) or spec.models.get(role) or ""
+    if not model:
+        raise KeyError(f"角色 {role} 在 provider {provider_name} 无可用模型")
+    base_url = env.get(f"{provider_name.upper()}_BASE_URL") or spec.base_url
+    api_key = env.get(spec.api_key_env) or ""
+    return ResolvedModel(
+        role=role, provider=spec, model=model, base_url=base_url, api_key=api_key
+    )
