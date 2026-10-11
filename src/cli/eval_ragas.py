@@ -39,6 +39,7 @@ from src.cli.eval_scoring import (
 from src.config import settings
 from src.config.const import (
     EVAL_RETRIEVAL_COVERAGE_MIN,
+    RAGAS_METRIC_COLUMNS,
     SAMPLE_CLASS_EMPTY,
     SAMPLE_CLASS_PURE_KB,
 )
@@ -419,24 +420,24 @@ def save_results_csv(
     questions: list[str],
     ground_truth: list[str],
     output_path: str,
+    sample_classes: list[str],
     trace_ids: list[str] | None = None,
-    sample_classes: list[str] | None = None,
     trajectories: list[dict] | None = None,
 ) -> str:
     """将评估结果保存为 CSV 文件（含样本类别、跳过标记与轨迹列）.
 
-    传入 sample_classes 时先按样本类别掩码（无材料样本的三项 context 指标置
-    NaN 并记 skipped），使落盘结果与「主分」口径一致。
+    先按样本类别掩码（无材料样本的三项 context 指标置 NaN 并记 skipped），
+    使落盘结果与「主分」口径一致。
 
     Args:
         result: RAGAS evaluate() 返回的结果对象
         questions: 问题列表
         ground_truth: 参考答案列表
         output_path: 输出文件路径
+        sample_classes: 每个问题的样本类别（与 questions 一一对应）；
+            必填——掩码需按类别定位样本，缺省无法写出一致口径的结果
         trace_ids: 每个问题对应的 trace_id（与 questions 一一对应），
             传入后在 CSV 中新增 trace_id 列，便于按 trace 回溯
-        sample_classes: 每个问题的样本类别（与 questions 一一对应），
-            传入后新增 sample_class / skipped 两列
         trajectories: 每个问题的轨迹诊断摘要（与 questions 一一对应），
             传入后新增 trajectory 列（JSON 字符串）
 
@@ -445,8 +446,7 @@ def save_results_csv(
     """
     df = result.to_pandas()
 
-    if sample_classes is not None:
-        df = apply_sample_masks(df, sample_classes)
+    df = apply_sample_masks(df, sample_classes)
 
     # 添加元信息列
     df.insert(0, "question", questions)
@@ -515,24 +515,23 @@ def save_markdown_report(
     result: Any,
     questions: list[str],
     output_path: str,
+    sample_classes: list[str],
     trace_ids: list[str] | None = None,
-    sample_classes: list[str] | None = None,
     trajectories: list[dict] | None = None,
 ) -> str:
     """将评估结果保存为 Markdown 摘要报告，与 CSV 同路径（.md 后缀）.
 
     均值行统一写「主分」（仅纯 KB 样本的指标均值），与 CSV / stdout / 门禁
-    口径一致；传入 sample_classes 时先按样本类别掩码，报告携带
-    sample_class / skipped 列。
+    口径一致；先按样本类别掩码，报告携带 sample_class / skipped 列。
 
     Args:
         result: RAGAS evaluate() 返回的结果对象
         questions: 问题列表
         output_path: CSV 输出路径（用于推导 .md 路径）
+        sample_classes: 每个问题的样本类别（与 questions 一一对应）；
+            必填——主分均值行依赖 sample_class 列，缺省无法计算
         trace_ids: 每个问题对应的 trace_id（与 questions 一一对应），
             传入后在表格中新增 trace_id 列
-        sample_classes: 每个问题的样本类别（与 questions 一一对应），
-            传入后新增 sample_class / skipped 列并按类别掩码指标
         trajectories: 每个问题的轨迹诊断摘要（与 questions 一一对应），
             传入后新增 trajectory 列（JSON 字符串）
 
@@ -541,17 +540,9 @@ def save_markdown_report(
     """
     md_path = output_path.rsplit(".", 1)[0] + ".md"
     df = result.to_pandas()
-    if sample_classes is not None:
-        df = apply_sample_masks(df, sample_classes)
+    df = apply_sample_masks(df, sample_classes)
 
-    metric_cols = [
-        "faithfulness",
-        "answer_relevancy",
-        "context_precision",
-        "context_recall",
-        "answer_correctness",
-    ]
-    actual_metrics = [c for c in metric_cols if c in df.columns]
+    actual_metrics = [c for c in RAGAS_METRIC_COLUMNS if c in df.columns]
 
     cfg_topk = settings.TOP_K_RETRIEVAL
     cfg_rerank = settings.TOP_K_RERANK
@@ -569,9 +560,10 @@ def save_markdown_report(
     lines.extend(_build_markdown_table(df, actual_metrics, trace_ids, trajectories))
     lines.append("")
 
-    # 均值行统一写主分（纯 KB 样本均值），与 CSV / stdout / 门禁口径一致
+    # 均值行统一写主分（纯 KB 样本均值），与 CSV / stdout / 门禁口径一致；
+    # 只取白名单指标（actual_metrics），避免额外数值列混入均值行
     means = main_score_means(df)
-    avg_parts = ", ".join(f"{m}={means[m]:.4f}" for m in means)
+    avg_parts = ", ".join(f"{m}={means[m]:.4f}" for m in actual_metrics if m in means)
     lines.append(f"**Main scores (pure-KB):** {avg_parts}")
     lines.append("")
 
@@ -784,17 +776,17 @@ def main() -> None:
             questions,
             ground_truth,
             output_path,
-            trace_ids,
-            sample_classes,
-            trajectories,
+            sample_classes=sample_classes,
+            trace_ids=trace_ids,
+            trajectories=trajectories,
         )
         save_markdown_report(
             result,
             questions,
             output_path,
-            trace_ids,
-            sample_classes,
-            trajectories,
+            sample_classes=sample_classes,
+            trace_ids=trace_ids,
+            trajectories=trajectories,
         )
 
         # _save_eval_report 需要 questions 长度
@@ -814,14 +806,18 @@ def _print_metric_averages(df: pd.DataFrame) -> None:
 
     compare_retrieval 通过 subprocess 调用本脚本并用 parse_metrics 解析
     stdout 里的指标均值；logger 只写日志文件，因此均值需显式 print。
-    口径与 check_gate / 报告一致，均为主分；每指标只打一行，行格式
+    口径与 check_gate / 报告一致，均为主分；**只打 `RAGAS_METRIC_COLUMNS`
+    白名单内的指标**（防止额外数值列混入 stdout），每指标只打一行，行格式
     `指标名: 数值`，便于按指标名前缀匹配取值。
 
     Args:
         df: 经 apply_sample_masks 掩码、含 sample_class 列的结果表
     """
-    for metric, value in main_score_means(df).items():
-        print(f"  {metric}: {value:.4f}")
+    means = main_score_means(df)
+    for metric in RAGAS_METRIC_COLUMNS:
+        if metric not in means:
+            continue
+        print(f"  {metric}: {means[metric]:.4f}")
 
 
 def _save_eval_report(

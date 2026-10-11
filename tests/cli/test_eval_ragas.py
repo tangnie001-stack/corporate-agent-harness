@@ -503,6 +503,7 @@ class TestSaveResults:
         import pandas as pd
 
         from src.cli.eval_ragas import save_results_csv
+        from src.config.const import SAMPLE_CLASS_PURE_KB
 
         mock_df = pd.DataFrame(
             {
@@ -522,6 +523,7 @@ class TestSaveResults:
                 ["Q1"],
                 ["GT1"],
                 output_path=tmp_path,
+                sample_classes=[SAMPLE_CLASS_PURE_KB],
             )
 
             with open(tmp_path, "r") as f:
@@ -579,6 +581,116 @@ class TestSaveResults:
             if os.path.exists(md_path):
                 os.unlink(md_path)
             os.unlink(csv_path)
+
+    def test_save_markdown_report_mean_line_only_whitelist_metrics(self) -> None:
+        """MD 均值行只含白名单指标，额外数值列（如 chunk_size）不得出现。"""
+        import pandas as pd
+
+        from src.cli.eval_ragas import save_markdown_report
+        from src.config.const import SAMPLE_CLASS_PURE_KB
+
+        mock_df = pd.DataFrame(
+            {
+                "faithfulness": [0.95],
+                "answer_relevancy": [0.88],
+                "context_recall": [0.92],
+                "context_precision": [0.85],
+                "answer_correctness": [0.91],
+                "chunk_size": [512],
+            }
+        )
+        mock_result = MagicMock()
+        mock_result.to_pandas.return_value = mock_df
+
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+            csv_path = tmp.name
+        md_path = csv_path.rsplit(".", 1)[0] + ".md"
+
+        try:
+            save_markdown_report(
+                mock_result,
+                ["Q1"],
+                csv_path,
+                sample_classes=[SAMPLE_CLASS_PURE_KB],
+            )
+
+            with open(md_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            assert "Main scores (pure-KB)" in content
+            assert "faithfulness=0.9500" in content
+            assert "chunk_size" not in content
+
+        finally:
+            if os.path.exists(md_path):
+                os.unlink(md_path)
+            os.unlink(csv_path)
+
+
+def test_print_metric_averages_only_whitelist_metrics(capsys) -> None:
+    """stdout 逐指标行只打白名单指标，额外数值列（如 chunk_size）不得出现。
+
+    Args:
+        capsys: pytest 捕获 stdout 的 fixture
+    """
+    import pandas as pd
+
+    from src.cli.eval_ragas import _print_metric_averages
+    from src.cli.eval_scoring import apply_sample_masks
+    from src.config.const import SAMPLE_CLASS_PURE_KB
+
+    raw_df = pd.DataFrame(
+        {
+            "faithfulness": [0.95],
+            "answer_relevancy": [0.88],
+            "context_precision": [0.85],
+            "context_recall": [0.92],
+            "answer_correctness": [0.91],
+            "chunk_size": [512],
+        }
+    )
+    df = apply_sample_masks(raw_df, [SAMPLE_CLASS_PURE_KB])
+
+    _print_metric_averages(df)
+    out = capsys.readouterr().out
+
+    metric_lines = [ln for ln in out.splitlines() if ln.strip()]
+    # 每指标一行、只剩 5 个白名单指标
+    assert len(metric_lines) == 5
+    assert "faithfulness: 0.9500" in out
+    assert "answer_correctness: 0.9100" in out
+    assert "chunk_size" not in out
+
+
+def test_save_markdown_report_requires_sample_classes() -> None:
+    """sample_classes 为必填：缺省调用触发 TypeError（默认值语义不可再误导）。"""
+    import pandas as pd
+
+    from src.cli.eval_ragas import save_markdown_report
+
+    mock_result = MagicMock()
+    mock_result.to_pandas.return_value = pd.DataFrame({"faithfulness": [0.9]})
+
+    with pytest.raises(TypeError):
+        save_markdown_report(mock_result, ["Q1"], "/tmp/unused.csv")  # type: ignore[call-arg]
+
+
+def test_save_results_csv_requires_sample_classes() -> None:
+    """sample_classes 为必填：缺省调用触发 TypeError。"""
+    import pandas as pd
+
+    from src.cli.eval_ragas import save_results_csv
+
+    mock_result = MagicMock()
+    mock_result.to_pandas.return_value = pd.DataFrame({"faithfulness": [0.9]})
+
+    with pytest.raises(TypeError):
+        save_results_csv(
+            mock_result,
+            ["Q1"],
+            ["GT1"],
+            "/tmp/unused.csv",
+        )  # type: ignore[call-arg]
 
 
 # ---- --gate 标志测试 ----

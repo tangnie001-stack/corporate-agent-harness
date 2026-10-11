@@ -498,5 +498,14 @@ CONTEXT_METRIC_COLUMNS: tuple[str, ...] = (
     "context_precision",
     "context_recall",
 )
+# RAGAS 指标白名单（顺序即 MD 逐题表列序）：MD 表格列、MD 均值行与 stdout 逐指标行
+# 均从此清单取；避免结果表混入额外数值列（如 chunk_size）时被静默打印/写入
+RAGAS_METRIC_COLUMNS: tuple[str, ...] = (
+    "faithfulness",
+    "answer_relevancy",
+    "context_precision",
+    "context_recall",
+    "answer_correctness",
+)
 # 门禁：检索覆盖率下限（低于此值判失败，杜绝"不检索即跳空 context 指标"的规避）
 EVAL_RETRIEVAL_COVERAGE_MIN: float = 0.5
