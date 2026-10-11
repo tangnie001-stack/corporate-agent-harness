@@ -35,6 +35,7 @@ from src.cli.eval_scoring import (
     main_score_means,
     retrieval_coverage,
     summarize_trajectory,
+    write_scores,
 )
 from src.config import settings
 from src.config.const import (
@@ -789,6 +790,20 @@ def main() -> None:
             trajectories=trajectories,
         )
 
+        # 逐题指标分数显式回写 Langfuse（按 trace_id）：评分在批量 evaluate 之后
+        # 才产出、逐题 @observe 已关闭，故回写必须显式定位 trace，不能依赖
+        # 「当前 trace」的隐式上下文。值取已掩码表（空材料样本的 context 指标为
+        # NaN=跳过语义，write_scores 内跳过不写）；列取指标白名单。
+        write_scores(
+            trace_ids,
+            {
+                col: list(masked_df[col])
+                for col in RAGAS_METRIC_COLUMNS
+                if col in masked_df.columns
+            },
+            enabled=settings.LANGFUSE_ENABLE,
+        )
+
         # _save_eval_report 需要 questions 长度
         _save_eval_report(kb_id, result, len(questions), output_path, retrieval_details)
 
@@ -820,6 +835,53 @@ def _print_metric_averages(df: pd.DataFrame) -> None:
         print(f"  {metric}: {means[metric]:.4f}")
 
 
+def _build_eval_detail(
+    df: pd.DataFrame,
+    qa_count: int,
+    retrieval_details: list[list[dict]] | None,
+) -> tuple[list[dict], dict[str, float]]:
+    """构建逐题明细与各指标均值（跳过值 NaN 安全；列取指标白名单）。
+
+    跳过值（`NaN` / `pd.NA` / `None`）一律规整为 `float("nan")`：直接 `float()`
+    会在 `pd.NA`/`None` 上抛 `TypeError`，被 `_save_eval_report` 外层 `except`
+    吞掉 → 整份报告静默不落库。
+
+    Args:
+        df: RAGAS 结果表
+        qa_count: QA 对数
+        retrieval_details: 每 query 的检索明细（与 detail 按 q_index 对齐），
+            传入后并入对应明细条目，供低分 query 下钻检索环节
+
+    Returns:
+        (detail, avg)：detail 为逐题条目列表，avg 为指标名 -> 均值
+    """
+    metric_cols = [col for col in RAGAS_METRIC_COLUMNS if col in df.columns]
+
+    detail: list[dict] = []
+    for i in range(qa_count):
+        entry = {"q_index": i, "question": ""}
+        for col in metric_cols:
+            # pandas 存根把 .iloc[i] 推断为 Series/Unknown，显式标注标量
+            v: Any = df[col].iloc[i]
+            if pd.isna(v):
+                entry[col] = float("nan")
+            else:
+                entry[col] = float(v)
+        if retrieval_details is not None and i < len(retrieval_details):
+            entry["retrieval_details"] = retrieval_details[i]
+        detail.append(entry)
+
+    avg: dict[str, float] = {}
+    for col in metric_cols:
+        # 同上：显式标注以消除 pandas 存根的 Series/Unknown 误判
+        m: Any = df[col].mean()
+        if pd.isna(m):
+            avg[col] = float("nan")
+        else:
+            avg[col] = float(m)
+    return detail, avg
+
+
 def _save_eval_report(
     kb_id: str,
     result,
@@ -844,27 +906,9 @@ def _save_eval_report(
 
         svc = AppService()
 
-        df = result.to_pandas()
-        metric_cols = [
-            "faithfulness",
-            "answer_relevancy",
-            "context_precision",
-            "context_recall",
-        ]
-        detail = []
-        for i in range(qa_count):
-            entry = {"q_index": i, "question": ""}
-            for col in metric_cols:
-                if col in df.columns:
-                    entry[col] = float(df[col].iloc[i])
-            if retrieval_details is not None and i < len(retrieval_details):
-                entry["retrieval_details"] = retrieval_details[i]
-            detail.append(entry)
-
-        avg = {}
-        for col in metric_cols:
-            if col in df.columns:
-                avg[col] = float(df[col].mean())
+        detail, avg = _build_eval_detail(
+            result.to_pandas(), qa_count, retrieval_details
+        )
 
         faith = avg.get("faithfulness")
         recall = avg.get("context_recall")

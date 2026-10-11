@@ -765,6 +765,71 @@ def test_gate_fails_when_main_score_empty() -> None:
     assert e.value.code == 1
 
 
+def test_save_eval_report_tolerates_nan_metric() -> None:
+    """跳过值（pd.NA）不得致 float() 抛错被吞：insert 仍被调用且不落库失败。
+
+    复现 Task 7 缺陷：末题三项 context 指标以 ``pd.NA``（可空语义）出现时，
+    旧实现 ``float(df[col].iloc[i])`` 抛 ``TypeError`` → 整个落库流程被外层
+    ``except`` 吞掉、``eval_report`` 表静默无记录。修复后改走 ``pd.isna`` 守卫，
+    ``insert_eval_report`` 必被调用，且该指标在 ``detail_json`` 中保留 NaN。
+    """
+    from unittest.mock import MagicMock, patch
+
+    import pandas as pd
+
+    from src.cli.eval_ragas import _save_eval_report
+
+    mock_df = pd.DataFrame(
+        {
+            "faithfulness": pd.Series([0.9, pd.NA], dtype="object"),
+            "answer_relevancy": pd.Series([0.8, 0.7], dtype="object"),
+            "context_precision": pd.Series([0.5, pd.NA], dtype="object"),
+            "context_recall": pd.Series([0.6, pd.NA], dtype="object"),
+            "answer_correctness": pd.Series([0.5, 0.4], dtype="object"),
+        }
+    )
+    mock_result = MagicMock()
+    mock_result.to_pandas.return_value = mock_df
+
+    captured: dict = {}
+
+    class _FakeSvc:
+        """替代真实 AppService，只记录待插入实体（不发真实网络调用）。"""
+
+        async def insert_eval_report(self, entity) -> None:
+            """记录待插入实体。
+
+            Args:
+                entity: 由 _save_eval_report 组装的落库实体
+            """
+            captured["entity"] = entity
+
+    async def _fake_run_and_dispose(coro):
+        """直接 await 传入协程，替代真实引擎生命周期管理。
+
+        Args:
+            coro: 待执行的落库协程
+
+        Returns:
+            协程结果
+        """
+        return await coro
+
+    with (
+        patch("src.services.app_service.AppService", return_value=_FakeSvc()),
+        patch("src.infra.db.engine.run_and_dispose", side_effect=_fake_run_and_dispose),
+    ):
+        _save_eval_report("kb1", mock_result, 2, "/tmp/unused.csv")
+
+    assert "entity" in captured
+    entity = captured["entity"]
+    # 末题：跳过指标以 NaN 落库，未跳过指标为原值
+    assert pd.isna(entity.detail_json[1]["faithfulness"])
+    assert entity.detail_json[1]["answer_relevancy"] == 0.7
+    # 首题：正常值不受影响
+    assert entity.detail_json[0]["faithfulness"] == 0.9
+
+
 def test_gate_fails_when_retrieval_coverage_below_min() -> None:
     """检索覆盖率低于下限时门禁失败（否则会拿空 context 指标蒙混过关）。"""
     import pandas as pd

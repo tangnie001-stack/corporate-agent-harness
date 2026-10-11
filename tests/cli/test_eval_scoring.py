@@ -112,3 +112,65 @@ def test_summarize_trajectory_extracts_names_and_iters() -> None:
     assert s["iterations"] == 2
     # 工具输出正文不得进入摘要
     assert "LONG BODY" not in str(s)
+
+
+# ---- write_scores：按 trace_id 显式回写 Langfuse ----
+# 客户端是只读 property（LangfuseDecorator.client_instance 无 setter），
+# 实例上无法 setattr，故 patch 其所属类的同名属性（断言语义与 brief 一致）。
+
+
+def test_write_scores_noop_when_disabled() -> None:
+    """enabled=False 时整体短路：不得触碰 Langfuse 客户端。"""
+    from unittest.mock import patch
+
+    from src.cli.eval_scoring import write_scores
+
+    with patch(
+        "langfuse.decorators.langfuse_decorator.LangfuseDecorator.client_instance"
+    ) as ci:
+        write_scores(["t1"], {"faithfulness": [0.9]}, enabled=False)
+    ci.score.assert_not_called()
+
+
+def test_write_scores_uses_trace_id() -> None:
+    """enabled=True 时按 trace_id/name/value 逐条显式回写。"""
+    from unittest.mock import patch
+
+    from src.cli.eval_scoring import write_scores
+
+    with patch(
+        "langfuse.decorators.langfuse_decorator.LangfuseDecorator.client_instance"
+    ) as ci:
+        write_scores(["t1"], {"faithfulness": [0.9]}, enabled=True)
+    ci.score.assert_called_once_with(trace_id="t1", name="faithfulness", value=0.9)
+
+
+def test_write_scores_skips_none_and_nan() -> None:
+    """None 与 NaN（掩码的跳过语义）均不得写出 score。"""
+    from typing import Any
+    from unittest.mock import patch
+
+    from src.cli.eval_scoring import write_scores
+
+    # 生产路径只出现 NaN；None 为防御分支，故用 Any 承载
+    values: list[Any] = [None, float("nan")]
+
+    with patch(
+        "langfuse.decorators.langfuse_decorator.LangfuseDecorator.client_instance"
+    ) as ci:
+        write_scores(["t1", "t2"], {"context_recall": values}, enabled=True)
+    ci.score.assert_not_called()
+
+
+def test_write_scores_swallows_client_error() -> None:
+    """单条回写失败只记 warning，不向上抛（不影响评测主流程）。"""
+    from unittest.mock import patch
+
+    from src.cli.eval_scoring import write_scores
+
+    with patch(
+        "langfuse.decorators.langfuse_decorator.LangfuseDecorator.client_instance"
+    ) as ci:
+        ci.score.side_effect = RuntimeError("boom")
+        # 不应抛出
+        write_scores(["t1"], {"faithfulness": [0.9]}, enabled=True)

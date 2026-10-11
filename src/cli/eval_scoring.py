@@ -6,6 +6,7 @@ CLI 编排（跑图、读写文件）留在 eval_ragas.py。
 
 import pandas as pd
 from langchain_core.messages import AIMessage
+from loguru import logger
 
 from src.config.const import (
     CONTEXT_METRIC_COLUMNS,
@@ -119,3 +120,45 @@ def summarize_trajectory(messages: list) -> dict:
         for tc in m.tool_calls:
             calls.append({"name": tc.get("name", ""), "args": tc.get("args", {})})
     return {"tool_calls": calls, "iterations": iterations}
+
+
+def write_scores(
+    trace_ids: list[str], scores: dict[str, list[float]], enabled: bool
+) -> None:
+    """把每题各指标分数按 trace_id 显式回写 Langfuse。
+
+    评分在批量 evaluate() 之后才产出，逐题 @observe 已关闭，
+    故不能用 score_current_trace（无当前 trace 且吞异常）。客户端实例统一取
+    `langfuse_context.client_instance`（**不得** new Langfuse()：那会绕过
+    LANGFUSE_ENABLE 开关与关停 flush）。逐条回写失败只记 warning，不向上抛，
+    以免影响评测主流程。
+
+    Args:
+        trace_ids: 每题 trace_id（与 scores 各列表等长）
+        scores: 指标名 -> 每题的分数列表；值为 None 或 NaN（掩码的跳过语义）
+            时该题该指标不写出
+        enabled: LANGFUSE_ENABLE 取值；False 时整体短路、不触碰客户端
+    """
+    if not enabled:
+        return
+    from langfuse.decorators import langfuse_context
+
+    client = langfuse_context.client_instance
+    for name, values in scores.items():
+        for i, trace_id in enumerate(trace_ids):
+            if i >= len(values):
+                continue
+            value = values[i]
+            if value is None:
+                continue
+            if pd.isna(value):
+                continue
+            try:
+                client.score(trace_id=trace_id, name=name, value=float(value))
+            except Exception as exc:  # noqa: BLE001  # 回写失败不影响评测主流程
+                logger.warning(
+                    "[cli] langfuse score write failed trace_id={} metric={} err={}",
+                    trace_id,
+                    name,
+                    exc,
+                )
