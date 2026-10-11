@@ -8,16 +8,16 @@
 
 - [ ] 1.1 `src/cli/eval_ragas.py` 每题调用图前构造 `RequestContext(session_id, kb_id)` 并 `set`，调用后 `reset`（镜像 `turn_runner`）
 - [ ] 1.2 评测从 `final_state["tool_contexts"]` 读取材料，确认有检索的样本 `contexts` 非空
-- [ ] 1.3 守卫 (A)：**用真图 + 真工具**跑一条绑定 KB 的问答，断言 seeded ctx 下 `contexts` 非空（假图不能证伪 F-32）
+- [ ] 1.3 守卫 (A)：**真图 + 真工具**跑一条绑定 KB 的问答，断言 seeded ctx 下 `contexts` 非空（"真图" = 真 `StateGraph` + 真工具函数 + 真 `RequestContext` 传播；`vector_store`/`llm`/`reranker` 用 fake，**不发真实网络调用**）
 - [ ] 1.4 守卫 (B)：**真图**跑一条不检索的问答，断言 `contexts` 为空（防漏 `reset` 的跨样本泄漏 / 多收）
 
 ## 2. 样本分流、跳过标记与聚合口径（D4）
 
 - [ ] 2.1 按 `RAGContext.kind` 把样本标为「纯 KB / 含 web / 无检索」三类
-- [ ] 2.2 无检索样本跳过 `faithfulness` / `context_precision` / `context_recall`，并**显式标记 `skipped`**（与"计算失败"区分，置空、不计均值）；`answer_relevancy` 与答案正确性**照常计算**
+- [ ] 2.2 无检索样本跳过 `faithfulness` / `context_precision` / `context_recall`，并**显式标记 `skipped`**（与"计算失败"区分）；跳过值**置空为 `NaN`**（**非** `None`/`pd.NA`，否则 DB 落库静默失败），不计均值；`answer_relevancy` 与答案正确性**照常计算**
 - [ ] 2.3 含 web 样本标记「降级联网」并从主分聚合中排除
 - [ ] 2.4 报告列出三类样本计数与**检索覆盖率**（有检索样本占比）
-- [ ] 2.5 `--gate`（`check_gate`）改读**主分**（纯 KB 样本均值），并加检索覆盖率断言，杜绝"不检索即跳空"
+- [ ] 2.5 `--gate`（`check_gate`）改读**主分**（纯 KB 样本均值）；**检索覆盖率低于阈值、或主分样本数为 0 即判失败**，杜绝"不检索即跳空"
 - [ ] 2.6 诊断元数据记录：是否降级联网、**实际**工具调用序列、迭代次数
 
 ## 3. 答案正确性指标（D3：legacy `AnswerCorrectness()`）
@@ -39,12 +39,13 @@
 
 ## 6. 报告、契约与文档
 
-- [ ] 6.1 CSV / Markdown 报告新增答案正确性、三类样本输出与 `skipped` 标记列
+- [ ] 6.1 CSV / Markdown 报告新增答案正确性、三类样本输出与 `skipped` 标记列（跳过值为 `NaN`）
 - [ ] 6.2 Markdown 写明 **DB 与 CSV/MD 口径分叉**（DB `overall_score` 仍为旧 4 指标、未按样本分流；「主分」= 纯 KB 样本指标均值）
 - [ ] 6.3 更新 `tests/cli/test_eval_ragas.py` 的「恰 4 指标」断言（加指标后必红）
-- [ ] 6.4 同步 `src/cli/compare_retrieval.py` 经 stdout 解析指标均值的契约（主分语义变更）
+- [ ] 6.4 把 `_print_metric_averages`（stdout，供 `compare_retrieval` 的 `parse_metrics`）与报告/门禁**统一为主分**：每指标只打一行，避免同名指标出现两个数、解析取错
 - [ ] 6.5 文档登记：如需则更新 `docs/agents/api_contract.md` / `glossary.md` / `cookbook.md`（一事一档自检）
 - [ ] 6.6 记录「需重采评测基线」（原报告产生于 `F-32` 失效期，context 指标不可比）
+- [ ] 6.7 断言跳过值用 `NaN` 时 `_save_eval_report` **仍成功落库**（不被 `float(df[col].iloc[i])` 吞异常）
 
 ## 7. 闸门与验收
 
