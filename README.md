@@ -12,7 +12,8 @@
                    → /* → 静态 HTML/CSS/JS 前端（无构建步骤）
 
 Langfuse 2.x (:3000) → 与 app 复用同一 PostgreSQL 实例（独立 database）
-可选：LiteLLM Proxy (:4000) 作为模型网关（compose profile `disabled`，dev 默认直连 DashScope）
+模型：三类模型（LLM / Embedding / Rerank）经 provider 兼容层**直连 provider**（默认阿里云百炼，可切 DeepSeek）；
+      **不启用** LiteLLM 网关（compose profile `disabled`，保留备查；决策见 `docs/adr/0020-no-model-gateway-direct-provider.md`）
 ```
 
 - **数据流与管理链路**（上传→入库、问答→检索→生成、KB/会话/认证管理等）统一以
@@ -63,12 +64,12 @@ Langfuse 2.x (:3000) → 与 app 复用同一 PostgreSQL 实例（独立 databas
 | 检索 | pgvector（`vector(1024)`）稠密路 + PostgreSQL 全文检索（`tsvector('simple')` + jieba 预分词）词法路，应用层 RRF 融合 |
 | 对象存储 | MinIO（dev）/ 阿里云 OSS（prod） |
 | 缓存 | Redis 7（会话、登录 token、生成任务） |
-| 模型 | 经 DashScope 兼容端点（阿里云百炼）：主模型 / 分类模型 / embedding / rerank 各自可配（见「配置说明」） |
+| 模型 | **provider 可切换**（默认阿里云百炼 DashScope 兼容端点，可切 DeepSeek）：provider 差异收敛到单一层 `src/infra/llm/provider/`，切换只改 `.env`（见「切换大模型」） |
 | Tracing | Langfuse 2.x 自托管，与 app 复用同一 PostgreSQL 实例（独立 database） |
 | 文档解析 | PyMuPDF（PDF）、python-docx（DOCX）、chardet（编码嗅探） |
 | 评价 | RAGAS（CLI 侧：faithfulness / answer_relevancy / context_recall / context_precision） |
 | 日志 | loguru（分层前缀 + 英文 k=v，见 `docs/agents/logging-rules.md`） |
-| 可选网关 | LiteLLM Proxy（compose profile `disabled`；需要统一网关时启用） |
+| 模型网关 | **不启用** LiteLLM Proxy（compose profile `disabled`，保留备查；决策见 ADR-0020） |
 | 部署 | Docker Compose |
 
 ## 快速启动
@@ -76,7 +77,7 @@ Langfuse 2.x (:3000) → 与 app 复用同一 PostgreSQL 实例（独立 databas
 ### 前置条件
 
 - Docker & Docker Compose
-- 模型服务 Key：默认经阿里云百炼 DashScope 兼容端点；也可按 `.env.template` 切到 LiteLLM 网关
+- 模型服务 Key：默认直连阿里云百炼 DashScope 兼容端点；可按 `.env` 切到 DeepSeek（见「切换大模型」）。**不启用** LiteLLM 网关（ADR-0020）
 - 可选 Tavily API Key：联网兜底；留空时不注册 `search_web`，检索不达标走纯拒答
 
 ### 启动步骤
@@ -84,8 +85,8 @@ Langfuse 2.x (:3000) → 与 app 复用同一 PostgreSQL 实例（独立 databas
 ```bash
 # 1. 配置环境变量
 cp .env.template .env
-# 编辑 .env：至少填模型 Key（DASHSCOPE_API_KEY 或 LLM_API_KEY）
-#   模型名 / 端点 / embedding / rerank 各自独立配置，注释见 .env.template
+# 编辑 .env：至少填默认 provider 的密钥（<PROVIDER>_API_KEY，如 DASHSCOPE_API_KEY）
+#   provider 选择用 LLM_PROVIDER（缺省 dashscope；切 DeepSeek 见「切换大模型」）
 
 # 2. 启动所有服务（dev 经 COMPOSE_PROFILES 默认带 langfuse profile）
 docker compose up --build -d
@@ -115,7 +116,7 @@ docker compose up --build -d
 
 ### 1. Docker Compose 完整部署（推荐）
 
-一键启动全部服务（`litellm-proxy` 属 `disabled` profile，默认不起；`langfuse-web` 由 `COMPOSE_PROFILES` 决定）：
+一键启动全部服务（`litellm-proxy` 属 `disabled` profile 且**不启用**，见 ADR-0020；`langfuse-web` 由 `COMPOSE_PROFILES` 决定）：
 
 ```bash
 docker compose up -d --build
@@ -129,7 +130,7 @@ docker compose up -d --build
 | Redis | `corporate-rag-redis` | `:6379` | 会话 / 登录 token / 生成任务 |
 | MinIO | `corporate-rag-minio` | `:9000` / `:9001` | 文档对象存储（API / 控制台） |
 | Langfuse | `corporate-rag-langfuse-web` | `:3000` | Tracing 面板（profile `langfuse`） |
-| LiteLLM Proxy | `corporate-rag-litellm-proxy` | `:4000` | 可选模型网关（profile `disabled`） |
+| LiteLLM Proxy | `corporate-rag-litellm-proxy` | `:4000` | **不启用**（profile `disabled`，保留备查；ADR-0020） |
 
 启动后访问：
 
@@ -224,8 +225,8 @@ Nginx 已预配 SSE 支持（`proxy_buffering off` + 300s 读超时），确保�
 ├── agents/                智能体预设内容库（<name>.md，业务侧管理，随镜像发布）
 ├── alembic/               数据库迁移（唯一链）
 ├── scripts/               运维脚本（清库、重建 KB 数据、重写 content_seg、本地起服务）
-├── litellm/               LiteLLM 网关配置（可选）
-├── docker-compose.yml / .override.yml / .prod.yml
+├── litellm/               LiteLLM 网关配置（**不启用**，备查；ADR-0020）
+├── docker-compose.yml / .override.yml / .prod.yml / .image.yml（生产部署用）
 ├── Dockerfile
 ├── pyproject.toml         依赖与工具配置（ruff / pyright / pytest / doc_anchors）
 └── data/ logs/            运行期数据与日志挂载点（gitignore）
@@ -240,20 +241,41 @@ Nginx 已预配 SSE 支持（`proxy_buffering off` + 300s 读超时），确保�
 
 | 配置项 | 说明 |
 |---------|------|
-| `LLM_MODEL` / `LLM_API_KEY` / `LLM_BASE_URL` | 主模型：模型名 / Key / 端点（默认指向 LiteLLM 网关，可改为直连百炼兼容端点） |
-| `CLASSIFY_MODEL` | 分类/轻量任务模型 |
-| `EMBEDDING_MODEL` / `EMBEDDING_DIMENSION` | 向量化模型与维度（默认 1024，须与 `chunks.embedding` 列一致） |
-| `RERANK_MODEL` | 精排模型（固定走 DashScope） |
-| `RAGAS_LLM_MODEL` | RAGAS 评估的 judge 模型 |
-| `DASHSCOPE_API_KEY` | 百炼 Key；各专用 Key 未设时回退到它 |
+| `LLM_PROVIDER` / `<ROLE>_PROVIDER` | **选模型 provider**（缺省 `dashscope`）；角色级覆盖见下方「切换大模型」 |
+| `<PROVIDER>_API_KEY` | 各 provider 的密钥（如 `DASHSCOPE_API_KEY` / `DEEPSEEK_API_KEY`） |
+| `LLM_MODEL` / `CLASSIFY_MODEL` / `SUMMARY_MODEL` / `RAGAS_LLM_MODEL` | **可选覆盖**模型名；不填则取 `registry.yaml` 的角色默认 |
+| `LLM_BASE_URL` / `LLM_API_KEY` | ⚠️ **已废弃**（旧"单 provider 覆盖"键；切换 provider 时必须删除，见 `deploy-runbook.md` §2.7） |
+| `EMBEDDING_MODEL` | 向量化模型（可选覆盖；**维度由 `registry.yaml` 声明**，启动期与 `chunks.embedding` 列校验） |
+| `RERANK_MODEL` | 精排模型（走 DashScope） |
+| `DASHSCOPE_API_KEY` | 百炼 provider 的密钥（即 `dashscope` 的 `<PROVIDER>_API_KEY`） |
+| `PROVIDER_VALIDATE` | 启动期 provider 配置校验开关（缺省 `on`；`off` 跳过） |
 | `TAVILY_API_KEY` / `WEB_SEARCH_ENABLED` / `WEB_SEARCH_PER_TURN_LIMIT` | 联网兜底（Key 为空时不注册 `search_web`） |
 | `POSTGRES_*` | 应用关系库与向量索引 |
 | `REDIS_*` | 会话 / token / 生成任务 |
-| `MINIO_ROOT_*` | 文档对象存储（注意 root 与 app 侧两组值须一致） |
+| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | 文档对象存储（compose 侧 root 凭据与 app 侧**同源**，无需手动保持一致） |
 | `LANGFUSE_*` / `LANGFUSE_INIT_*` | 自托管 Langfuse（应用侧 Key 必须与播种 Key 是同一对） |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | 分块参数 |
 | `TOP_K_RETRIEVAL` / `TOP_K_RERANK` | 检索召回数与精排保留数 |
 | `MEMORY_WINDOW` | 对话历史窗口 |
+
+## 切换大模型（provider）
+
+LLM provider 的差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定价 / 窗口）已收敛到**单一层**
+`src/infra/llm/provider/`（数据面 `registry.yaml` 随镜像发布；决策见 `docs/adr/0021-provider-compat-layer.md`）。
+**切换 provider 不改代码**：
+
+| provider | 说明 |
+|---|---|
+| `dashscope`（默认） | 阿里云百炼兼容端点 |
+| `deepseek` | DeepSeek（`deepseek-flash` / `deepseek-v4-pro`）；**无 embedding / rerank 端点** |
+
+- **怎么切**：改 `.env` 的 `LLM_PROVIDER`（+ `<PROVIDER>_API_KEY`）→ 同步目标机 `.env` → 重跑部署。
+  **完整步骤与坑（要删哪些旧键）见 `docs/agents/deploy-runbook.md` §2.7** —— 本 README 不复述步骤。
+- **角色级覆盖**：`<ROLE>_PROVIDER`（`main` / `classify` / `summary` / `judge` / `embedding` / `rerank`）。
+  `main`/`classify`/`summary` 跟随 `LLM_PROVIDER`；**`embedding` / `rerank` / `judge` 独立缺省 `dashscope`**
+  —— 因此切 DeepSeek 时，**向量化与精排仍留百炼**（否则启动期校验拒绝）。
+- **模型名 / 定价 / 窗口**均缺省取 `registry.yaml`，`.env` 不必写；定价在**启动期自动 ensure**（无需手动 seed）。
+- 回退：把 `LLM_PROVIDER` 改回旧值即可（`.env` 可逆）；**跨版本回滚须镜像与 `.env` 一起回**。
 
 ## RAGAS 评估
 
@@ -275,10 +297,10 @@ python -m src.cli.eval_ragas --list-kbs
 
 - 扫描件 PDF 不支持（无 OCR 能力）
 - 表格 / 数字可能因分块被切断（只检测不保护）
-- RAGAS 评估用 `RAGAS_LLM_MODEL` 作 judge，与生成模型同源时存在 self-bias 风险
+- RAGAS 评估的 judge 角色**独立缺省 `dashscope`**（可用 `RAGAS_PROVIDER` / `RAGAS_LLM_MODEL` 与生成模型分离以降低 self-bias）；若与生成模型同源，仍存在 self-bias 风险
 - 单 worker 部署：SSE 帧缓冲与生成任务注册表在进程内存中，多副本需另做共享层
 - MCP 工具接入**尚未实现**（`src/agents/tools/registry.py` 只预留了扩展位）
-- 生产部署（多机 + 托管中间件）尚未闭环，当前以本地 compose 形态验证
+- 生产已上线**单机 demo**（ECS + 全镜像 `docker-compose.image.yml`，见 `docs/agents/deploy-runbook.md`）；**多机 + 托管中间件**（RDS / Redis / OSS / SLB）尚未闭环
 
 ## 许可证
 
@@ -318,7 +340,7 @@ ruff format . && ruff check . --fix       # 格式化 + lint
 ```
 
 ### 工作流程
-大需求流程：explore → grill-me → opsx:propose → brainstorming → grill-me → writing-plans → subagents → playwright-cli
+大需求流程与 skill 路由表见 `docs/agents/dev-flow.md`（唯一归属，本 README 不复制）
 
 
 ## 大模型写代码的坑
