@@ -92,6 +92,15 @@
 
 ⚠️ **两条路只应保留一条** —— Codeup 的镜像同步是**强制覆盖**；若既手动镜像同步、又让本地/Actions 直推 Codeup，两边会互相打架。直接"一次推两边"（`git remote set-url --add --push`）同理，且 Codeup 需另配凭据，不如走第 2 条。
 
+#### 2.0.2 常用入口（速查 / 可点击）
+
+- **代码同步**（GitHub → Codeup，第 5 步）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/codeup/deploytest/tangnie001-stack/corporate_rag/settings/mirror_sync`
+- **流水线**（看进度 / 第 7 步在此创建发布单）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/flow/my?page=1`
+- **版本 / 回滚**（第 10 步）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/appstack/app/deploy-app/versions`
+- **生产入口**：站点 `http://8.133.218.201/` ｜ Langfuse `http://8.133.218.201:3000` ｜ 目标机 `root@8.133.218.201`（发布路径 `/opt/www/corporate_rag`）
+
+> 本节只做**链接速查**；步骤正文见上面的 §2.0 表格，不在此复述。
+
 ### 2.1 发布链路：流水线最后一步是「部署」，按发布单匹配决定是否挂起
 
 ```
