@@ -863,10 +863,17 @@ CASCADE 级联删除：知识库 → 文档 → 对话历史。
 | `report.answer_relevancy` | float | 答案相关性 |
 | `report.context_precision` | float | 上下文精确率 |
 | `report.context_recall` | float | 上下文召回率 |
-| `report.overall_score` | float | 加权综合分（0.3×faith + 0.3×recall + 0.2×precision + 0.2×relevancy） |
+| `report.overall_score` | float | 加权综合分（0.3×faith + 0.3×recall + 0.2×precision + 0.2×relevancy）；口径为**全量（未按样本分流）**，见下注 |
 | `report.passed` | bool | 是否达标（≥ 0.70） |
 | `report.report_path` | str\|null | CSV 报告路径 |
-| `report.detail_json` | list\|null | 逐条 QA 得分；每条含 `q_index`、**全部 `RAGAS_METRIC_COLUMNS`**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`）与可选 `retrieval_details`（该 query 精排后 `[{source, score, kind}, ...]`）；跳过值一律 `NaN`（非 `None`/`pd.NA`，保证落库不抛错）。注意 `NaN` 是 Python `json.dumps` 的非标准扩展，**严格 JSON 解析器（如浏览器 `JSON.parse`）会拒绝**；见 §8.4 |
+| `report.detail_json` | list\|null | 逐条 QA 得分；每条含 `q_index`、**全部 `RAGAS_METRIC_COLUMNS`**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`）与可选 `retrieval_details`（该 query 精排后 `[{source, score, kind}, ...]`）；**全量（未掩码）口径**，见下注。`NaN` **仅在 ragas 自身对该题该指标产出 NaN 时出现**（本路径不主动置 NaN）。注意 `NaN` 是 Python `json.dumps` 的非标准扩展，**严格 JSON 解析器（如浏览器 `JSON.parse`）会拒绝**；见 §8.4 |
+
+> **口径注（全量 vs 主分）**：本表落库路径读的是**未掩码**的 `result.to_pandas()`
+> 全样本，故 `detail_json` / `faithfulness` 等四列 / `overall_score` 均为
+> **全量（未按样本分流）**口径——`web`、`empty` 样本也计入。这与 CLI
+> 报告 / stdout / 门禁的「**主分**」（仅 `pure_kb` 样本，见 §8.4）**不是同一个数**。
+> 前端按 `overall_score` 解读时须知道二者存在口径差异。原「跳过值一律 `NaN`」的
+> 表述不准确：只有 ragas 自身返回 `NaN`（如指标超时/额度耗尽）时该键才为 `NaN`。
 
 ### 3.7 `EvalRepo.get_latest_report(kb_id) → EvalReportModel | None`
 
@@ -1350,6 +1357,13 @@ python -m src.cli.eval_ragas --list-kbs
 `avg` 均含**全部** `RAGAS_METRIC_COLUMNS`（含新增 `answer_correctness`）；表内
 四列指标、`overall_score` 加权公式与 `passed` 阈值沿用 §3.6 不变 ——
 `answer_correctness` **不进加权综合分**（表结构未扩展）。
+
+**注意 DB 与 stdout 口径分叉**：落库读的是**未掩码**的 `result.to_pandas()` 全
+样本，故 DB 的 `detail_json` / 四列指标 / `overall_score` 为**全量（未按样本分流）**
+口径（`web` / `empty` 样本也计入），**与 CSV / MD / stdout / 门禁的「主分」（仅
+`pure_kb`）不是同一个数**。二者同源于一次运行但分母不同；MD 报告在均值行下会
+输出一行 Note 标注此分叉。属已知取舍（Non-Goal：本次不改 `eval_report` 表语义），
+消费方勿把 `overall_score` 与 stdout 主分直接对比。
 
 ### 8.5 宿主侧运行前提
 

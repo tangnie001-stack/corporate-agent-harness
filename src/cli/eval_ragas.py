@@ -523,7 +523,8 @@ def save_markdown_report(
     """将评估结果保存为 Markdown 摘要报告，与 CSV 同路径（.md 后缀）.
 
     均值行统一写「主分」（仅纯 KB 样本的指标均值），与 CSV / stdout / 门禁
-    口径一致；先按样本类别掩码，报告携带 sample_class / skipped 列。
+    口径一致；先按样本类别掩码，报告携带 sample_class / skipped 列。均值行下
+    附一行 Note，注明 DB（`eval_report`）为全量口径、与主分不是同一个数。
 
     Args:
         result: RAGAS evaluate() 返回的结果对象
@@ -566,6 +567,13 @@ def save_markdown_report(
     means = main_score_means(df)
     avg_parts = ", ".join(f"{m}={means[m]:.4f}" for m in actual_metrics if m in means)
     lines.append(f"**Main scores (pure-KB):** {avg_parts}")
+    lines.append("")
+    # 口径分叉提示：同一次运行的 DB 落库走全量口径（见 _save_eval_report），
+    # 与上方主分不是同一个数；此处显式标注，避免读者误以为二者应一致。
+    lines.append(
+        "**Note:** `eval_report` DB row stores full-sample (unmasked) `detail_json` /"
+        " `avg` / `overall_score`; they may differ from the pure-KB main scores above."
+    )
     lines.append("")
 
     os.makedirs(os.path.dirname(md_path) or ".", exist_ok=True)
@@ -793,27 +801,19 @@ def main() -> None:
         # 行序契约：write_scores 按 enumerate 下标把 masked_df 第 i 行写到
         # trace_ids[i]，两序列必须等长同序（均由 generate_answers_and_contexts
         # 按题序产出）。行数不一致即错配，会把分数静默写到别的 trace 上，故此处
-        # 快速失败而非带病回写。
-        assert len(masked_df) == len(trace_ids), (
-            f"eval rows ({len(masked_df)}) != trace_ids ({len(trace_ids)})"
-        )
+        # 快速失败而非带病回写。用显式 raise 而非 assert：`python -O` 会剥离
+        # assert，护栏在内置优化模式下失效。
+        if len(masked_df) != len(trace_ids):
+            raise RuntimeError(
+                f"eval rows ({len(masked_df)}) != trace_ids ({len(trace_ids)})"
+            )
 
-        # 逐题指标分数显式回写 Langfuse（按 trace_id）：评分在批量 evaluate 之后
-        # 才产出、逐题 @observe 已关闭，故回写必须显式定位 trace，不能依赖
-        # 「当前 trace」的隐式上下文。值取已掩码表（空材料样本的 context 指标为
-        # NaN=跳过语义，write_scores 内跳过不写）；列取指标白名单。
-        write_scores(
-            trace_ids,
-            {
-                col: list(masked_df[col])
-                for col in RAGAS_METRIC_COLUMNS
-                if col in masked_df.columns
-            },
-            enabled=settings.LANGFUSE_ENABLE,
-        )
-
+        # 先落库：DB 写入不受第三方观测系统（Langfuse）影响，故排在回写之前
         # _save_eval_report 需要 questions 长度
         _save_eval_report(kb_id, result, len(questions), output_path, retrieval_details)
+
+        # 观测旁路回写：排在落库之后、门禁之前（失败只记 warning，见 write_scores）
+        _write_langfuse_scores(masked_df, trace_ids)
 
         if args.gate:
             check_gate(masked_df, questions)
@@ -841,6 +841,30 @@ def _print_metric_averages(df: pd.DataFrame) -> None:
         if metric not in means:
             continue
         print(f"  {metric}: {means[metric]:.4f}")
+
+
+def _write_langfuse_scores(masked_df: pd.DataFrame, trace_ids: list[str]) -> None:
+    """把已掩码表的逐题指标分数按 trace_id 显式回写 Langfuse（观测旁路）。
+
+    评分在批量 evaluate() 之后才产出、逐题 @observe 已关闭，故回写必须显式定位
+    trace，不能依赖「当前 trace」的隐式上下文。值取已掩码表（空材料样本的
+    context 指标为 NaN=跳过语义，write_scores 内跳过不写）；列取指标白名单，
+    避免额外数值列混入。回写失败（客户端获取或逐条写）由 write_scores 吞掉，
+    不影响评测主流程。
+
+    Args:
+        masked_df: 经 apply_sample_masks 掩码、含 sample_class 列的结果表
+        trace_ids: 每题的 trace_id（行序与 masked_df 对齐，已由调用方校验）
+    """
+    write_scores(
+        trace_ids,
+        {
+            col: list(masked_df[col])
+            for col in RAGAS_METRIC_COLUMNS
+            if col in masked_df.columns
+        },
+        enabled=settings.LANGFUSE_ENABLE,
+    )
 
 
 def _build_eval_detail(

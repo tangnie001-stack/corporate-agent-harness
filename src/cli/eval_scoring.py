@@ -1,7 +1,8 @@
 """评测打分辅助：样本分类、主分聚合、跳过掩码、检索覆盖率、分数回写。
 
-与 eval_ragas.py 的分工：本模块只放纯函数与被测可单测的逻辑，
-CLI 编排（跑图、读写文件）留在 eval_ragas.py。
+与 eval_ragas.py 的分工：本模块放评测辅助逻辑与可单测的纯函数；
+`write_scores` 是唯一含外部 I/O 的函数（把每题分数回写 Langfuse），
+CLI 编排（跑图、读写报告文件）留在 eval_ragas.py。
 """
 
 import pandas as pd
@@ -10,6 +11,7 @@ from loguru import logger
 
 from src.config.const import (
     CONTEXT_METRIC_COLUMNS,
+    RAGAS_METRIC_COLUMNS,
     SAMPLE_CLASS_EMPTY,
     SAMPLE_CLASS_PURE_KB,
     SAMPLE_CLASS_WEB,
@@ -39,15 +41,17 @@ def apply_sample_masks(df: pd.DataFrame, sample_classes: list[str]) -> pd.DataFr
     """按样本类别掩码：无材料样本的三项 context 指标置 NaN 并记 skipped。
 
     置空用 NaN（而非 None/pd.NA），以免下游 float() 抛错致落库静默失败。
+    返回值重建为从 0 起的 RangeIndex：掩码用 `.loc[i, col]` 定位行，
+    若传入表带非默认索引（如按 trace_id 建索引）会 KeyError。
 
     Args:
         df: ragas 结果 DataFrame（行序与 sample_classes 对齐）
         sample_classes: 每题的样本类别
 
     Returns:
-        增加 sample_class / skipped 两列的副本
+        增加 sample_class / skipped 两列的副本（索引重置为 RangeIndex）
     """
-    out = df.copy()
+    out = df.copy().reset_index(drop=True)
     out["sample_class"] = sample_classes
     skipped_col: list[str] = []
     for i in range(len(out)):
@@ -68,6 +72,9 @@ def apply_sample_masks(df: pd.DataFrame, sample_classes: list[str]) -> pd.DataFr
 def main_score_means(df: pd.DataFrame) -> dict[str, float]:
     """计算主分：仅纯 KB 样本行的各指标均值。
 
+    指标集合在函数内收窄到 `RAGAS_METRIC_COLUMNS` 白名单（不依赖调用方过滤），
+    以免结果表混入额外数值列（如 chunk_size）时被静默计入主分。
+
     Args:
         df: 经 apply_sample_masks 处理、含 sample_class 列的结果
 
@@ -76,10 +83,8 @@ def main_score_means(df: pd.DataFrame) -> dict[str, float]:
     """
     mask = df["sample_class"] == SAMPLE_CLASS_PURE_KB
     result: dict[str, float] = {}
-    for col in df.columns:
-        if col in ("question", "ground_truth", "trace_id", "answer", "contexts"):
-            continue
-        if col in ("sample_class", "skipped"):
+    for col in RAGAS_METRIC_COLUMNS:
+        if col not in df.columns:
             continue
         if pd.api.types.is_numeric_dtype(df[col]):
             result[col] = float(df.loc[mask, col].mean())
@@ -130,8 +135,8 @@ def write_scores(
     评分在批量 evaluate() 之后才产出，逐题 @observe 已关闭，
     故不能用 score_current_trace（无当前 trace 且吞异常）。客户端实例统一取
     `langfuse_context.client_instance`（**不得** new Langfuse()：那会绕过
-    LANGFUSE_ENABLE 开关与关停 flush）。逐条回写失败只记 warning，不向上抛，
-    以免影响评测主流程。
+    LANGFUSE_ENABLE 开关与关停 flush）。客户端获取失败或逐条回写失败都只记
+    warning、不向上抛：回写属观测旁路，绝不阻断评测主流程（DB 落库与门禁）。
 
     Args:
         trace_ids: 每题 trace_id（与 scores 各列表等长）
@@ -143,7 +148,13 @@ def write_scores(
         return
     from langfuse.decorators import langfuse_context
 
-    client = langfuse_context.client_instance
+    try:
+        client = langfuse_context.client_instance
+    except Exception as exc:  # noqa: BLE001  # 观测旁路，失败不影响评测主流程
+        logger.warning(
+            "[cli] langfuse client unavailable, scores not written err={}", exc
+        )
+        return
     for name, values in scores.items():
         for i, trace_id in enumerate(trace_ids):
             if i >= len(values):

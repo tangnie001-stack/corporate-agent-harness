@@ -88,6 +88,37 @@ def test_retrieval_coverage() -> None:
     assert abs(cov - 0.5) < 1e-9
 
 
+def test_apply_sample_masks_tolerates_non_default_index() -> None:
+    """传入非默认索引（如以 trace_id 为索引）时仍按行位置掩码，不抛 KeyError。"""
+    df = _df()
+    df.index = ["trace_a", "trace_b", "trace_c"]
+    out = apply_sample_masks(
+        df, [SAMPLE_CLASS_PURE_KB, SAMPLE_CLASS_EMPTY, SAMPLE_CLASS_WEB]
+    )
+    # 索引重置为 RangeIndex，掩码落到第 2 行（empty）
+    assert list(out.index) == [0, 1, 2]
+    assert pd.isna(out.loc[1, "faithfulness"])
+    assert "faithfulness" in out.loc[1, "skipped"]
+    # 非空行不标记
+    assert out.loc[0, "skipped"] == ""
+
+
+def test_main_score_means_narrows_to_metric_whitelist() -> None:
+    """主分只聚合 RAGAS 指标白名单列，额外数值列（如 chunk_size）不得混入。"""
+    df = apply_sample_masks(
+        _df(), [SAMPLE_CLASS_PURE_KB, SAMPLE_CLASS_EMPTY, SAMPLE_CLASS_WEB]
+    )
+    df["chunk_size"] = [512, 512, 512]
+    means = main_score_means(df)
+    assert set(means.keys()) == {
+        "faithfulness",
+        "context_precision",
+        "context_recall",
+        "answer_relevancy",
+    }
+    assert "chunk_size" not in means
+
+
 def test_summarize_trajectory_extracts_names_and_iters() -> None:
     """轨迹摘要应含工具名/入参/迭代数，且不含工具输出正文。"""
     msgs = [
@@ -172,5 +203,20 @@ def test_write_scores_swallows_client_error() -> None:
         "langfuse.decorators.langfuse_decorator.LangfuseDecorator.client_instance"
     ) as ci:
         ci.score.side_effect = RuntimeError("boom")
+        # 不应抛出
+        write_scores(["t1"], {"faithfulness": [0.9]}, enabled=True)
+
+
+def test_write_scores_swallows_client_acquisition_error() -> None:
+    """客户端获取失败只记 warning、直接返回，不向上抛（观测旁路不阻断主流程）。"""
+    from unittest.mock import PropertyMock, patch
+
+    from src.cli.eval_scoring import write_scores
+
+    with patch(
+        "langfuse.decorators.langfuse_decorator.LangfuseDecorator.client_instance",
+        new_callable=PropertyMock,
+        side_effect=RuntimeError("no client"),
+    ):
         # 不应抛出
         write_scores(["t1"], {"faithfulness": [0.9]}, enabled=True)
