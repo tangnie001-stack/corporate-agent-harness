@@ -119,6 +119,13 @@ def resolve_role(
     覆盖顺序：provider 选择取角色 env（main→LLM_PROVIDER），缺省时独立角色用
     dashscope、其余跟随 LLM_PROVIDER；模型取角色 env 覆盖 registry 默认；端点
     取 `<PROVIDER>_BASE_URL` 覆盖 spec.base_url；密钥取 spec.api_key_env。
+
+    Phase 1 软迁移（design D10）：`LLM_BASE_URL` / `LLM_API_KEY` 作为**被 LLM_PROVIDER
+    选中的那个 provider** 的端点 / 密钥回退（`<PROVIDER>_BASE_URL` → `LLM_BASE_URL` →
+    registry；`<PROVIDER>_API_KEY` → `LLM_API_KEY` → `""`）。该回退**不**适用于
+    embedding / rerank / judge 的独立缺省 dashscope（否则会把主 LLM 的 key 误用于
+    向量化 / 精排）。Phase 2 删除这两个旧键。
+
     未知角色 / provider / 无可用模型抛 KeyError，供启动期 fail-fast。
     """
     if env is None:
@@ -139,8 +146,16 @@ def resolve_role(
     model = env.get(_MODEL_ENV[role]) or spec.models.get(role) or ""
     if not model:
         raise KeyError(f"角色 {role} 在 provider {provider_name} 无可用模型")
-    base_url = env.get(f"{provider_name.upper()}_BASE_URL") or spec.base_url
+    provider_base_env = f"{provider_name.upper()}_BASE_URL"
+    base_url = env.get(provider_base_env) or spec.base_url
     api_key = env.get(spec.api_key_env) or ""
+    # Phase 1 软迁移回退（design D10）：仅当角色绑定的正是 LLM provider、且非独立角色时
+    llm_provider_name = env.get("LLM_PROVIDER") or _DEFAULT_PROVIDER
+    if role not in _INDEPENDENT_ROLES and provider_name == llm_provider_name:
+        if not env.get(provider_base_env) and env.get("LLM_BASE_URL"):
+            base_url = env["LLM_BASE_URL"]
+        if not env.get(spec.api_key_env) and env.get("LLM_API_KEY"):
+            api_key = env["LLM_API_KEY"]
     return ResolvedModel(
         role=role, provider=spec, model=model, base_url=base_url, api_key=api_key
     )
