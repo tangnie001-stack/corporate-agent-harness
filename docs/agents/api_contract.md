@@ -1317,19 +1317,25 @@ python -m src.cli.eval_ragas --list-kbs
 | `web` | 材料中含联网块（降级联网） | ❌ 不进（但 context 指标不置空） |
 | `empty` | 未检索到任何材料 | ❌ 不进，且三项 context 指标置 `NaN` 并记 `skipped` |
 
-**CSV**（`--output`，默认 `{RAGAS_REPORT_DIR}/ragas_eval_<timestamp>.csv`）列：
+**CSV**（`--output`，默认 `{RAGAS_REPORT_DIR}/ragas_eval_<timestamp>.csv`）列
+（**按列名消费，勿按位解析**——`df.to_csv(index=True)` 使**文件首列为 pandas 索引
+列**，故 `question` 起为**第 2 列**，其后依次 `ground_truth`（第 3 列）、
+`trace_id`（第 4 列））：
 
 | 列 | 说明 |
 |----|------|
-| `question` / `ground_truth` | 题面与参考答案（第 1、2 列） |
-| `trace_id` | 该题 trace（第 3 列），可按 trace 回溯 / 定位回写的分数 |
-| 五个指标列 | `faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`，顺序以 `const.RAGAS_METRIC_COLUMNS` 为准 |
+| `question` / `ground_truth` | 题面与参考答案 |
+| `trace_id` | 该题 trace，可按 trace 回溯 / 定位回写的分数 |
+| 五个指标列 | `faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`；**CSV 保持 ragas 原生列序**（实测为 `context_precision`→`context_recall`→`faithfulness`→`answer_relevancy`→`answer_correctness`），**与 `const.RAGAS_METRIC_COLUMNS` 的顺序不同**——只有 **MD / stdout / 落库**按 `RAGAS_METRIC_COLUMNS` 排序 |
 | `sample_class` | 该题样本类别（上表三类之一） |
 | `skipped` | 被掩码跳过的指标名，`;` 分隔；未跳过为空串 |
 | `trajectory` | Agent 轨迹诊断摘要 JSON：`{"tool_calls":[{"name","args"}, ...], "iterations":N}`，**不含工具输出正文** |
+| 其余既有列 | `user_input` / `retrieved_contexts` / `response` / `reference` 为 ragas 原始字段，沿用不改 |
 
-**MD**（与 CSV 同路径的 `.md`）：列集与 CSV 一致，末尾一行
-`**Main scores (pure-KB):** <指标=值, ...>`，与 stdout / 门禁同口径。
+**MD**（与 CSV 同路径的 `.md`）：含新增列（`trace_id` / `sample_class` / `skipped` /
+`trajectory`）与 CSV 同名同义，**不含** CSV 的 `ground_truth` / `user_input` /
+`retrieved_contexts` / `response` / `reference`；指标列按 `RAGAS_METRIC_COLUMNS`
+排序。末尾一行 `**Main scores (pure-KB):** <指标=值, ...>`，与 stdout / 门禁同口径。
 
 **stdout 口径 = 主分（契约，勿改）**：主分 = **仅 `pure_kb` 样本**的指标均值
 （`web` / `empty` 不计入），每指标**只打一行**，行形如
