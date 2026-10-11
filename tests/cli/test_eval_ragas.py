@@ -60,6 +60,7 @@ async def test_f32_seeded_ctx_populates_tool_contexts(eval_graph_factory) -> Non
         _trace_ids,
         _details,
         _sample_classes,
+        _trajectories,
     ) = await generate_answers_and_contexts(graph, "kb1", "s1", ["问题"])
     assert len(contexts[0]) > 0
 
@@ -85,6 +86,7 @@ async def test_f32_no_retrieval_leaves_contexts_empty(eval_graph_factory) -> Non
         _trace_ids,
         _details,
         _sample_classes,
+        _trajectories,
     ) = await generate_answers_and_contexts(graph, "kb1", "s1", ["问题"])
     assert contexts[0] == []
     assert current_request_ctx.get() is None
@@ -110,7 +112,7 @@ async def test_propagation_graph_populates_state_tool_contexts(
     ctx = RequestContext(session_id="s1", kb_id="kb1")
     token = current_request_ctx.set(ctx)
     try:
-        _answer, contexts, _details = await _answer_one_question(
+        _answer, contexts, _details, _messages = await _answer_one_question(
             graph, "kb1", "s1", "q", "trace_1"
         )
     finally:
@@ -133,7 +135,7 @@ async def test_propagation_no_tool_keeps_state_contexts_empty(
     ctx = RequestContext(session_id="s1", kb_id="kb1")
     token = current_request_ctx.set(ctx)
     try:
-        _answer, contexts, _details = await _answer_one_question(
+        _answer, contexts, _details, _messages = await _answer_one_question(
             graph, "kb1", "s1", "q", "trace_1"
         )
     finally:
@@ -207,7 +209,14 @@ class TestGenerateAnswers:
 
         mock_graph.ainvoke = AsyncMock(side_effect=mock_ainvoke)
 
-        answers, contexts, trace_ids, retrieval_details, sample_classes = asyncio.run(
+        (
+            answers,
+            contexts,
+            trace_ids,
+            retrieval_details,
+            sample_classes,
+            trajectories,
+        ) = asyncio.run(
             generate_answers_and_contexts(
                 mock_graph,
                 "test_kb",
@@ -221,6 +230,9 @@ class TestGenerateAnswers:
         assert len(trace_ids) == 2
         assert len(retrieval_details) == 2
         assert len(sample_classes) == 2
+        # mock 图未回填 messages，逐题摘要为空轨迹但仍与题目一一对应
+        assert len(trajectories) == 2
+        assert trajectories[0] == {"tool_calls": [], "iterations": 0}
         assert trace_ids[0].startswith("eval_")
         assert "Answer for" in answers[0]
         assert len(contexts[0]) == 2
@@ -261,7 +273,14 @@ class TestGenerateAnswers:
 
         mock_graph.ainvoke = AsyncMock(side_effect=mock_ainvoke)
 
-        answers, contexts, trace_ids, retrieval_details, sample_classes = asyncio.run(
+        (
+            answers,
+            contexts,
+            trace_ids,
+            retrieval_details,
+            sample_classes,
+            trajectories,
+        ) = asyncio.run(
             generate_answers_and_contexts(
                 mock_graph,
                 "kb",
@@ -276,10 +295,11 @@ class TestGenerateAnswers:
         assert len(sample_classes) == 3
         assert "[ERROR]" in answers[1]
         assert contexts[1] == []
-        # 失败的问题也要有 trace_id，便于回溯；检索明细异常分支为空列表
+        # 失败的问题也要有 trace_id，便于回溯；检索明细与轨迹摘要异常分支为空
         assert trace_ids[1].startswith("eval_")
         assert retrieval_details[0] == [{"source": "s.pdf", "score": 0.5, "kind": "kb"}]
         assert retrieval_details[1] == []
+        assert trajectories[1] == {"tool_calls": [], "iterations": 0}
 
 
 class TestRunEvaluation:

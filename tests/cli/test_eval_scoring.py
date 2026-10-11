@@ -1,4 +1,5 @@
 import pandas as pd
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from src.cli.eval_scoring import (
     SAMPLE_CLASS_EMPTY,
@@ -8,6 +9,8 @@ from src.cli.eval_scoring import (
     classify_sample,
     main_score_means,
     retrieval_coverage,
+    summarize_trajectory,
+    tool_call_names,
 )
 from src.rag.context import RAGContext
 
@@ -84,3 +87,61 @@ def test_retrieval_coverage() -> None:
     """有检索样本占比：1 个非 empty / 2 个样本 = 0.5。"""
     cov = retrieval_coverage([SAMPLE_CLASS_PURE_KB, SAMPLE_CLASS_EMPTY])
     assert abs(cov - 0.5) < 1e-9
+
+
+def test_tool_call_names_in_order() -> None:
+    """按消息顺序收集全部工具调用名（非 AIMessage 略过）。"""
+    msgs = [
+        HumanMessage(content="q"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "retrieve_kb",
+                    "args": {"query": "x"},
+                    "id": "1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(content="BODY", tool_call_id="1"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "web_search",
+                    "args": {"q": "y"},
+                    "id": "2",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        AIMessage(content="answer"),
+    ]
+    assert tool_call_names(msgs) == ["retrieve_kb", "web_search"]
+
+
+def test_summarize_trajectory_extracts_names_and_iters() -> None:
+    """轨迹摘要应含工具名/入参/迭代数，且不含工具输出正文。"""
+    msgs = [
+        HumanMessage(content="q"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "retrieve_kb",
+                    "args": {"query": "x"},
+                    "id": "1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(content="LONG BODY", tool_call_id="1"),
+        AIMessage(content="answer"),
+    ]
+    s = summarize_trajectory(msgs)
+    assert s["tool_calls"][0]["name"] == "retrieve_kb"
+    assert s["tool_calls"][0]["args"] == {"query": "x"}
+    assert s["iterations"] == 2
+    # 工具输出正文不得进入摘要
+    assert "LONG BODY" not in str(s)

@@ -5,6 +5,7 @@ CLI 编排（跑图、读写文件）留在 eval_ragas.py。
 """
 
 import pandas as pd
+from langchain_core.messages import AIMessage
 
 from src.config.const import (
     CONTEXT_METRIC_COLUMNS,
@@ -97,3 +98,41 @@ def retrieval_coverage(sample_classes: list[str]) -> float:
         return 0.0
     hit = sum(1 for c in sample_classes if c != SAMPLE_CLASS_EMPTY)
     return hit / len(sample_classes)
+
+
+def tool_call_names(messages: list) -> list[str]:
+    """按序返回消息中所有工具调用名。
+
+    Args:
+        messages: LangGraph 状态中的消息列表
+
+    Returns:
+        按消息与调用出现顺序排列的工具名列表；无工具调用时为空列表
+    """
+    names: list[str] = []
+    for m in messages:
+        if isinstance(m, AIMessage):
+            for tc in m.tool_calls:
+                names.append(tc.get("name", ""))
+    return names
+
+
+def summarize_trajectory(messages: list) -> dict:
+    """生成轨迹诊断摘要：工具名 + 入参 + 迭代数；**不含工具输出正文**。
+
+    Args:
+        messages: LangGraph 状态中的消息列表
+
+    Returns:
+        {"tool_calls": [{"name": str, "args": dict}, ...], "iterations": int}；
+        iterations 为 AIMessage 条数（即 Agent 迭代轮数）
+    """
+    calls: list[dict] = []
+    iterations = 0
+    for m in messages:
+        if not isinstance(m, AIMessage):
+            continue
+        iterations += 1
+        for tc in m.tool_calls:
+            calls.append({"name": tc.get("name", ""), "args": tc.get("args", {})})
+    return {"tool_calls": calls, "iterations": iterations}

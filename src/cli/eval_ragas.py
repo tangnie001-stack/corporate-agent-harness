@@ -25,7 +25,7 @@ from typing import Any
 
 from langfuse.decorators import langfuse_context, observe
 
-from src.cli.eval_scoring import classify_sample
+from src.cli.eval_scoring import classify_sample, summarize_trajectory
 from src.config import settings
 from src.config.const import SAMPLE_CLASS_EMPTY
 from src.core import logging as core_logging
@@ -112,8 +112,8 @@ async def _answer_one_question(
     session_id: str,
     query: str,
     trace_id: str,
-) -> tuple[str, list[str], list[dict]]:
-    """对单个问题跑一次图，返回 (answer, contexts, retrieval_details)。
+) -> tuple[str, list[str], list[dict], list]:
+    """对单个问题跑一次图，返回 (answer, contexts, retrieval_details, messages)。
 
     trace 级输入显式写入 —— 与 `_run_generation` 同理，根函数入参含 graph 等
     内部对象，不能靠自动捕获。
@@ -126,7 +126,7 @@ async def _answer_one_question(
         trace_id: 该问题的 trace id（仅用于写入 trace 级 metadata）
 
     Returns:
-        (回答文本, 渲染后的上下文列表, 结构化检索明细)
+        (回答文本, 渲染后的上下文列表, 结构化检索明细, 状态中的消息列表)
     """
     langfuse_context.update_current_trace(input={"query": query}, session_id=session_id)
     final_state = await graph.ainvoke(
@@ -153,7 +153,9 @@ async def _answer_one_question(
         }
         for c in final_state.get("tool_contexts", [])
     ]
-    return answer, contexts, details
+    # 轨迹诊断采集用：完整消息序列（工具名/入参/迭代数由此推导）
+    messages = final_state.get("messages", [])
+    return answer, contexts, details, messages
 
 
 async def generate_answers_and_contexts(
@@ -161,7 +163,9 @@ async def generate_answers_and_contexts(
     kb_id: str,
     session_id: str,
     questions: list[str],
-) -> tuple[list[str], list[list[str]], list[str], list[list[dict]], list[str]]:
+) -> tuple[
+    list[str], list[list[str]], list[str], list[list[dict]], list[str], list[dict]
+]:
     """对每个问题生成回答，并收集检索到的上下文.
 
     Args:
@@ -171,7 +175,8 @@ async def generate_answers_and_contexts(
         questions: 问题列表
 
     Returns:
-        (answers, contexts, trace_ids, retrieval_details, sample_classes) 元组：
+        (answers, contexts, trace_ids, retrieval_details, sample_classes,
+        trajectories) 元组：
         - answers: 每个问题的完整回答文本列表
         - contexts: 每个问题对应的检索上下文列表（每个元素是文档片段列表）
         - trace_ids: 每个问题对应的 trace_id 列表（与 answers/contexts 一一对应，
@@ -181,12 +186,16 @@ async def generate_answers_and_contexts(
           [{source, score, kind}, ...]，供 detail_json 低分下钻）
         - sample_classes: 每个问题按检索来源分的样本类别（见 eval_scoring.classify_sample）；
           异常分支记为 SAMPLE_CLASS_EMPTY
+        - trajectories: 每个问题的轨迹诊断摘要（见 eval_scoring.summarize_trajectory，
+          工具名 + 入参 + 迭代数，不含工具输出正文）；异常分支记为
+          {"tool_calls": [], "iterations": 0}
     """
     answers: list[str] = []
     contexts: list[list[str]] = []
     trace_ids: list[str] = []
     retrieval_details: list[list[dict]] = []
     sample_classes: list[str] = []
+    trajectories: list[dict] = []
 
     for i, q in enumerate(questions):
         core_logging.log_event(Event.QA_ANSWER_START, index=i + 1, query=q)
@@ -202,7 +211,7 @@ async def generate_answers_and_contexts(
         ctx_token = current_request_ctx.set(req_ctx)
 
         try:
-            answer, ctx_list, details = await _answer_one_question(
+            answer, ctx_list, details, messages = await _answer_one_question(
                 graph,
                 kb_id,
                 session_id,
@@ -216,6 +225,7 @@ async def generate_answers_and_contexts(
             contexts.append(ctx_list)
             retrieval_details.append(details)
             sample_classes.append(classify_sample(req_ctx.tool_contexts))
+            trajectories.append(summarize_trajectory(messages))
             core_logging.log_event(
                 Event.QA_ANSWER_DONE,
                 index=i + 1,
@@ -228,11 +238,12 @@ async def generate_answers_and_contexts(
             contexts.append([])
             retrieval_details.append([])
             sample_classes.append(SAMPLE_CLASS_EMPTY)
+            trajectories.append({"tool_calls": [], "iterations": 0})
         finally:
             current_request_ctx.reset(ctx_token)
             current_trace_id.reset(trace_token)
 
-    return answers, contexts, trace_ids, retrieval_details, sample_classes
+    return answers, contexts, trace_ids, retrieval_details, sample_classes, trajectories
 
 
 def run_evaluation(
@@ -604,7 +615,14 @@ def main() -> None:
             core_logging.log_event(Event.VECTOR_STORE_EMPTY, kb_id=kb_id)
             print("Knowledge base is empty")
             sys.exit(1)
-        answers, contexts, trace_ids, retrieval_details, _sample_classes = generated
+        (
+            answers,
+            contexts,
+            trace_ids,
+            retrieval_details,
+            _sample_classes,
+            _trajectories,
+        ) = generated
         # 生成段结束即 flush：--gate 路径会提前 sys.exit，晚 flush 等于丢数据
         flush_tracing()
 
