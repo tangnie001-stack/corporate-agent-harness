@@ -158,6 +158,70 @@ async def _answer_one_question(
     return answer, contexts, details, messages
 
 
+async def _collect_one_question(
+    graph: Any,
+    kb_id: str,
+    session_id: str,
+    query: str,
+    trace_id: str,
+    index: int,
+) -> tuple[str, list[str], list[dict], str, dict]:
+    """对单个问题跑图，返回 (answer, contexts, details, sample_class, trajectory)。
+
+    每题独立 seed RequestContext（F-32）：工具据此把材料写入 ctx.tool_contexts，
+    收尾节点 agent_finalize 再回填 state.tool_contexts（否则 context 指标恒空）；
+    无论成败都在 finally 复位 contextvar，防止样本间泄漏。异常不向上抛，而是返回
+    与成功分支同形对齐的空占位（answer 记 `[ERROR]`），由调用方逐题收集。
+
+    Args:
+        graph: LangGraph 编译后的图实例
+        kb_id: 知识库 UUID
+        session_id: 会话 ID
+        query: 该问题文本
+        trace_id: 该问题的 trace id（写入 trace 级 metadata）
+        index: 该问题在整批中的 1-based 序号（仅用于日志）
+
+    Returns:
+        (回答文本, 渲染后的上下文列表, 结构化检索明细, 样本类别, 轨迹摘要)
+    """
+    core_logging.log_event(Event.QA_ANSWER_START, index=index, query=query)
+    # F-32：镜像 turn_runner，seed 请求上下文，使 retrieve_kb 等工具收集的
+    # 材料可经 agent_finalize 回填 state.tool_contexts（否则 context 指标恒空）
+    req_ctx = RequestContext(session_id=session_id, kb_id=kb_id)
+    ctx_token = current_request_ctx.set(req_ctx)
+    try:
+        answer, ctx_list, details, messages = await _answer_one_question(
+            graph,
+            kb_id,
+            session_id,
+            query,
+            trace_id,
+            # @observe 包装器在调用前取走 langfuse_observation_id（静态签名看不到），
+            # 类型检查无法感知该 kwarg
+            langfuse_observation_id=trace_id,  # type: ignore[reportCallIssue]
+        )
+        sample_class = classify_sample(req_ctx.tool_contexts)
+        trajectory = summarize_trajectory(messages)
+        core_logging.log_event(
+            Event.QA_ANSWER_DONE,
+            index=index,
+            answer_len=len(answer),
+            contexts=len(ctx_list),
+        )
+        return answer, ctx_list, details, sample_class, trajectory
+    except Exception as e:  # noqa: BLE001
+        core_logging.log_event(Event.QA_ANSWER_FAILED, index=index, err=str(e))
+        return (
+            f"[ERROR] {e}",
+            [],
+            [],
+            SAMPLE_CLASS_EMPTY,
+            {"tool_calls": [], "iterations": 0},
+        )
+    finally:
+        current_request_ctx.reset(ctx_token)
+
+
 async def generate_answers_and_contexts(
     graph: Any,
     kb_id: str,
@@ -198,52 +262,37 @@ async def generate_answers_and_contexts(
     trajectories: list[dict] = []
 
     for i, q in enumerate(questions):
-        core_logging.log_event(Event.QA_ANSWER_START, index=i + 1, query=q)
-
         # 每个问题一个独立 trace_id，并写入 contextvar —— loguru patcher 会
         # 把它注入到该问题期间的所有日志行，Langfuse trace 也以它为 id
         trace_id = f"eval_{uuid.uuid4().hex[:12]}"
         trace_ids.append(trace_id)
         trace_token = current_trace_id.set(trace_id)
-        # F-32：镜像 turn_runner，seed 请求上下文，使 retrieve_kb 等工具收集的
-        # 材料可经 agent_finalize 回填 state.tool_contexts（否则 context 指标恒空）
-        req_ctx = RequestContext(session_id=session_id, kb_id=kb_id)
-        ctx_token = current_request_ctx.set(req_ctx)
-
         try:
-            answer, ctx_list, details, messages = await _answer_one_question(
-                graph,
-                kb_id,
-                session_id,
-                q,
-                trace_id,
-                # @observe 包装器在调用前取走 langfuse_observation_id（静态签名看不到），
-                # 类型检查无法感知该 kwarg
-                langfuse_observation_id=trace_id,  # type: ignore[reportCallIssue]
+            (
+                answer,
+                ctx_list,
+                details,
+                sample_class,
+                trajectory,
+            ) = await _collect_one_question(
+                graph, kb_id, session_id, q, trace_id, i + 1
             )
-            answers.append(answer)
-            contexts.append(ctx_list)
-            retrieval_details.append(details)
-            sample_classes.append(classify_sample(req_ctx.tool_contexts))
-            trajectories.append(summarize_trajectory(messages))
-            core_logging.log_event(
-                Event.QA_ANSWER_DONE,
-                index=i + 1,
-                answer_len=len(answer),
-                contexts=len(ctx_list),
-            )
-        except Exception as e:  # noqa: BLE001
-            core_logging.log_event(Event.QA_ANSWER_FAILED, index=i + 1, err=str(e))
-            answers.append(f"[ERROR] {e}")
-            contexts.append([])
-            retrieval_details.append([])
-            sample_classes.append(SAMPLE_CLASS_EMPTY)
-            trajectories.append({"tool_calls": [], "iterations": 0})
         finally:
-            current_request_ctx.reset(ctx_token)
             current_trace_id.reset(trace_token)
+        answers.append(answer)
+        contexts.append(ctx_list)
+        retrieval_details.append(details)
+        sample_classes.append(sample_class)
+        trajectories.append(trajectory)
 
-    return answers, contexts, trace_ids, retrieval_details, sample_classes, trajectories
+    return (
+        answers,
+        contexts,
+        trace_ids,
+        retrieval_details,
+        sample_classes,
+        trajectories,
+    )
 
 
 def run_evaluation(

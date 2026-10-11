@@ -10,7 +10,6 @@ from src.cli.eval_scoring import (
     main_score_means,
     retrieval_coverage,
     summarize_trajectory,
-    tool_call_names,
 )
 from src.rag.context import RAGContext
 
@@ -87,38 +86,6 @@ def test_retrieval_coverage() -> None:
     """有检索样本占比：1 个非 empty / 2 个样本 = 0.5。"""
     cov = retrieval_coverage([SAMPLE_CLASS_PURE_KB, SAMPLE_CLASS_EMPTY])
     assert abs(cov - 0.5) < 1e-9
-
-
-def test_tool_call_names_in_order() -> None:
-    """按消息顺序收集全部工具调用名（非 AIMessage 略过）。"""
-    msgs = [
-        HumanMessage(content="q"),
-        AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "retrieve_kb",
-                    "args": {"query": "x"},
-                    "id": "1",
-                    "type": "tool_call",
-                }
-            ],
-        ),
-        ToolMessage(content="BODY", tool_call_id="1"),
-        AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "web_search",
-                    "args": {"q": "y"},
-                    "id": "2",
-                    "type": "tool_call",
-                }
-            ],
-        ),
-        AIMessage(content="answer"),
-    ]
-    assert tool_call_names(msgs) == ["retrieve_kb", "web_search"]
 
 
 def test_summarize_trajectory_extracts_names_and_iters() -> None:
