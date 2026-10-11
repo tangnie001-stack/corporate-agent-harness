@@ -121,7 +121,8 @@ def resolve_role(
     取 `<PROVIDER>_BASE_URL` 覆盖 spec.base_url；密钥取 spec.api_key_env。
     未知角色 / provider / 无可用模型抛 KeyError，供启动期 fail-fast。
     """
-    env = os.environ if env is None else env
+    if env is None:
+        env = os.environ
     if role not in _PROVIDER_ENV:
         raise KeyError(f"未知角色: {role}")
     # provider 选择
