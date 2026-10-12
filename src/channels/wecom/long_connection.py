@@ -144,6 +144,31 @@ class LongConnectionDriver:
         self._client = None
         self._ready = False
 
+    async def send_message(self, chatid: str, content: str) -> None:
+        """主动向指定会话推送一条消息（不依赖入站帧）。
+
+        与 `reply_stream` 的区别：无入站 `req_id`，因而**没有流式更新语义**、
+        也不能更新已发出的消息（多帧快照与消息更新均要求入站帧）。需要
+        "先回执再结论"的调用方分两次调用。
+
+        实测（docs/agents/wecom-sdk-facts.md E12/E12b）：可用，约 300ms ack；
+        消息体为 `{"msgtype":"markdown","markdown":{"content":…}}`；不支持
+        `msgtype=stream`（被拒 40008）；无效 chatid 报 93006。
+
+        Args:
+            chatid: 目标会话 id（群聊填群 chatid；单聊填用户 userid）
+            content: 消息正文（markdown）
+
+        Raises:
+            RuntimeError: 连接未就绪，或 SDK 发送失败
+        """
+        client = self._client
+        if client is None:
+            raise RuntimeError("wecom driver not connected")
+        await client.send_message(
+            chatid, {"msgtype": "markdown", "markdown": {"content": content}}
+        )
+
     def _on_authenticated(self, auth_result: asyncio.Future[bool]) -> None:
         """SDK 认证成功：置就绪并唤醒等待。
 

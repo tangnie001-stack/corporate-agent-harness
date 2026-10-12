@@ -217,3 +217,36 @@ def get_callback_driver() -> CallbackDriver:
         # 契约要求统一抛 RuntimeError（路由按此捕获），故不换成 TypeError
         raise RuntimeError("当前驱动不是 CallbackDriver")  # noqa: TRY004
     return driver
+
+
+async def send_to_session(bot_key: str, chatid: str, content: str) -> bool:
+    """向指定会话主动推送一条消息；失败只记 warning 并返回 False。
+
+    通道层对外只暴露"发到某个会话"这个语义，调用方不感知 SDK 细节。
+    **不回落到默认会话**：目标由调用方显式给出，找不到就是失败。
+
+    Args:
+        bot_key: 机器人别名
+        chatid: 目标会话 id
+        content: 消息正文
+
+    Returns:
+        True 表示已发出（SDK ack 成功）；False 表示目标不存在或发送失败
+    """
+    driver = _drivers.get(bot_key)
+    if driver is None or not isinstance(driver, LongConnectionDriver):
+        logger.warning(
+            "[wecom] send skipped reason=no_driver bot_key={}", encode_value(bot_key)
+        )
+        return False
+    try:
+        await driver.send_message(chatid, content)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[wecom] send failed bot_key={} chatid={} err={}",
+            encode_value(bot_key),
+            encode_value(chatid),
+            e,
+        )
+        return False
+    return True
