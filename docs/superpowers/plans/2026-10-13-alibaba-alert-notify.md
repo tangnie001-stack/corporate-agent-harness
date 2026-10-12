@@ -715,18 +715,27 @@ Expected: 2 passed
 ```python
         # 非交互轮次（如告警分析）禁用 ask_user：无人可答，注册只会拖到澄清超时。
         # 图是编译期固化的，故必须**再编译一套**并按轮次选择，而非透传参数。
-        self._graph_no_clarify: CompiledStateGraph = build_graph(
-            vector_store,
-            self._llm,
-            self._reranker,
-            self._prompt_manager,
-            tools=make_rag_tools(
+        # ⚠️ 必须显式拼上 make_task_tools()：build_graph 只在 tools=None 的分支
+        # 追加任务工具（src/agents/graph/workflow.py:87-91），传了 tools 就不再追加。
+        # 漏掉会让报警轮丢整套任务工具（行为超出"仅禁澄清"）。
+        from src.agents.tools.task_tools import make_task_tools
+
+        no_clarify_tools = [
+            *make_rag_tools(
                 vector_store,
                 self._reranker,
                 self._prompt_manager,
                 delegate_task=delegate_task_tool,
                 include_ask_user=False,
             ),
+            *make_task_tools(),
+        ]
+        self._graph_no_clarify: CompiledStateGraph = build_graph(
+            vector_store,
+            self._llm,
+            self._reranker,
+            self._prompt_manager,
+            tools=no_clarify_tools,
             delegate_task=delegate_task_tool,
             tool_sink=fork_tool_pool_no_clarify,
             skill_direct_node=skill_direct_node,
@@ -736,7 +745,9 @@ Expected: 2 passed
         )
 ```
 
-> 实现者注意：`build_graph(..., tool_sink=...)` 需要**独立的** sink 列表（否则两套图的工具池会互相覆盖）。既有 sink 是局部变量 `fork_tool_pool: list = []`（`src/services/agent_service.py:828`，用在 `:874` 的 `tool_sink=` 与 `:881` 的工具名集合），**在它下方并列**新增 `fork_tool_pool_no_clarify: list = []`。`make_rag_tools` 已在本文件导入（用于 `make_rag_tools` 的既有调用路径）；若没有则从 `src/agents/tools/rag_tools.py` 导入。
+> 实现者注意：
+> 1. `build_graph(..., tool_sink=...)` 需要**独立的** sink 列表（否则两套图的工具池会互相覆盖）。既有 sink 是局部变量 `fork_tool_pool: list = []`（`src/services/agent_service.py:828`，用在 `:874` 的 `tool_sink=` 与 `:881` 的工具名集合），**在它下方并列**新增 `fork_tool_pool_no_clarify: list = []`。
+> 2. `agent_service.py` **当前并未导入** `make_rag_tools`（已核实 `grep` 无命中），需在 import 区新增 `from src.agents.tools.rag_tools import make_rag_tools`；`make_task_tools` 按上面代码块在函数内惰性导入（与 `workflow.py` 的既有写法一致）。
 
 (b) 在 `stream_chat` 的签名末尾追加关键字参数（保持既有位置参数不变）：
 
@@ -1170,7 +1181,7 @@ Expected: FAIL（`ImportError: cannot import name 'AlertDedup'`）
 
 - [ ] **Step 3: 实现**
 
-在 `src/services/alert_service.py` 追加（顶部 import 区补 `import time`、`from collections.abc import Sequence`、`from src.channels.wecom.bounded_map import BoundedTtlMap`）：
+在 `src/services/alert_service.py` 追加（顶部 import 区补 `import time`、`from collections.abc import Callable, Sequence`、`from src.channels.wecom.bounded_map import BoundedTtlMap`）：
 
 ```python
 class AlertDedup:
@@ -1339,7 +1350,7 @@ Expected: FAIL（`ModuleNotFoundError: No module named 'src.api.alerts'`）
 
 - [ ] **Step 3: 实现 `alert_service.handle_webhook`**
 
-在 `src/services/alert_service.py` 追加（import 区补 `import asyncio`、`import hmac`、`from src.config.alert import load_alert_config`、`from src.core.logging import encode_value`、`from loguru import logger`）：
+在 `src/services/alert_service.py` 追加（import 区补 `import asyncio`、`import hmac`、`from loguru import logger`、`from src.config.alert import AlertConfig, AlertTarget, load_alert_config`、`from src.core.logging import encode_value`）：
 
 ```python
 # 进程级单例：载荷去重窗口与配置随进程生命周期（与企微桥接 handler 同款纪律）
@@ -1769,7 +1780,7 @@ async def _safe_send(target: AlertTarget, content: str) -> None:
         )
 ```
 
-并在 `src/services/alert_service.py` 的 import 区补齐为完整的一版（已按仓库实际路径核实）：
+并在 `src/services/alert_service.py` 的 import 区补齐为完整的一版（已按仓库实际路径核实；**与 Task 7 已加的行合并，勿重复**）：
 
 ```python
 import asyncio
