@@ -204,6 +204,7 @@ class Channel:
     WEB: str = "web"  # 站点（HTTP API）
     WECOM: str = "wecom"  # 企业微信（长连接 / 回调）
     FEISHU: str = "feishu"  # 预留：飞书渠道
+    ALERT: str = "alert"  # 阿里云告警自动分析轮次
 
 
 # 渠道未设置时的日志占位（非空、不含 "|" 与 " - "，保证日志行可解析）
@@ -509,3 +510,31 @@ RAGAS_METRIC_COLUMNS: tuple[str, ...] = (
 )
 # 门禁：检索覆盖率下限（低于此值判失败，杜绝"不检索即跳空 context 指标"的规避）
 EVAL_RETRIEVAL_COVERAGE_MIN: float = 0.5
+
+
+# ── 阿里云告警接入（change: alibaba-alert-notify） ──
+
+# 告警接收端点路径（api 层只引用本常量，不 import config 其它模块）
+ALERT_WEBHOOK_PATH: Final[str] = "/alerts/webhook"
+
+# 报警会话的固定归属：全零 UUID，与任何登录用户 uid 都不同 ⇒ 会话列表天然查不到
+ALERT_USER_ID: Final[str] = "00000000-0000-0000-0000-000000000000"
+
+# 告警专用渠道标识（另需在 docs/agents/logging-rules.md 的渠道表登记）
+# 见 Channel.ALERT
+
+
+class AlertTexts:
+    """告警链路的用户可见文案与输入模板（集中管理，不散在业务代码）。"""
+
+    # 受理占位（第一段推送）；{alertname} 由载荷渲染
+    PLACEHOLDER_TEMPLATE: str = "收到告警「{alertname}」，正在分析…"
+    # 兜底转发前缀（与正常结论区分）
+    FALLBACK_PREFIX: str = "[原始告警]"
+    # 喂给 Agent 的输入模板；{alertname}/{level}/{details} 由载荷渲染
+    QUERY_TEMPLATE: str = (
+        "收到一条云监控告警，请分析其含义、可能原因与处置建议。\n"
+        "告警名称：{alertname}\n"
+        "告警等级：{level}\n"
+        "告警内容：\n{details}"
+    )
