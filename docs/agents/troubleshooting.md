@@ -32,6 +32,24 @@
 
 > 这是硬规约，见 `docs/agents/rules.md`「问题排查规则 › 以 trace_id 为中心（trace-first）」。
 
+### 2.1 零命中时，先排除"请求没到后端"
+
+站点前端**自己在浏览器里生成** `trace_id`（`login.html` / `index.html` / `chat.html` 的
+`generateTraceId()`），作为 `X-Trace-ID` 请求头发上来 —— 后端只是**沿用**这个值。
+
+因此当请求**根本没到达后端**时，该 id **只存在于浏览器**，日志与 Langfuse 里必然一条都查不到。
+最典型就是 **nginx 502**（上游容器刚被重建、nginx 还缓存着旧 IP —— 见 `defensive-patterns.md`
+「重建上游容器后必须让 nginx 重解析」）。
+
+**判据**（`grep` 全量日志零命中时按序走）：
+
+1. **经 nginx 复现一次看返回码**：`502/504` = 上游不可达，**不是应用问题**，此时不该继续往应用侧找。
+2. **看 nginx 侧**：`docker logs corporate-rag-nginx`（访问日志与 `error_log` 都在 stdout；
+   应用日志在容器内 `/data/logs/`，两者位置不同）。
+3. 排除后再回到 §2 的"观测缺口"流程。
+
+> 别把"查不到 trace_id"直接判成"日志缺失/观测缺口" —— 先确认这次请求**有没有进来**。
+
 ## 3. 环境 × 渠道矩阵
 
 | | 站点（web） | 企业微信（wecom） | 飞书（feishu，预留） |

@@ -229,6 +229,21 @@
 
 **规则**：阻塞调用不得放在事件循环线程上 —— 同步外网 / CPU 工作一律走 `asyncio.to_thread`。**事务内不得包含外网调用**：embedding 等慢调用必须在**进入事务之前**算好，事务只接收已算好的向量（`design.md` D7）—— 否则事务长占连接与锁，单 worker 下把连接池拖垮。
 
+### 重建上游容器后必须让 nginx 重解析
+
+**现象**：`deploy/nginx/nginx.conf` 用 `proxy_pass http://app:8000;`（**主机名**，非变量）—— nginx 在**配置加载时解析一次并缓存在 master 进程里**。`app` 容器重建后会拿到**新 IP**，nginx 仍往旧 IP 发 ⇒ `connect() failed (111: Connection refused)` ⇒ **502**，而且应用日志里**一条都没有**（请求根本没到应用）。
+
+2026-10-12 实测：nginx 缓存 `172.18.0.3`，`app` 重建后为 `172.18.0.7`，`POST /api/auth/verify` / `POST /api/auth/login` 全部 502。⚠️ **同一天再次重建却复用了同一 IP**（未出现 502）⇒ 这个坑**间歇出现**，别因为"上次重建没事"就忽略。
+
+**规则**：任何重建 / 替换 `app` 容器的操作之后，都要让 nginx 重新加载配置：
+```bash
+docker compose exec -T nginx nginx -s reload     # 或：docker compose restart nginx
+```
+
+- **走 `deploy.sh` 的路径已内置**：`scripts/deploy/deploy.sh` 在 `compose up -d` 之后固定执行 `nginx -s reload`（`6/8 启动服务` 段），所以流水线发布与 `deploy.sh start` 都有防护。
+- **手工 `docker compose up -d --force-recreate app` 不在覆盖范围内** —— 这正是本地/临时排障的常见形态，必须自己补这一句。
+- **未实测**：`nginx -s reload` 是否足以重解析静态 upstream（按 nginx 语义应当可以 —— reload 会让 master 重读配置并重解析）。当天实测到能修的是 `docker compose restart nginx`。
+
 ### compose bind mount 不写绝对路径
 
 **现象**：`docker-compose.override.yml` 曾把 6 条开发期挂载写成主工作区绝对路径（`/mnt/.../corporate_rag/{src,tests,skills,agents}` 与 `deploy/nginx/{nginx.conf,html}`）。危害两层，都是静默的：① 仓库 clone / 挪到别的路径后 bind 源不存在（Docker 可能报错，也可能静默建成**空目录**），容器看不到 `src/` 与 nginx 内容；② 在 `git worktree` 里跑 compose 时挂的仍是**主工作区**的文件 —— worktree 的改动静默失效，且看起来像生效了。
