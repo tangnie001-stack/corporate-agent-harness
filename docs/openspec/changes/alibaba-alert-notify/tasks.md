@@ -8,8 +8,8 @@
 
 ## 2. 配置
 
-- [ ] 2.1 `src/config/` 新增告警配置：接收 token、目标群（**单行 JSON**，含 `bot_key` + `chatid`）、去重时间窗、整轮超时、固定 `user_id`（全零 UUID）、占位与兜底文案、兜底长度上限、query 模板
-- [ ] 2.2 启动期校验（对齐 `src/config/wecom_bots.py` 的做法）：单行 JSON、必填非空、非法即 fail-fast 且不回显敏感值；**token 为空视为"未配置"**，不阻断启动
+- [ ] 2.1 `src/config/` 新增告警配置：**token 用独立键**（`ALERT_WEBHOOK_TOKEN`，不塞进目标 JSON）、**目标群单目标 JSON**（`{bot_key, chatid}`，机器人复用 `dev`）、去重时间窗、整轮超时、固定 `user_id`（全零 UUID）、占位与兜底文案、兜底长度上限、query 模板
+- [ ] 2.2 启动期校验（对齐 `src/config/wecom_bots.py` 的做法）：目标群 JSON 必填非空、非法即 fail-fast 且不回显敏感值；**token 为空视为"未配置"**，不阻断启动
 - [ ] 2.3 同步 `.env.template` 与 `.env.example`（**两个文件都要改**）
 - [ ] 2.4 渠道值 `ALERT` 进 `src/config/`（常量），文案类承载占位与兜底文本
 
@@ -58,13 +58,13 @@
 - [ ] 8.1 `docs/agents/api_contract.md` 登记新端点（路径、**请求头鉴权**、请求/响应形状、5 秒应答约束、历史踩坑）
 - [ ] 8.2 `docs/agents/code-map.md` 登记新增模块与改动落点
 - [ ] 8.3 `docs/agents/logging-rules.md` 登记渠道值 `ALERT`
-- [ ] 8.4 `docs/agents/deploy-runbook.md` 补：告警 token 与目标群随 `.env` 上机；ARMS 侧「通用 Webhook + 自定义 Header」配置步骤；首次取 `chatid` 的做法（含 `title` 仅首次生效）
+- [ ] 8.4 `docs/agents/deploy-runbook.md` 补：告警 token 与目标群随 `.env` 上机；ARMS 侧「通用 Webhook + 自定义 Header」配置步骤；**我们规定的自定义 body 模板正文（必需项，字段名即解析契约）**；首次取 `chatid` 的做法（含 `title` 仅首次生效）
 
 ## 9. 部署与验收
 
 - [ ] 9.1 目标机 `.env` 补 token 与目标群（**先同步 `.env`，再上新制品**）
-- [ ] 9.2 阿里云侧建「通用 Webhook」通知对象（**Header 带 token**，可选自定义 body 模板）并在通知策略中引用；用「发送测试」验证连通
-- [ ] 9.3 抓一份真实 payload 落日志（脱敏），确认字段齐备与 `alarmId` 稳定性，校准 design 的 Open Questions
+- [ ] 9.2 阿里云侧建「通用 Webhook」通知对象（**Header 带 token**，**按我们规定的模板正文填自定义 body 模板**）并在通知策略中引用；用「发送测试」抓一份真实 body 核对字段名
+- [ ] 9.3 抓一份真实 payload 落日志（脱敏），确认字段齐备（与规定模板一致）与 `alarmId` 稳定性，校准 design 的 Open Questions
 - [ ] 9.4 真实触发一次告警 → 确认群里**先收到受理占位、后收到结论**
 - [ ] 9.5 制造一次分析失败 → 确认兜底转发生效且带 `[原始告警]` 前缀
 - [ ] 9.6 确认端点在上游 5 秒内返回（用真实 ARMS 触发，观察有无超时重试）

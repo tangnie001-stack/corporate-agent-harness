@@ -39,13 +39,13 @@ token 不匹配、或该端点**未配置 token** 时，系统 SHALL 返回 **40
 
 ### Requirement: 告警载荷解析与必填校验
 
-系统 SHALL 按 ARMS Webhook 通知载荷（Alertmanager 风格：顶层含 `alerts` **数组**、`commonLabels`、`status`）解析出：**报警标识**（`alarmId`）、每条告警的**指纹**（`alerts[].fingerprint`）、**告警名称**（`commonLabels.alertname`）、**告警等级**（`level`）以及每条告警的描述（`alerts[].annotations.message`）。
+系统 SHALL 按**约定的 ARMS 自定义 body 模板**解析载荷 —— 模板由本项目规定字段名并记录于 `deploy-runbook.md`，是本能力的**外部接口契约**（ARMS 默认模板不含 `alarmId`/`fingerprint`，故模板为**必需**）。解析出：**报警标识**（`alarmId`）、每条告警的**指纹**（`fingerprint`）、**告警名称**（`alertname`）、**告警等级**（`level`）以及每条告警的描述（message）。
 
 必填字段缺失或载荷非法（含 JSON 不可解析）时，系统 SHALL 记 warning 并返回可识别的错误响应，SHALL NOT 以未处理异常结束。
 
 #### Scenario: 正常载荷
 
-- **WHEN** 收到含 `alarmId`、`commonLabels.alertname` 与至少一条带 `fingerprint` 的 alert 的合法载荷
+- **WHEN** 收到按约定模板渲染、含报警标识与至少一条带指纹的告警的合法载荷
 - **THEN** 系统解析出上述字段并继续处理
 
 #### Scenario: 缺必填字段
@@ -55,8 +55,8 @@ token 不匹配、或该端点**未配置 token** 时，系统 SHALL 返回 **40
 
 #### Scenario: 载荷含多条告警
 
-- **WHEN** 顶层 `alerts` 含多条元素
-- **THEN** 系统逐条读取其 `fingerprint` 与 `annotations.message`，不因多条而报错
+- **WHEN** 载荷含多条告警元素
+- **THEN** 系统逐条读取其指纹与描述，不因多条而报错
 
 ### Requirement: 入口按告警指纹去重
 
