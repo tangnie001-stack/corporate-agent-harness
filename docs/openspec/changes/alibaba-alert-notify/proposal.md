@@ -29,7 +29,7 @@
 ## Impact
 
 - **代码**：新增 API 路由（`src/api/`）、服务层编排、企微通道新增主动发送出口（`src/channels/wecom/`）、配置项（`src/config/`）、渠道标识登记（`docs/agents/logging-rules.md`）。
-- **依赖**：aibot SDK 的 `client.send_message(chatid, body)` —— SDK 里有该方法，但**本项目从未使用、未验证**（事实表 `wecom-sdk-facts.md` 未覆盖）⇒ 必须先 spike 确认可用性、目标限制与**频率上限**（两段式使消息数翻倍）。
+- **依赖**：aibot SDK 的 `client.send_message(chatid, body)` —— **已 spike 通过**（`wecom-sdk-facts.md` E12/E12b）：可向群主动发送、**无流式**、错误码 `93006`/`40008`、chatid 为**群维度且未交互也能发**。因此"两段式"是终态形态。**残留风险**：生产机 + 目标群上的端到端效果未验。
 - **阿里云侧**：ARMS 通知策略 + 「通用 Webhook」通知对象。该通知对象支持**自定义 Header（Header+Param ≤6 个）**与**自定义 body 模板（Go Template，≤500 字符）** —— 前者用于传 token，后者用于把载荷塑造成易读形状（兜底转发直接受益）。
 - **数据**：报警会话写入 `sessions` / `conversation_history`（每个报警事件一行会话）；`user_id` 为全零 UUID。
 - **不改动**：现有站点问答链路与企微「@ 机器人」问答链路保持不变。
