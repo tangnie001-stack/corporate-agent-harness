@@ -54,7 +54,7 @@
   ```
   ⇒ **本地新增/修改的键不会自动上机**：凡涉及 `.env` 的改动（如新增 `WECOM_BOTS`），都要先手工同步到目标机、再重跑部署（或 `deploy.sh start`），否则容器读不到新键、对应功能静默不生效。
 - 企微长连接的多机器人配置写在 `WECOM_BOTS`，值是**一行 JSON**（`[{"key":"dev","bot_id":"<BotID>","secret":"<Secret>"}, {"key":"support","bot_id":"<BotID>","secret":"<Secret>"}]`）：**必须单行** —— 多行会导致 JSON 解析失败、通道启动报错（`WECOM_BOT_MODE=long_connection` 且 `WECOM_BOTS` 为空同样启动报错）。
-- **企微开关归属（`WECOM_BOT_ENABLED`）**：本地 `.env` **一律保持 `false`**（开发机 uvicorn 与 dev compose 都不连，避免抢占生产机器人的连接、两边互踢）；**生产由 `docker-compose.image.yml` 的 app `environment:` 强制 `"true"`**（compose `environment` 覆盖 `env_file`，已实测）。⇒ 同一份 `.env` 通用；生产 `.env` 只需 `WECOM_BOT_MODE=long_connection` + `WECOM_BOTS`，**不必**写 `WECOM_BOT_ENABLED`。
+- **企微开关归属（`WECOM_BOT_ENABLED`）**：本地 `.env` **一律保持 `false`**（开发机 uvicorn 与 dev compose 都不连，避免抢占生产机器人的连接、两边互踢）；**生产侧的取值由 `docker-compose.image.yml` 的 app `environment:` 决定**（覆盖 `env_file`，已实测）—— **关停 / 恢复线上机器人就是改这一行再重新发布**（改目标机 `.env` 无效）。⇒ 同一份 `.env` 通用；生产 `.env` 只需 `WECOM_BOT_MODE=long_connection` + `WECOM_BOTS`，**不必**写 `WECOM_BOT_ENABLED`。
   - ⚠️ **顺序陷阱**：若先让含该覆盖的新 compose 上机、而生产 `.env` 尚无 `WECOM_BOTS` ⇒ `ENABLED=true` + 空注册表 ⇒ **应用启动 fail-fast**（部署 `health_check` 失败）。**先同步 `.env`，再让新 compose 上机**。
 - 不得依赖 compose 的 `${X:-默认值}` 兜底 —— `deploy.sh` 会按 compose 插值变量清单校验非空，缺键即失败。
 - MinIO 两对键**已同源**：`docker-compose.image.yml` 直接用 `.env` 的 `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` 供 `MINIO_ROOT_USER/PASSWORD`。**不要**改回需要人工保持相等的两对。
