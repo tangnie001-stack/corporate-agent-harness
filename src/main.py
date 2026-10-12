@@ -9,9 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from src.api import auth as auth_routes
-from src.api import capabilities as capabilities_routes
 from src.api import (
+    alerts_router,
     chat_router,
     clarify_router,
     doc_router,
@@ -21,6 +20,8 @@ from src.api import (
     kb_router,
     sessions_router,
 )
+from src.api import auth as auth_routes
+from src.api import capabilities as capabilities_routes
 from src.api import ragas_generate as ragas_generate_routes
 from src.api import wecom as wecom_routes
 from src.config.prompts import validation
@@ -240,6 +241,7 @@ app.middleware("http")(
 )  # 最后注册 = 最外层，确保所有路径都写 X-Trace-ID
 
 # 挂载路由模块
+app.include_router(alerts_router, prefix="/api", tags=["alerts"])
 app.include_router(auth_routes.router, prefix="/api", tags=["auth"])
 app.include_router(health_router, prefix="/api", tags=["health"])
 app.include_router(kb_router, prefix="/api", tags=["knowledge-bases"])

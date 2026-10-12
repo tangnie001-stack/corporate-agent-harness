@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import hmac
 import json
 import time
 import uuid
@@ -16,8 +18,12 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from loguru import logger
+
 from src.channels.wecom.bounded_map import BoundedTtlMap
+from src.config.alert import AlertConfig, AlertTarget, load_alert_config
 from src.config.const import WECOM_NS, AlertTexts
+from src.core.logging import encode_value
 
 
 @dataclass(frozen=True)
@@ -174,3 +180,74 @@ class AlertDedup:
     def __len__(self) -> int:
         """当前窗口内登记条目数（测试用）。"""
         return len(self._map)
+
+
+# 进程级单例：载荷去重窗口与配置随进程生命周期（与企微桥接 handler 同款纪律）
+_dedup: AlertDedup | None = None
+
+
+def _get_dedup() -> AlertDedup:
+    """惰性构造去重器（配置在首次调用时读取）。"""
+    global _dedup
+    if _dedup is None:
+        cfg = load_alert_config()
+        _dedup = AlertDedup(
+            capacity=cfg.dedup_capacity, ttl_seconds=cfg.dedup_window_seconds
+        )
+    return _dedup
+
+
+def _reset_for_test() -> None:
+    """测试钩子：丢弃进程级去重器与配置缓存。"""
+    global _dedup
+    _dedup = None
+
+
+def handle_webhook(raw_body: bytes, token_header: str | None) -> int:
+    """处理一次告警请求，返回 HTTP 状态码。
+
+    校验与去重通过后**立即**返回 202，把"跑 Agent → 推送"放进后台任务 ——
+    上游 Webhook 有 5 秒硬超时，等待分析会把响应拖过上限并触发重试。
+
+    Args:
+        raw_body: 原始请求体
+        token_header: 请求头里的 token（缺失为 None）
+
+    Returns:
+        202 已受理（含去重丢弃）；404 token 不匹配或未配置；400 载荷非法
+    """
+    cfg = load_alert_config()
+    if cfg.token == "" or not hmac.compare_digest(token_header or "", cfg.token):
+        return 404
+    try:
+        event = parse_alert_payload(raw_body)
+    except ValueError as e:
+        logger.warning("[alert] payload invalid err={}", e)
+        return 400
+    if _get_dedup().is_duplicate(event.fingerprints):
+        logger.info(
+            "[alert] duplicate dropped alarm_id={} n_fp={}",
+            encode_value(event.alarm_id),
+            len(event.fingerprints),
+        )
+        return 202
+    asyncio.create_task(
+        _run_analysis(
+            cfg,
+            event,
+            target=cfg.target,
+            bot_key=cfg.target.bot_key if cfg.target else "",
+        )
+    )
+    return 202
+
+
+async def _run_analysis(
+    cfg: AlertConfig, event: AlertEvent, *, target: AlertTarget | None, bot_key: str
+) -> None:
+    """占位：Task 8 实现完整编排（本存根以异常兜底，禁止静默存活）。
+
+    Raises:
+        NotImplementedError: 恒抛 —— 编排尚未实现，后台任务须以异常暴露而非静默丢弃。
+    """
+    raise NotImplementedError("_run_analysis 由 Task 8 实现，此存根不得留在最终提交里")
