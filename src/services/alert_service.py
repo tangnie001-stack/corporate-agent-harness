@@ -10,10 +10,13 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from src.channels.wecom.bounded_map import BoundedTtlMap
 from src.config.const import WECOM_NS, AlertTexts
 
 
@@ -126,3 +129,48 @@ def render_fallback(event: AlertEvent, max_chars: int) -> str:
     if len(body) > max_chars:
         body = body[:max_chars]
     return f"{AlertTexts.FALLBACK_PREFIX} {body}"
+
+
+class AlertDedup:
+    """入口去重：逐条指纹 + 时间窗的有界结构。
+
+    仅当**全部**指纹都命中窗口时判为重复（宁可多跑一条 Agent，也不漏报）；
+    判为不重复时把全部指纹登记进窗口。
+    """
+
+    def __init__(
+        self,
+        *,
+        capacity: int,
+        ttl_seconds: float,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """初始化。
+
+        Args:
+            capacity: 指纹条目容量上限（超出淘汰最旧）
+            ttl_seconds: 指纹存活秒数（自登记起算）
+            monotonic: 单调时钟（测试注入以稳定断言过期）
+        """
+        self._map = BoundedTtlMap(
+            capacity=capacity, ttl_seconds=ttl_seconds, monotonic=monotonic
+        )
+
+    def is_duplicate(self, fingerprints: Sequence[str]) -> bool:
+        """判断本批指纹是否全部在窗口内出现过。
+
+        Args:
+            fingerprints: 本条请求涉及的全部指纹（调用方保证非空）
+
+        Returns:
+            True 表示全部命中（应丢弃）；False 表示应正常处理（已登记本批）
+        """
+        if all(self._map.get(fp) is not None for fp in fingerprints):
+            return True
+        for fp in fingerprints:
+            self._map.put(fp, "1")
+        return False
+
+    def __len__(self) -> int:
+        """当前窗口内登记条目数（测试用）。"""
+        return len(self._map)
