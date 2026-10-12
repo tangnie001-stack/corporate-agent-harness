@@ -31,6 +31,7 @@ from src.agents.graph.workflow import build_graph
 from src.agents.skills.models import SkillContext
 from src.agents.skills.prefix import parse_prefix
 from src.agents.skills.rendering import render_skill_body
+from src.agents.tools.rag_tools import make_rag_tools
 from src.chat.manager import ChatManager
 from src.chat.streaming import (
     StreamingRunManager,
@@ -826,6 +827,9 @@ class AgentService:
         # 延迟 provider 读取它按 skill 白名单筛选子代理工具（打破工具集 ↔ executor
         # 循环依赖）。构造期为空，build_graph 完成后被填充
         fork_tool_pool: list = []
+        # 无澄清图（非交互轮次）的独立 sink：两套图各有自己的工具池，必须分开，
+        # 否则后编译的一套会覆盖前一套的池，令 fork 子代理拿到错误的可用工具集
+        fork_tool_pool_no_clarify: list = []
         # skill_registry / skill_executor 提到分支外可见：直出节点（Task 8）需要二者，
         # 未命中（目录缺失/注册表为空）时置 None，直出节点退化为兜底文案
         skill_registry = None
@@ -879,6 +883,36 @@ class AgentService:
         # 故在装配期直接暴露，而非每请求静默跳过。
         self._tool_names: frozenset[str] = frozenset(
             str(t.name) for t in fork_tool_pool
+        )
+        # 非交互轮次（如告警分析）禁用 ask_user：无人可答，注册只会拖到澄清超时。
+        # 图是编译期固化的，故必须**再编译一套**并按轮次选择，而非透传参数。
+        # ⚠️ 必须显式拼上 make_task_tools()：build_graph 只在 tools=None 的分支
+        # 追加任务工具（src/agents/graph/workflow.py:87-91），传了 tools 就不再追加。
+        # 漏掉会让报警轮丢整套任务工具（行为超出"仅禁澄清"）。
+        from src.agents.tools.task_tools import make_task_tools
+
+        no_clarify_tools = [
+            *make_rag_tools(
+                vector_store,
+                self._reranker,
+                self._prompt_manager,
+                delegate_task=delegate_task_tool,
+                include_ask_user=False,
+            ),
+            *make_task_tools(),
+        ]
+        self._graph_no_clarify: CompiledStateGraph = build_graph(
+            vector_store,
+            self._llm,
+            self._reranker,
+            self._prompt_manager,
+            tools=no_clarify_tools,
+            delegate_task=delegate_task_tool,
+            tool_sink=fork_tool_pool_no_clarify,
+            skill_direct_node=skill_direct_node,
+        )
+        self._tool_names_no_clarify: frozenset[str] = frozenset(
+            str(t.name) for t in fork_tool_pool_no_clarify
         )
         # 能力清单服务（Task 9）：由两个注册表派生只读清单，api 层只转发
         self.capability_service = CapabilityService(skill_registry, preset_registry)
@@ -950,6 +984,8 @@ class AgentService:
         query: str,
         deep_thinking: bool = False,
         agent: str = "",
+        *,
+        clarify: bool = True,
     ) -> tuple[AsyncGenerator[SSEEvent, None], dict]:
         """准备一轮生成的订阅生成器与启动上下文，不再启动后台任务。
 
@@ -967,6 +1003,8 @@ class AgentService:
                 以思考模式调用（enable_thinking）
             agent: 请求体传入的智能体预设名（ASCII slug；空=未指定）。
                 生效值经 _resolve_session_agent bind-once 解析后写入 ctx.agent
+            clarify: 是否允许澄清追问（False 用于报警等非交互轮次；切换为此编译的
+                无 ask_user 图，并同步段组装用的工具名集合）
 
         Returns:
             (subscription_generator, launch_context)：
@@ -990,7 +1028,7 @@ class AgentService:
         ctx = RequestContext(session_id=session_id)
         ctx.kb_id = kb_id
         ctx.kb_bound = bool(kb_id)
-        ctx.tool_names = self._tool_names
+        ctx.tool_names = self._tool_names if clarify else self._tool_names_no_clarify
         # 知识库领域：base 段三选一的依据。领域非法（无对应 base 模板）时回落到保留值
         # general 并记 warning，不阻断请求 —— 写入侧已拒绝非法值（KBService._require_known_domain），
         # 此处兜的是"模板被删/改名后存量库指向了不存在的领域"这类跨版本情形。
@@ -1009,7 +1047,7 @@ class AgentService:
         launch_context = {
             "history": history,
             "ctx": ctx,
-            "graph": self._graph,
+            "graph": self._graph if clarify else self._graph_no_clarify,
             "session_id": session_id,
             "kb_id": kb_id,
             "query": query,

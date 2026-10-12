@@ -442,6 +442,7 @@ async def _launch_and_register(
     abort_signal: asyncio.Event | None,
     redis: object,
     lock_held: bool,
+    clarify: bool,
 ) -> TurnHandle:
     """取订阅与启动上下文，起后台任务并注册，返回事件流句柄。
 
@@ -460,6 +461,7 @@ async def _launch_and_register(
         abort_signal: 取消信号（None 时内部新建）
         redis: ChatManager 的 Redis 客户端（释放锁用）
         lock_held: 是否已取得 Redis 锁
+        clarify: 是否允许澄清追问（False 用于报警等非交互轮次，透传给 stream_chat）
 
     Returns:
         TurnHandle：其 events 为结构化 SSEEvent 流
@@ -468,7 +470,7 @@ async def _launch_and_register(
 
     try:
         _subscription, launch_ctx = await svc.agent_service.stream_chat(
-            kb_id, session_id, query, deep_thinking, agent=agent
+            kb_id, session_id, query, deep_thinking, agent=agent, clarify=clarify
         )
     except Exception as e:  # noqa: BLE001
         # 任务未启动，无后台任务可释放，本路径直接释放预留 + 锁避免挂到 TTL；
@@ -510,6 +512,7 @@ async def start_turn(
     deep_thinking: bool = False,
     agent: str = "",
     title: str | None = None,
+    clarify: bool = True,
     abort_signal: asyncio.Event | None = None,
 ) -> TurnHandle:
     """启动一轮生成，返回事件流句柄（站点与通道共用）。
@@ -528,6 +531,7 @@ async def start_turn(
         deep_thinking: 深度思考开关
         agent: 智能体预设名
         title: 会话标题（None → query[:20]；仅首次落库生效）
+        clarify: 是否允许澄清追问（False 用于报警等非交互轮次，见 design D12）
         abort_signal: 取消信号（None 时内部新建）
 
     Returns:
@@ -554,4 +558,5 @@ async def start_turn(
         abort_signal=abort_signal,
         redis=redis,
         lock_held=lock_held,
+        clarify=clarify,
     )

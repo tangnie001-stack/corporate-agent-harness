@@ -22,7 +22,9 @@ def test_chat_stream_returns_sse():
         yield SSETokenEvent("净利润")
         yield SSEDoneEvent(trace_id="")
 
-    async def fake_stream_chat(kb_id, session_id, query, deep_thinking=False, agent=""):
+    async def fake_stream_chat(
+        kb_id, session_id, query, deep_thinking=False, agent="", *, clarify=True
+    ):
         # start_turn 从进程内事件缓冲订阅（真实 stream_chat 返回的订阅即缓冲
         # 消费者），故假 stream_chat 必须把事件写入缓冲，端点才能订阅到。
         streaming_manager.clear_buffer(session_id)
@@ -177,7 +179,9 @@ def test_chat_stream_passes_deep_thinking():
         yield SSETokenEvent("ok")
         yield SSEDoneEvent(trace_id="")
 
-    async def fake_stream_chat(kb_id, session_id, query, deep_thinking=False, agent=""):
+    async def fake_stream_chat(
+        kb_id, session_id, query, deep_thinking=False, agent="", *, clarify=True
+    ):
         captured["deep_thinking"] = deep_thinking
         # 缓冲写入终止态：start_turn 从进程内缓冲订阅，否则端点无终态可收
         streaming_manager.clear_buffer(session_id)
@@ -234,7 +238,9 @@ def test_chat_stream_passes_agent():
         yield SSETokenEvent("ok")
         yield SSEDoneEvent(trace_id="")
 
-    async def fake_stream_chat(kb_id, session_id, query, deep_thinking=False, agent=""):
+    async def fake_stream_chat(
+        kb_id, session_id, query, deep_thinking=False, agent="", *, clarify=True
+    ):
         captured["agent"] = agent
         # 缓冲写入终止态：start_turn 从进程内缓冲订阅，否则端点无终态可收
         streaming_manager.clear_buffer(session_id)

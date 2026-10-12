@@ -64,6 +64,8 @@ def make_rag_tools(
     reranker,
     prompt_manager,
     delegate_task: BaseTool | None = None,
+    *,
+    include_ask_user: bool = True,
 ) -> list[BaseTool]:
     """构建工具列表：注册表管理；retrieve_kb 始终注册（KB=RAG 开关在工具内实现）。
 
@@ -73,6 +75,8 @@ def make_rag_tools(
         prompt_manager: 提示词管理器（闭包注入，当前工具未直接使用，保留签名）
         delegate_task: 可选 delegate_task 工具（skill 库有内容时由调用方注入并注册；
             无 skill 时传 None 不注册，主 agent 工具集保持固定三件套）
+        include_ask_user: 是否注册 ask_user（澄清追问）。报警等**非交互轮次**
+            传 False —— 无人可答，注册只会把该轮拖到澄清超时。
 
     Returns:
         工具列表：retrieve_kb（知识库检索）、ask_user（澄清追问）；开启 web 兜底时追加
@@ -256,7 +260,7 @@ def make_rag_tools(
 
     registry = ToolRegistry()
     registry.register("retrieve_kb", retrieve_kb, readonly=True)
-    registry.register("ask_user", ask_user, readonly=True)
+    registry.register("ask_user", ask_user, readonly=True, enabled=include_ask_user)
     if settings.WEB_SEARCH_ENABLED:
         from src.agents.tools.web_tools import search_web
 
