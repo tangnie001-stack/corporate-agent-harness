@@ -161,6 +161,27 @@ class StreamingRunManager:
         if signal is not None:
             signal.set()
 
+    def cancel(self, session_id: str) -> bool:
+        """硬取消该 session 的生成任务（进程内口子）。
+
+        与 `set_abort` 的区别：`set_abort` 只置位软信号、仅在**事件检查点**被
+        消费——模型或出网挂死时检查点永不到达，生成会一直跑并占着会话锁；
+        `cancel` 直接 `task.cancel()`，让生成走自身的取消路径收尾（该轮落
+        `interrupted`）。`POST /api/sessions/cancel` 因归属校验对固定 user_id
+        的会话无效，故告警轮用本方法。
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            True 表示确有活跃任务被取消；False 表示无任务或已结束
+        """
+        task = self._session_tasks.get(session_id)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
+
     def get_active_session_ids(self) -> list[str]:
         """返回所有活跃任务的 session_id（测试/清理用）。"""
         return [sid for sid, t in self._session_tasks.items() if not t.done()]
