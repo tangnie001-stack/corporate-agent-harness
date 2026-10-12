@@ -36,6 +36,14 @@
 - 选项按钮间距: 8px
 - 内容内边距: 16px
 
+## 布局规则
+
+- **可滚动的"列 flex"容器，其条目必须 `flex-shrink: 0`**。容器写成
+  `display:flex; flex-direction:column; flex:1; overflow-y:auto` 时，条目默认 `flex-shrink:1`
+  会被**压缩去适配容器高度** —— 于是 `overflow-y:auto` 永不触发、内容被 `overflow:hidden`
+  裁掉，视觉上表现为"页面/弹窗展示不全"。条目一律写 `flex: 0 0 auto`（或 `flex-shrink: 0`）。
+  实例：`.chunk-card`（`index.html` 分块预览弹窗，2026-10-12 修）。
+
 ## 组件规格
 按页登记于 `docs/design/pages/`，此处为组件索引：
 

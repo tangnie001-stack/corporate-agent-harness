@@ -52,6 +52,8 @@
 - **新建知识库 Modal**：白底圆角 12px、标题 16px `--text`；input 1px `--border` focus ring `rgba(59,130,246,0.15)`；主按钮 primary、次按钮灰
 - **删除确认 Modal**：红警告 icon（`#FEF2F2` 圆底）+ 确认按钮 red
 - **分块预览 / 评估详情 / 断裂详情 Modal**：宽版白卡 `max-h-[85vh]`，header 分隔线 `--border`；无数据时 loading spinner
+  - **分块列表是"固定高度的列 flex"，条目必须 `flex: 0 0 auto`**：`.chunk-list` 为 `display:flex; flex-direction:column; flex:1; overflow-y:auto`（模态体），`.chunk-card` 若用默认 `flex-shrink:1`，条目会被**压缩去适配容器高度** ⇒ `overflow-y` 永不触发、正文被 `overflow:hidden` 裁成一条灰边（表现为"弹窗里全是灰条、内容展示不全"）。2026-10-12 修复，属 `a634d33` 浅色化引入的缺陷。
+  - 同段共用的 `.eval-detail-body` / `.eval-broken-body` **不是** flex 列，不受此约束影响。
 - **上传 loading**：居中白卡 + spinner
 - **toast**：语义色（成功绿 `#059669` / 错误 red）
 
