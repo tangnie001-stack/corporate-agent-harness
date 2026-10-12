@@ -1,0 +1,166 @@
+## ADDED Requirements
+
+### Requirement: 告警接收端点以请求头 token 鉴权
+
+系统 SHALL 提供告警接收端点（HTTP POST），token SHALL 从**请求头**读取，并与配置值以**常数时间**比较。token SHALL NOT 出现在 URL 路径中（避免被访问日志记录）。
+
+token 不匹配、或该端点**未配置 token** 时，系统 SHALL 返回 **404**（而非 401/403），以避免暴露端点存在；此时应用 SHALL 正常启动。该端点 SHALL NOT 依赖登录态。
+
+#### Scenario: token 正确
+
+- **WHEN** 请求头中的 token 与配置一致
+- **THEN** 系统接受该请求并进入告警处理流程
+
+#### Scenario: token 错误或缺失
+
+- **WHEN** 请求头中的 token 与配置不一致，或请求未携带 token
+- **THEN** 返回 404
+
+#### Scenario: 未配置 token
+
+- **WHEN** 该端点未配置 token
+- **THEN** 应用正常启动，且对该端点的任何请求都返回 404
+
+### Requirement: 端点立即应答，不等待分析
+
+端点 SHALL 在校验与去重通过后**立即**返回成功应答，SHALL NOT 等待分析完成 —— 上游 Webhook 有 5 秒硬超时，等待会导致上游判定失败并重试。
+
+端点应答 SHALL NOT 表达分析结果：分析失败时端点仍返回"已受理"，失败通过群消息兜底体现。
+
+#### Scenario: 分析耗时长
+
+- **WHEN** 分析耗时超过上游超时阈值
+- **THEN** 端点已在上游超时之前返回成功应答，分析在后台继续
+
+#### Scenario: 分析失败不影响应答
+
+- **WHEN** 后台分析抛错
+- **THEN** 端点应答仍为"已受理"（不因分析失败改为错误码）
+
+### Requirement: 告警载荷解析与必填校验
+
+系统 SHALL 按 ARMS Webhook 通知载荷（Alertmanager 风格：顶层含 `alerts` **数组**、`commonLabels`、`status`）解析出：**报警标识**（`alarmId`）、每条告警的**指纹**（`alerts[].fingerprint`）、**告警名称**（`commonLabels.alertname`）、**告警等级**（`level`）以及每条告警的描述（`alerts[].annotations.message`）。
+
+必填字段缺失或载荷非法（含 JSON 不可解析）时，系统 SHALL 记 warning 并返回可识别的错误响应，SHALL NOT 以未处理异常结束。
+
+#### Scenario: 正常载荷
+
+- **WHEN** 收到含 `alarmId`、`commonLabels.alertname` 与至少一条带 `fingerprint` 的 alert 的合法载荷
+- **THEN** 系统解析出上述字段并继续处理
+
+#### Scenario: 缺必填字段
+
+- **WHEN** 载荷缺少报警标识或告警名称，或 JSON 不可解析
+- **THEN** 系统记 warning、返回错误响应，且不进入分析流程
+
+#### Scenario: 载荷含多条告警
+
+- **WHEN** 顶层 `alerts` 含多条元素
+- **THEN** 系统逐条读取其 `fingerprint` 与 `annotations.message`，不因多条而报错
+
+### Requirement: 入口按告警指纹去重
+
+系统 SHALL 对载荷中**每一条** alert 的 `fingerprint` 各取去重键，配合**可配置的时间窗**判重；仅当**全部**指纹都命中窗口时，该请求 SHALL 被丢弃并记 info 日志，SHALL NOT 触发分析。去重记录 SHALL 使用带过期时间与容量上限的**有界**结构（不得为无界增长的裸映射）。
+
+#### Scenario: 全部指纹命中窗口
+
+- **WHEN** 请求中所有 alert 的指纹都在去重窗口内出现过
+- **THEN** 该请求被丢弃，不触发分析
+
+#### Scenario: 存在未命中的指纹
+
+- **WHEN** 请求中至少一条 alert 的指纹不在窗口内
+- **THEN** 系统正常处理该请求
+
+### Requirement: 每次报警在独立会话中分析
+
+系统 SHALL 为报警分析派生**独立的会话标识** —— 与企微群聊/单聊的问答会话相互隔离、不复用，标识来源为**报警自带标识**。该会话 SHALL 使用**固定**的 `user_id`，SHALL NOT 挂知识库、SHALL NOT 绑定智能体预设。分析 SHALL 复用站点同一条生成管线，不另建旁路。
+
+喂给 Agent 的输入 SHALL 由固定模板构造（含告警名称、等级与各条告警的描述），模板 SHALL 位于 `src/config/`。
+
+#### Scenario: 与群问答会话隔离
+
+- **WHEN** 某群的报警被处理
+- **THEN** 其会话标识与"该群 @ 机器人"的问答会话标识不同，两侧历史互不可见
+
+#### Scenario: 固定归属
+
+- **WHEN** 报警会话被创建
+- **THEN** 其 `user_id` 为配置的固定值，普通用户的会话列表不包含该会话
+
+#### Scenario: 输入由模板构造
+
+- **WHEN** 构造本轮输入
+- **THEN** 输入文本按固定模板由载荷字段渲染，而非直接使用不可预期的原文
+
+### Requirement: 报警轮不接受澄清追问
+
+报警轮为**非交互**轮次：该轮 SHALL NOT 使用澄清追问能力 —— 不得向用户发起问题等待回答。信息不足时 SHALL 基于现有信息作答。
+
+#### Scenario: 信息不足
+
+- **WHEN** 模型判断输入缺少关键信息
+- **THEN** 本轮不产生澄清问题（无 `ask_user` 可用），直接基于现有信息作答
+
+### Requirement: 分析轮次有超时
+
+报警分析轮次 SHALL 有**可配置的整轮超时**；超时后系统 SHALL 取消该轮并转入兜底转发，SHALL NOT 让该次报警既无结论也无兜底。
+
+#### Scenario: 分析超时
+
+- **WHEN** 分析轮次超过配置的超时阈值仍未结束
+- **THEN** 该轮被取消，并执行兜底转发
+
+#### Scenario: 挂死也能收口
+
+- **WHEN** 生成侧因模型或出网问题长时间不产生终态
+- **THEN** 超时机制仍能收口（不依赖生成侧自行结束）
+
+### Requirement: 失败、空回答或繁忙时兜底转发
+
+当分析轮次抛错、超时、**结论为空**（终态文本去空白后为空）或**并发繁忙**时，系统 SHALL 把该次告警的原始内容按模板渲染后转发到目标群，确保群侧至少收到该次报警。
+
+兜底消息 SHALL 带前缀标记以与正常结论区分，SHALL 限制长度，SHALL NOT 整包 dump 原始载荷，且 SHALL NOT 写入报警会话历史。
+
+#### Scenario: 分析抛错
+
+- **WHEN** 分析轮次抛错
+- **THEN** 目标群收到带前缀标记的兜底消息
+
+#### Scenario: 结论为空
+
+- **WHEN** 本轮终态文本为空或仅含空白
+- **THEN** 系统按失败处理并兜底转发，不推送空气泡
+
+#### Scenario: 并发繁忙
+
+- **WHEN** 该会话已有轮次在跑而被拒绝
+- **THEN** 系统按失败处理并兜底转发，不返回 5xx、不静默丢失
+
+#### Scenario: 兜底不落历史
+
+- **WHEN** 走了兜底转发
+- **THEN** 该兜底内容不出现在报警会话的历史中
+
+### Requirement: 主动推送分两段
+
+系统 SHALL 在入口去重通过后**立即**推送一条**受理占位**到目标群，并在分析完成后推送**结论** —— 两条为**相互独立的消息**（主动推送无入站帧，因而不支持流式更新同一气泡）。
+
+占位消息 SHALL NOT 写入报警会话历史；占位发送失败 SHALL 只记 warning 并继续分析，SHALL NOT 阻断后续流程。占位文案 SHALL 位于 `src/config/` 的文案类。
+
+目标群 SHALL 来自配置，SHALL NOT 由告警内容动态决定；未配置目标群时 SHALL 不发送并记 warning。
+
+#### Scenario: 两段顺序
+
+- **WHEN** 一次报警被受理并完成分析
+- **THEN** 目标群先收到受理占位、后收到分析结论
+
+#### Scenario: 占位发送失败
+
+- **WHEN** 受理占位发送失败
+- **THEN** 系统记 warning，分析继续执行，结论仍会推送
+
+#### Scenario: 未配置目标群
+
+- **WHEN** 未配置目标群
+- **THEN** 系统不发送并记 warning，流程其余部分不失败
