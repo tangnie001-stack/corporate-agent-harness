@@ -223,6 +223,44 @@ t≈8.5min   「E7 结束 —— …」终态    ack 0.397s   ← 越过 6 分�
 
 ---
 
+## 十之二、主动推送 `send_message`（E12）✅ 已确认
+
+**结论**：主动推送**可用**，但**不支持流式** ⇒ "先回执、后结论"只能做成**两条独立消息**。
+
+**证据**（2026-10-12，机器人 `dev`，目标群 `wrXoYADQAAe1pspykyEgdg5BdrmN9Q5A`；探针 `scripts/spike/wecom_send_message_probe.py`，出口 IP `114.92.159.22` 即本机**非**生产机）：
+
+```
+E1  {"msgtype":"markdown","markdown":{"content":"…"}}   → 272ms  errcode=0 errmsg=ok
+E3  {"msgtype":"stream","stream":{…}} ×3                → 99/99/90ms  errcode=40008 invalid message type
+E4  chatid=SPIKE_INVALID_CHATID                         → 121ms  errcode=93006 invalid chatid
+E5  连发 10 条 markdown                                  → 成功 10 / 失败 0，总耗时 3023ms
+```
+
+人眼确认：群里收到 11 条（E1 一条 + E5 十条）。
+
+1. **body 形状** = `{"msgtype": "markdown", "markdown": {"content": "…"}}` —— 与 `reply_stream` 的
+   `{"msgtype":"stream","stream":{…}}` 同款约定（`msgtype` + 同名子对象）。SDK 会把它与 `chatid` 合并后发送。
+2. **无流式/无刷新**：`msgtype=stream` 被拒（`40008`）⇒ 主动推送**不能**像 `reply_stream` 那样更新同一气泡
+   （`reply_stream` 的多帧快照、`update_template_card` 都要求**入站帧的 `req_id`**）。
+3. **错误判据**：失败以 `RuntimeError`（`Reply ack error: errcode=…`）从 `send_message` 抛出；
+   **目标非法 = `93006`**，**消息类型非法 = `40008`**。单次往返 261~377ms。
+4. **节奏**：连发 10 条无失败、无超时，≈300ms/条（含 ack）；未触及频率上限。
+
+**未交互也能发**（E12b，2026-10-12 补测）：用 **`support`**（该群从未与它交互过 —— 库里只有
+`[企微·dev] 群聊 wrXoYA…` 这一条会话）向 `dev` 取得**同一个 chatid** 发送 → `errcode=0`（303ms），
+**人眼确认群里出现该消息**。
+
+⇒ `chatid` 是**群维度、与机器人无关**（这也解释了会话 key 为何要额外带 `bot_key` 来区分）；
+**发送不要求该机器人先与群交互过**。但**获取** chatid 仍只能靠一次入站帧（企微无"列群"API）
+⇒ "写死群 id"的方案仍需先 @ 一次**播种**，播种一次后**三台机器人共用**。
+
+**影响**：
+- 「受理占位 + 结论」**必须分两次 `send_message`**，不能做成同一气泡刷新（见 change `alibaba-alert-notify` 的 design D15）。
+- 排障时按 `93006` / `40008` 区分"目标不存在"与"消息体形状错"。
+- 报警群无需"先 @ 一次才能发" ⇒ 落地时只要把 chatid 配进去即可（chatid 本身仍需采集一次）。
+
+---
+
 ## 十一、对设计与计划的回写清单
 
 | 项 | 处理 |
