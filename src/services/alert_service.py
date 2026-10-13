@@ -21,9 +21,15 @@ from typing import Any
 from loguru import logger
 
 from src.channels.wecom.bounded_map import BoundedTtlMap
+from src.chat.process_log import serialize_process
+from src.chat.streaming import streaming_manager  # 共享单例：必须与 turn_runner 同一个
 from src.config.alert import AlertConfig, AlertTarget, load_alert_config
-from src.config.const import WECOM_NS, AlertTexts
+from src.config.const import ALERT_USER_ID, WECOM_NS, AlertTexts, Channel
 from src.core.logging import encode_value
+from src.infra.llm.trace_context import current_channel, current_trace_id
+from src.infra.llm.tracing import new_trace_id
+from src.services import turn_runner, wecom_service
+from src.utils.sse import SSEDoneEvent, SSEErrorEvent
 
 
 @dataclass(frozen=True)
@@ -242,12 +248,133 @@ def handle_webhook(raw_body: bytes, token_header: str | None) -> int:
     return 202
 
 
+async def _get_service():
+    """取 AppService（惰性导入，避免 services 内部循环依赖）。"""
+    from src.services.app_service import get_app_service
+
+    return await get_app_service()
+
+
+async def _consume_events(events) -> tuple[list[dict], bool]:
+    """消费事件流，收集 events_log 与是否正常收尾。
+
+    Args:
+        events: TurnHandle.events
+
+    Returns:
+        (events_log, abnormal) —— abnormal 表示收到 error 事件、或流在无 done
+        的情况下结束
+    """
+    events_log: list[dict] = []
+    seen_done = False
+    abnormal = False
+    async for ev in events:
+        if isinstance(ev, SSEDoneEvent):
+            seen_done = True
+        if isinstance(ev, SSEErrorEvent):
+            abnormal = True
+        events_log.append({"type": ev.type, "payload": ev.payload_for_buffer()})
+    return events_log, abnormal or not seen_done
+
+
 async def _run_analysis(
     cfg: AlertConfig, event: AlertEvent, *, target: AlertTarget | None, bot_key: str
 ) -> None:
-    """占位：Task 8 实现完整编排（本存根以异常兜底，禁止静默存活）。
+    """后台编排：占位 → 跑 Agent（禁澄清）→ 结论 / 兜底。
 
-    Raises:
-        NotImplementedError: 恒抛 —— 编排尚未实现，后台任务须以异常暴露而非静默丢弃。
+    Args:
+        cfg: 告警配置
+        event: 解析后的事件
+        target: 目标群（None = 未配置，不发送）
+        bot_key: 机器人别名
     """
-    raise NotImplementedError("_run_analysis 由 Task 8 实现，此存根不得留在最终提交里")
+    if target is None:
+        logger.warning(
+            "[alert] no target configured alarm_id={}", encode_value(event.alarm_id)
+        )
+        return
+
+    # 占位必须在后台流里发（不在响应路径上）：等 ack 的超时常量与上游 5 秒同量级
+    await _safe_send(target, render_placeholder(event))
+
+    session_id = derive_alert_session_id(target.bot_key, event.alarm_id)
+    channel_token = current_channel.set(Channel.ALERT)
+    trace_token = current_trace_id.set(new_trace_id())
+    try:
+        try:
+            svc = await _get_service()
+            handle = await turn_runner.start_turn(
+                svc,
+                session_id=session_id,
+                kb_id="",
+                query=build_query(event),
+                user_id=ALERT_USER_ID,
+                title=f"[企微·{target.bot_key}] 报警 {event.alertname}",
+                clarify=False,
+            )
+        except turn_runner.TurnBusy:
+            logger.warning(
+                "[alert] turn busy alarm_id={}", encode_value(event.alarm_id)
+            )
+            await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.exception(
+                "[alert] turn start failed alarm_id={} err={}",
+                encode_value(event.alarm_id),
+                e,
+            )
+            await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
+            return
+
+        try:
+            events_log, abnormal = await asyncio.wait_for(
+                _consume_events(handle.events), timeout=cfg.turn_timeout_seconds
+            )
+        except TimeoutError:
+            logger.warning(
+                "[alert] turn timeout alarm_id={} timeout={}s",
+                encode_value(event.alarm_id),
+                cfg.turn_timeout_seconds,
+            )
+            streaming_manager.cancel(session_id)
+            await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.exception(
+                "[alert] turn consume failed alarm_id={} err={}",
+                encode_value(event.alarm_id),
+                e,
+            )
+            await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
+            return
+
+        _, purified = serialize_process(events_log)
+        if abnormal or purified.strip() == "":
+            logger.warning(
+                "[alert] empty or abnormal answer alarm_id={} abnormal={}",
+                encode_value(event.alarm_id),
+                abnormal,
+            )
+            await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
+            return
+        await _safe_send(target, purified)
+    finally:
+        current_trace_id.reset(trace_token)
+        current_channel.reset(channel_token)
+
+
+async def _safe_send(target: AlertTarget, content: str) -> None:
+    """推送一段文本到目标群；失败只记 warning，不中断流程。
+
+    Args:
+        target: 目标
+        content: 正文
+    """
+    ok = await wecom_service.send_to_session(target.bot_key, target.chatid, content)
+    if not ok:
+        logger.warning(
+            "[alert] push failed bot_key={} chatid={}",
+            encode_value(target.bot_key),
+            encode_value(target.chatid),
+        )
