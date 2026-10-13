@@ -250,18 +250,25 @@ provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定�
 校验后立即 `202`、分析在后台任务里跑（**5 秒内返回**，见 `docs/agents/api_contract.md` §2.9）。
 配置项见 `src/config/alert.py`，编排见 `src/services/alert_service.py`。
 
-1. **目标机 `.env` 写 `ALERT_WEBHOOK_TOKEN` 与 `ALERT_TARGET`**（键形与默认值见 `.env.template` 的「阿里云告警接入」段）。**先同步 `.env`、再上新制品**——顺序陷阱同 §1.4（新制品不含 `.env`；端点读不到 token 会恒 `401`）。**改完 `.env` 必须重建容器**（`env_file` 只在建容器时读）：`bash scripts/deploy/deploy.sh start`。
-2. **在 Grafana 里加 contact point**（`Alerting → Contact points → 新建/编辑 Webhook`）：
+1. **token 由 `docker-compose.image.yml` 的 app `environment:` 提供**（`ALERT_WEBHOOK_TOKEN`，与
+   `NEXTAUTH_URL` / `AUTH_DISABLE_SIGNUP` / `WECOM_BOT_ENABLED` 同款：**生产独有值硬编码、不走 `.env`**）。
+   原因：目标机 `.env` 是人工从开发机拷上去的，本地测试值会跟着上机 —— **2026-10-13 实测踩中**
+   （本地 `.env` 的 `ALERT_WEBHOOK_TOKEN=tok` 被带上机，Grafana 侧一直 `401`，而目标机只读没法改）。
+   **轮换 = 改那一行 + 重新发布**，并同步把 Grafana contact point 的 URL 末段改成同一个值。
+2. **`ALERT_TARGET` 仍需目标机 `.env`**（**先同步 `.env`、再上新制品** —— 顺序陷阱同 §1.4：新制品不含 `.env`）。
+   **改完 `.env` 必须重建容器**（`env_file` 只在建容器时读）：`bash scripts/deploy/deploy.sh start`。
+   ⚠️ 试运行期务必确认里面的 `chatid` **就是要发消息的群** —— 它同样是从开发机拷上去的。
+3. **在 Grafana 里加 contact point**（`Alerting → Contact points → 新建/编辑 Webhook`）：
    - **URL**：`http://<站点>/api/alerts/webhook/<ALERT_WEBHOOK_TOKEN>`（**token 拼在路径末段**）
    - **Method**：`POST`（默认）
    - **不要**去 ARMS 配「通用 Webhook」，也**不需要**任何自定义 body 模板 —— Grafana 默认推的就是
      原生 Alertmanager 载荷，`fingerprint` / `alertname` / `summary` 都在里面（实测见 §2.9 字段表）
    - 确认**没有**勾「Disable resolved message」（否则恢复通知不发）
-3. **在通知策略里引用该 contact point**（或设为 default）。用 contact point 的「**Test**」按钮先打一条；注意
-   此时端点会返回 `401`（若 `.env` 未配 token）或 `202`，Grafana 侧显示的成功与否在这里不重要 ——
-   **以"群里是否收到消息"为准**。
-4. **首次取群 `chatid`**：在目标群 **@ 一次机器人** → 查 `sessions.title`（形如 `[企微·dev] 群聊 <chatid>`）→ 把 `chatid` 填进 `ALERT_TARGET`（`bot_key` 复用 `WECOM_BOTS` 里的 key）→ 重新发布。
-5. **冒烟**：真实触发一次告警 → 群里**先收受理占位、后收结论**；等它恢复 → 群里应收到 `[已恢复] …`
+4. **在通知策略里引用该 contact point**（或设为 default）。用 contact point 的「**Test**」按钮先打一条；
+   注意此时端点会对**测试载荷**返回 `202` 并真跑一轮分析（**Test 也会发群消息**）—— 想零副作用地只验
+   token 是否对上，用坏载荷打：`400` = token 对上了、`401` = 没对上（探针用法与判据见 §2.8 末尾）。
+5. **首次取群 `chatid`**：在目标群 **@ 一次机器人** → 查 `sessions.title`（形如 `[企微·dev] 群聊 <chatid>`）→ 把 `chatid` 填进 `ALERT_TARGET`（`bot_key` 复用 `WECOM_BOTS` 里的 key）→ 同步 `.env` 后重建容器。
+6. **冒烟**：真实触发一次告警 → 群里**先受理占位、后收结论**；等它恢复 → 群里应收到 `[已恢复] …`
    （恢复**不走大模型**，直接推模板消息）；再造一次分析失败 → 兜底转发带 `[原始告警]` 前缀。
 
 > 排障：`401` = token 不对或未配置；`404` = **URL 没带 token 段**（路由不匹配）；`400` = 载荷解析失败，
