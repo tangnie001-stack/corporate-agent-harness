@@ -23,6 +23,7 @@ from typing import cast
 from loguru import logger
 
 from src.config import RAGAS_DATA_DIR, RAGAS_DOC_WHITELIST, RAGAS_TESTSET_DIR
+from src.config.const import RAGAS_TEST_PERSONAS
 from src.core import logging as core_logging
 from src.core.log_events import Event
 
@@ -351,12 +352,18 @@ def run_generate(
     from ragas.embeddings import LangchainEmbeddingsWrapper as _EmbeddingsWrapper
     from ragas.llms.base import LangchainLLMWrapper as _LLMWrapper
     from ragas.testset import Testset
+    from ragas.testset.persona import Persona
 
     _cache = DiskCacheBackend(cache_dir=settings.RAGAS_LLM_CACHE_DIR)
     ragas_llm = _LLMWrapper(_langchain_llm, cache=_cache, bypass_n=True)
     embeddings_wrapper = _EmbeddingsWrapper(get_embeddings())
 
     generator = TestsetGenerator(llm=ragas_llm, embedding_model=embeddings_wrapper)
+    # 固定人设：persona_list 非空时 ragas 会跳过其内置的随机 persona 生成步
+    # （见 const.RAGAS_TEST_PERSONAS 注释说明的 KeyError 成因）。
+    generator.persona_list = [
+        Persona(name=name, role_description=desc) for name, desc in RAGAS_TEST_PERSONAS
+    ]
 
     # ---- 4. 构建 transforms ----
     # LLM 步骤: SummaryExtractor + NERExtractor = 2 次/节点
@@ -442,7 +449,13 @@ def run_generate(
     print(f"正在生成测试集 ({size} 条)...")
 
     try:
-        testset = cast(Testset, generator.generate(testset_size=size))
+        testset = cast(
+            Testset,
+            generator.generate(
+                testset_size=size,
+                num_personas=len(RAGAS_TEST_PERSONAS),
+            ),
+        )
     except Exception as e:  # noqa: BLE001
         logger.exception("[cli] testset generator call failed err={}", str(e))
         print(f"✗ 测试集生成失败: {e}")
