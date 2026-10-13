@@ -24,6 +24,11 @@ os.environ["LANGFUSE_ENABLE"] = "false"
 # 或给 `resolve_role` / `build_*` 传 `env` 参数。
 os.environ["LLM_PROVIDER"] = "dashscope"
 
+# 同理清空裁判模型覆盖，使 judge 角色回落到 registry 默认（dashscope/qwen3.8-max）：
+# `RAGAS_LLM_MODEL` 也是开发者会随宿主 `.env` 改的配置，留空即与 `.env` 解耦。
+# 需要测覆盖行为的用例请显式 `monkeypatch.setenv("RAGAS_LLM_MODEL", …)`。
+os.environ["RAGAS_LLM_MODEL"] = ""
+
 
 def _is_resolvable(host: str, port: int) -> bool:
     """host:port 能否被本进程解析（只做 DNS，不发起连接）。

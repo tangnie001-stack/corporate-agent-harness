@@ -51,7 +51,7 @@ providers:
       main: deepseek-flash
       classify: deepseek-flash
       summary: deepseek-flash
-      judge: deepseek-v4-pro               # judge 缺省 dashscope，但可由 RAGAS_PROVIDER 显式绑本 provider
+      judge: deepseek-flash                 # judge 缺省 dashscope，但可由 RAGAS_PROVIDER 显式绑本 provider
       # 无 embedding / rerank 角色
     catalog:
       deepseek-flash:

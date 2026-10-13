@@ -34,7 +34,7 @@ def test_judge_can_bind_deepseek_explicitly():
     }
     resolved = resolve_role("judge", REG, env)
     assert resolved.provider.name == "deepseek"
-    assert resolved.model == "deepseek-v4-pro"
+    assert resolved.model == "deepseek-flash"
 
 
 def test_deepseek_has_no_embedding_rerank():
@@ -52,6 +52,17 @@ def test_deepseek_has_no_embedding_rerank():
 
 
 def test_deepseek_default_model_names():
-    """缺省模型名取自 registry，且为 DeepSeek 官方名。"""
+    """deepseek 绑定的每个角色都用 deepseek-flash（不使用 pro 档）。
+
+    judge 不跟随 ``LLM_PROVIDER``（需 ``RAGAS_PROVIDER`` 显式绑定，见上一条
+    用例），故这里直接断言 registry 数据面：deepseek 下所有角色的默认模型均为
+    ``deepseek-flash``；任一角色被改回 pro 都会让本用例失败。
+    """
+    spec = REG["deepseek"]
+    assert set(spec.models) == {"main", "classify", "summary", "judge"}
+    for role, model in spec.models.items():
+        assert model == "deepseek-flash", f"{role} 默认模型不是 flash: {model}"
+
     env = {"LLM_PROVIDER": "deepseek", "DEEPSEEK_API_KEY": "k"}
-    assert resolve_role("main", REG, env).model == "deepseek-flash"
+    for role in ("main", "classify", "summary"):
+        assert resolve_role(role, REG, env).model == "deepseek-flash"
