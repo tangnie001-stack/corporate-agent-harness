@@ -17,4 +17,4 @@ def test_get_llm_defaults_to_registry(monkeypatch):
     from src.infra.llm.provider import factory
 
     monkeypatch.setattr(factory, "_REGISTRY", None)
-    assert get_llm().model_name == "kimi-k3"  # registry.models[main]
+    assert get_llm().model_name == "qwen3.8-flash"  # registry.models[main]
