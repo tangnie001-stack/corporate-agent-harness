@@ -61,6 +61,15 @@ def test_unconfigured_token_always_404(
     assert resp.status_code == 404
 
 
+def test_token_non_ascii_is_404(client: TestClient, configured: None) -> None:
+    """非 ASCII 的 token 头 ⇒ 404（不是 TypeError 逃逸成 500）。"""
+    # 传字节：真实非 ASCII 头在服务端按 latin-1 解码成含非 ASCII 的 str
+    resp = client.post(
+        "/api/alerts/webhook", content=_body(), headers={_HEADER: "café".encode()}
+    )
+    assert resp.status_code == 404
+
+
 def test_bad_payload_is_400(client: TestClient, configured: None) -> None:
     resp = client.post(
         "/api/alerts/webhook", content=b"{not json", headers={_HEADER: "tok"}

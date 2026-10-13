@@ -1,5 +1,6 @@
 """告警载荷解析、会话派生与文案渲染单测。"""
 
+import dataclasses
 import json
 import uuid
 
@@ -100,5 +101,5 @@ def test_alert_event_is_frozen() -> None:
     ev = AlertEvent(
         alarm_id="a", alertname="n", level="P1", details="d", fingerprints=("f",)
     )
-    with pytest.raises(Exception):  # noqa: B017
+    with pytest.raises(dataclasses.FrozenInstanceError):
         ev.alarm_id = "b"  # type: ignore[misc]

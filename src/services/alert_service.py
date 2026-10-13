@@ -191,6 +191,10 @@ class AlertDedup:
 # 进程级单例：载荷去重窗口与配置随进程生命周期（与企微桥接 handler 同款纪律）
 _dedup: AlertDedup | None = None
 
+# 火忘任务的强引用集合：asyncio 只对 Task 持弱引用，若不保留强引用，编排任务
+# 可能在某个 await 挂起时被 GC 回收 ⇒ 该次报警既无结论也无兜底（本功能的初衷）。
+_pending_tasks: set[asyncio.Task[None]] = set()
+
 
 def _get_dedup() -> AlertDedup:
     """惰性构造去重器（配置在首次调用时读取）。"""
@@ -222,8 +226,17 @@ def handle_webhook(raw_body: bytes, token_header: str | None) -> int:
     Returns:
         202 已受理（含去重丢弃）；404 token 不匹配或未配置；400 载荷非法
     """
-    cfg = load_alert_config()
-    if cfg.token == "" or not hmac.compare_digest(token_header or "", cfg.token):
+    try:
+        cfg = load_alert_config()
+    except ValueError as e:
+        # 配置非法（正常已被启动期 fail-fast 拦下）：降级为 404，绝不 500
+        logger.warning("[alert] config invalid err={}", encode_value(str(e)))
+        return 404
+    # token 为 ASCII 的前提不可假设：请求头可能含非 ASCII，故按字节比较
+    # （hmac.compare_digest 对含非 ASCII 的 str 会抛 TypeError ⇒ 逃逸成 500）
+    if cfg.token == "" or not hmac.compare_digest(
+        (token_header or "").encode("utf-8"), cfg.token.encode("utf-8")
+    ):
         return 404
     try:
         event = parse_alert_payload(raw_body)
@@ -237,14 +250,9 @@ def handle_webhook(raw_body: bytes, token_header: str | None) -> int:
             len(event.fingerprints),
         )
         return 202
-    asyncio.create_task(
-        _run_analysis(
-            cfg,
-            event,
-            target=cfg.target,
-            bot_key=cfg.target.bot_key if cfg.target else "",
-        )
-    )
+    task = asyncio.create_task(_run_analysis(cfg, event, target=cfg.target))
+    _pending_tasks.add(task)
+    task.add_done_callback(_pending_tasks.discard)
     return 202
 
 
@@ -278,7 +286,7 @@ async def _consume_events(events) -> tuple[list[dict], bool]:
 
 
 async def _run_analysis(
-    cfg: AlertConfig, event: AlertEvent, *, target: AlertTarget | None, bot_key: str
+    cfg: AlertConfig, event: AlertEvent, *, target: AlertTarget | None
 ) -> None:
     """后台编排：占位 → 跑 Agent（禁澄清）→ 结论 / 兜底。
 
@@ -286,7 +294,9 @@ async def _run_analysis(
         cfg: 告警配置
         event: 解析后的事件
         target: 目标群（None = 未配置，不发送）
-        bot_key: 机器人别名
+
+    Returns:
+        无返回值；推送为副作用。
     """
     if target is None:
         logger.warning(
@@ -349,7 +359,16 @@ async def _run_analysis(
             await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
             return
 
-        _, purified = serialize_process(events_log)
+        try:
+            _, purified = serialize_process(events_log)
+        except Exception as e:  # noqa: BLE001
+            # 净化失败 ⇒ 视作空正文，交给下方空回答分支走兜底，绝不静默丢失
+            logger.exception(
+                "[alert] serialize failed alarm_id={} err={}",
+                encode_value(event.alarm_id),
+                e,
+            )
+            purified = ""
         if abnormal or purified.strip() == "":
             logger.warning(
                 "[alert] empty or abnormal answer alarm_id={} abnormal={}",

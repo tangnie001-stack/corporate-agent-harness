@@ -24,6 +24,7 @@ from src.api import auth as auth_routes
 from src.api import capabilities as capabilities_routes
 from src.api import ragas_generate as ragas_generate_routes
 from src.api import wecom as wecom_routes
+from src.config.alert import load_alert_config
 from src.config.prompts import validation
 from src.config.response_codes import Code
 from src.core import logging as core_logging
@@ -52,6 +53,10 @@ async def lifespan(app: FastAPI):
     启动阶段校验 provider 配置（`validate_config`）：解析每个角色的 provider/
     模型/密钥，缺失或未知即抛 `RuntimeError`，进程启动失败（fail-fast）。
 
+    启动阶段校验告警接入配置（`load_alert_config`）：解析 ALERT_TARGET 等非法即抛
+    `ValueError`，进程启动失败（fail-fast），不在请求期降级成 500。未配置 token 属
+    合法状态（不阻断启动）。
+
     启动阶段清空残留的 chat_lock:* 键：重启后进程内无任何生成任务，
     残留锁（来自被杀进程，TTL 兜底 180s）会阻塞新请求的并发锁获取。
 
@@ -72,6 +77,8 @@ async def lifespan(app: FastAPI):
     core_logging.log_event(Event.PROMPT_VALIDATED, section_chars=section_chars)
     await _clear_stale_chat_locks()
     validate_config(_registry())
+    # 告警接入配置启动期校验（fail-fast）：非法即抛，不留请求期降级分支
+    load_alert_config()
     configure_tracing()
     await _ensure_model_pricing()
     await wecom_service.start()

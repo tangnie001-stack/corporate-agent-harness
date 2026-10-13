@@ -68,9 +68,7 @@ def test_two_stage_push_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
         yield SSEDoneEvent()
 
     _install(monkeypatch, events_factory=_events, sent=sent)
-    asyncio.run(
-        alert_service._run_analysis(_cfg(), _EVENT, target=_TARGET, bot_key="dev")
-    )
+    asyncio.run(alert_service._run_analysis(_cfg(), _EVENT, target=_TARGET))
     assert len(sent) == 2
     assert "CPU 高" in sent[0]  # 占位
     assert sent[1].strip() == "结论正文"  # 净化正文（旁白剔除）
@@ -84,9 +82,24 @@ def test_fallback_on_empty_answer(monkeypatch: pytest.MonkeyPatch) -> None:
         yield SSEDoneEvent()
 
     _install(monkeypatch, events_factory=_events, sent=sent)
-    asyncio.run(
-        alert_service._run_analysis(_cfg(), _EVENT, target=_TARGET, bot_key="dev")
-    )
+    asyncio.run(alert_service._run_analysis(_cfg(), _EVENT, target=_TARGET))
+    assert sent[-1].startswith(alert_service.AlertTexts.FALLBACK_PREFIX)
+
+
+def test_fallback_on_serialize_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """净化过程抛异常 ⇒ 视作空正文走兜底，既不 500 也不静默丢失。"""
+    sent: list[str] = []
+
+    async def _events():
+        yield SSETokenEvent(token="正文")
+        yield SSEDoneEvent()
+
+    def _boom(events_log) -> tuple[str, str]:
+        raise RuntimeError("boom")
+
+    _install(monkeypatch, events_factory=_events, sent=sent)
+    monkeypatch.setattr(alert_service, "serialize_process", _boom, raising=False)
+    asyncio.run(alert_service._run_analysis(_cfg(), _EVENT, target=_TARGET))
     assert sent[-1].startswith(alert_service.AlertTexts.FALLBACK_PREFIX)
 
 
@@ -107,9 +120,7 @@ def test_fallback_on_turn_busy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(alert_service.turn_runner, "start_turn", _busy)
     monkeypatch.setattr(alert_service, "_get_service", _fake_svc, raising=False)
     monkeypatch.setattr(alert_service.wecom_service, "send_to_session", _fake_send)
-    asyncio.run(
-        alert_service._run_analysis(_cfg(), _EVENT, target=_TARGET, bot_key="dev")
-    )
+    asyncio.run(alert_service._run_analysis(_cfg(), _EVENT, target=_TARGET))
     assert sent[-1].startswith(alert_service.AlertTexts.FALLBACK_PREFIX)
 
 
@@ -129,9 +140,7 @@ def test_timeout_cancels_and_falls_back(monkeypatch: pytest.MonkeyPatch) -> None
 
     _install(monkeypatch, events_factory=_events, sent=sent)
     monkeypatch.setattr(alert_service, "streaming_manager", _Mgr(), raising=False)
-    asyncio.run(
-        alert_service._run_analysis(_cfg(), _EVENT, target=_TARGET, bot_key="dev")
-    )
+    asyncio.run(alert_service._run_analysis(_cfg(), _EVENT, target=_TARGET))
     assert cancelled, "超时必须调用 streaming_manager.cancel"
     assert sent[-1].startswith(alert_service.AlertTexts.FALLBACK_PREFIX)
 
@@ -145,5 +154,5 @@ def test_no_target_skips_send(monkeypatch: pytest.MonkeyPatch) -> None:
         yield SSEDoneEvent()
 
     _install(monkeypatch, events_factory=_events, sent=sent)
-    asyncio.run(alert_service._run_analysis(_cfg(), _EVENT, target=None, bot_key=""))
+    asyncio.run(alert_service._run_analysis(_cfg(), _EVENT, target=None))
     assert sent == []
