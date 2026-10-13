@@ -172,10 +172,11 @@ RAGAS_USER_ID: str = os.getenv("RAGAS_USER_ID", "24a93c0e-3c9b-4d8d-a371-2d8b360
 # RAGAS 文档白名单：只处理白名单中的文档 ID
 # 用于跳过不需要参与测试集生成的文档（如扫描件、不相关文档）
 RAGAS_DOC_WHITELIST: list[str] = [
-    "d5d72d1a-2e47-4765-892e-b1d4787d61a8",  # neusoft_2025_q1.pdf
+    "2150df73-2a68-4f60-ac33-6ee2c2519394",  # neusoft_2025_q1.pdf
+    "74b293b6-063e-454f-8d60-e4921cbe39b1",  # tencent_2024_annual.pdf
 ]
 
-# --- PostgreSQL（应用关系型库；Langfuse 用同实例的另一个 database）---
+# --- PostgreSQL（应用关系型库；LangfSuse 用同实例的另一个 database）---
 POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT: int = int(os.getenv("POSTGRES_PORT", "5432"))
 POSTGRES_USER: str = os.getenv("POSTGRES_USER", "corporate_rag")
