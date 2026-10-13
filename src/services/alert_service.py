@@ -213,6 +213,32 @@ def _reset_for_test() -> None:
     _dedup = None
 
 
+# 被拒请求体的记录长度上限（避免超长日志行与日志注入；仅用于拒绝路径）
+_REJECTED_BODY_MAX_CHARS: int = 4000
+
+
+def _log_rejected(raw_body: bytes, *, reason: str, token_present: bool) -> None:
+    """记录被拒绝请求的原始载荷，供与上游（ARMS 通知模板）核对实际形状。
+
+    只在**拒绝路径**调用（正常受理不记），故不产生常态噪声。载荷按上限截断、
+    经 `encode_value` 转义为单行；**不记录 token 值**，只记其是否存在。
+
+    Args:
+        raw_body: 原始请求体（可能非 UTF-8）
+        reason: 拒绝原因标记（`token` / `payload`）
+        token_present: 请求是否携带了鉴权请求头
+    """
+    text = raw_body.decode("utf-8", errors="replace")
+    if len(text) > _REJECTED_BODY_MAX_CHARS:
+        text = text[:_REJECTED_BODY_MAX_CHARS] + "...(truncated)"
+    logger.warning(
+        "[alert] rejected reason={} token_present={} body={}",
+        reason,
+        encode_value(token_present),
+        encode_value(text),
+    )
+
+
 def handle_webhook(raw_body: bytes, token_header: str | None) -> int:
     """处理一次告警请求，返回 HTTP 状态码。
 
@@ -237,11 +263,13 @@ def handle_webhook(raw_body: bytes, token_header: str | None) -> int:
     if cfg.token == "" or not hmac.compare_digest(
         (token_header or "").encode("utf-8"), cfg.token.encode("utf-8")
     ):
+        _log_rejected(raw_body, reason="token", token_present=token_header is not None)
         return 404
     try:
         event = parse_alert_payload(raw_body)
     except ValueError as e:
         logger.warning("[alert] payload invalid err={}", e)
+        _log_rejected(raw_body, reason="payload", token_present=True)
         return 400
     if _get_dedup().is_duplicate(event.fingerprints):
         logger.info(
