@@ -215,7 +215,7 @@ services:
       LOG_DIR: /data/logs
       # 生产侧企微长连接总开关：本行覆盖 .env 的同名值。
       # 本地（宿主机 uvicorn / dev compose）一律不连，避免误连生产机器人触发「新连接踢旧连接」。
-      WECOM_BOT_ENABLED: "false"
+      WECOM_BOT_ENABLED: "true"
     volumes:
       - app_logs:/data/logs
       - ./data/ragas:/app/data/ragas
