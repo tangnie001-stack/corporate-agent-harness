@@ -16,6 +16,15 @@ _EVENT = AlertEvent(
     level="P2",
     details="ecs-1 CPU 92%",
     fingerprints=("fp-a",),
+    status="firing",
+)
+_RECOVERY = AlertEvent(
+    alarm_id="ALM-001",
+    alertname="CPU 高",
+    level="P2",
+    details="ecs-1 CPU 92%",
+    fingerprints=("fp-a",),
+    status="resolved",
 )
 
 
@@ -155,4 +164,38 @@ def test_no_target_skips_send(monkeypatch: pytest.MonkeyPatch) -> None:
 
     _install(monkeypatch, events_factory=_events, sent=sent)
     asyncio.run(alert_service._run_analysis(_cfg(), _EVENT, target=None))
+    assert sent == []
+
+
+def test_recovery_pushes_template_without_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """恢复通知：只推一条模板消息，**不跑 Agent**、不发占位。"""
+    sent: list[str] = []
+
+    async def _must_not_run(svc, **kwargs):  # pragma: no cover
+        raise AssertionError("恢复通知不得触发 Agent 轮次")
+
+    async def _fake_send(bot_key, chatid, content):
+        sent.append(content)
+        return True
+
+    monkeypatch.setattr(alert_service.turn_runner, "start_turn", _must_not_run)
+    monkeypatch.setattr(alert_service.wecom_service, "send_to_session", _fake_send)
+
+    asyncio.run(alert_service._push_recovery(_RECOVERY, target=_TARGET))
+
+    assert len(sent) == 1
+    assert sent[0].startswith(alert_service.AlertTexts.RECOVERY_PREFIX)
+    assert "CPU 高" in sent[0]
+
+
+def test_recovery_no_target_skips_send(monkeypatch: pytest.MonkeyPatch) -> None:
+    """恢复但未配置目标群 ⇒ 不发送、不抛。"""
+    sent: list[str] = []
+
+    async def _fake_send(bot_key, chatid, content):
+        sent.append(content)
+        return True
+
+    monkeypatch.setattr(alert_service.wecom_service, "send_to_session", _fake_send)
+    asyncio.run(alert_service._push_recovery(_RECOVERY, target=None))
     assert sent == []

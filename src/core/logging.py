@@ -185,6 +185,25 @@ def setup_logging(configure_trace_id: bool = False) -> None:
 # token 安全字符集：命中则裸写，否则引号 + JSON 转义（logging-rules.md）
 _TOKEN_SAFE = re.compile(r"^[A-Za-z0-9_./:@-]+$")
 
+# 告警端点路径里的 token 段（token 走 URL 是因为上游 Grafana 无自定义头能力）
+_ALERT_WEBHOOK_TOKEN_SEG = re.compile(r"(/alerts/webhook/)[^/?#]+")
+
+
+def mask_alert_webhook_path(path: str) -> str:
+    """把告警端点路径里的 token 段掩掉，供日志使用。
+
+    token 放在 URL 路径里是上游能力所限（Grafana contact point 不支持自定义
+    请求头）；但它是该端点的唯一凭据，**不得进日志** —— 故凡要打印路径的地方
+    都先过本函数。
+
+    Args:
+        path: 请求路径（可含查询串）
+
+    Returns:
+        形如 `/api/alerts/webhook/***`；非该端点时原样返回
+    """
+    return _ALERT_WEBHOOK_TOKEN_SEG.sub(r"\1***", path)
+
 
 def encode_value(value: object) -> str:
     """按值类型编码日志字段文本（helper 唯一实现，`需要才引`）。

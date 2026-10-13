@@ -799,29 +799,44 @@ Success:
 
 约定：`msgsignature = sha1(sort(token, 请求timestamp, 请求nonce, 回包encrypt))`；普通消息只支持 `stream`/`template_card` 回复。
 
-### 2.9 阿里云告警 Webhook（`/api/alerts/webhook`）
+### 2.9 告警 Webhook（`/api/alerts/webhook/{token}`）
 
-阿里云 ARMS 告警接入端点，非前端消费；受 `ALERT_WEBHOOK_TOKEN` 控制（未配置或不匹配 → `404`）。
-路由在 `src/api/alerts.py`，解析 / 去重 / 编排在 `src/services/alert_service.py`。
+Grafana contact point **直连**本端点的告警接入入口，非前端消费。路由在 `src/api/alerts.py`，
+解析 / 去重 / 编排在 `src/services/alert_service.py`。
 
 | 方法 | 鉴权 | 请求体 | 成功响应 | 失败 |
 |---|---|---|---|---|
-| `POST` | 请求头 `X-Alert-Token`（**不放 URL**，避免被访问日志记录） | ARMS 自定义模板渲染的 JSON | `202`（已受理，含去重丢弃） | 鉴权失败 `404`；载荷非法 `400` |
+| `POST` | **URL 路径末段** token | Grafana Alertmanager 风格 JSON（原样透传，**无需自定义模板**） | `202`（已受理，含去重丢弃） | 鉴权失败 `401`；载荷非法 `400` |
 
-请求体字段（ARMS 侧按本项目规定的自定义模板渲染，**字段名即解析契约**；模板示例与接入步骤见 `docs/agents/deploy-runbook.md`「告警接入」）：
+> **token 为什么在 URL**：上游是 Grafana 的 contact point，它**不支持自定义请求头**，只能用 URL 承载。
+> 地址形如 `http://<host>/api/alerts/webhook/<ALERT_WEBHOOK_TOKEN>`；未配置该键 ⇒ 一切请求 `401`。
+> **`404` 只表示"路径不带 token 段"**（路由不匹配），与鉴权失败可区分 —— 这正是把 404 改成 401 的目的。
+> 凭据不得进日志，故两侧都做了脱敏：nginx 侧见 `deploy/nginx/nginx.conf` 的 `masked` log_format；
+> 应用侧见 `src/core/logging.py` 的 `mask_alert_webhook_path`（由 `src/middleware/response_processor.py`
+> 与 `src/main.py` 的异常处理器调用）。
+
+请求体字段（**实测形状**：Grafana 直连推送的原生 Alertmanager 载荷；**不需要**在 Grafana 侧配模板）：
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `alarmId` | str | 报警标识（派生报警会话 key，**必填**；缺失或空串 → `400`） |
 | `commonLabels.alertname` | str | 告警名称（**必填**；缺失或空串 → `400`） |
-| `level` | str | 告警等级（可选；缺失或空串回落 `-`） |
 | `alerts[]` | list | 告警明细列表（可选；非列表按空处理） |
-| `alerts[].fingerprint` | str | 逐条告警指纹（**入口去重键**；全批无有效项 → `400`） |
-| `alerts[].annotations.message` | str | 该条告警描述（可选；多条以换行合并为分析正文） |
+| `alerts[].fingerprint` | str | 逐条告警指纹（**入口去重键 + 会话身份来源**；全批无有效项 → `400`） |
+| `alerts[].annotations.*` | str | 该条描述：按 `message` → `summary` → `description` 取首个非空；都没有则退回顶层 `message` |
+| `status` | str | `firing` / `resolved`（可选；缺省按 `firing`，即不把触发误判成恢复） |
+| `alarmId` | str | 报警标识（**可选**：上游无此字段时回退首条 `fingerprint`） |
+| `level` | str | 告警等级：按 `level` → `commonLabels.severity` → `commonLabels._aliyun_arms_alert_level`；都无 → `-` |
 
-约束：**必须在 5 秒内返回**（ARMS Webhook 硬超时，超时触发上游重试）；校验与去重通过后立即
-`asyncio.create_task` 起后台任务（占位 → 跑 Agent（禁澄清）→ 结论 / 兜底），**分析不在响应路径上**。
-去重为逐条指纹的时间窗判定：仅当全部指纹都命中窗口才丢弃（同样返回 `202`），否则登记整批并正常处理。
+约束：**必须在 5 秒内返回**（上游 Webhook 硬超时，超时触发重试）；校验与去重通过后立即
+`asyncio.create_task` 起后台任务，**分析不在响应路径上**。
+
+去重键为 **`<fingerprint>|<status>`** —— 状态必须参与：恢复通知与触发通知带同一个 `fingerprint`，
+不带状态会让恢复被"同指纹仍在窗口内"当成重复直接丢掉。仅当全部键都命中窗口才丢弃（同样 `202`）。
+
+按状态分派两条分支：
+
+- **触发（`firing`）**：占位 → 跑 Agent（禁澄清）→ 结论；失败 / 空回答 / 繁忙 / 超时走兜底
+- **恢复（`resolved`）**：**不跑 Agent**，直接推一条 `[已恢复] <告警名>（<等级>）\n<描述>`（按会话隔离，不占模型额度）
 
 ---
 

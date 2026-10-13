@@ -207,7 +207,9 @@ async def unknown_exception_handler(request: Request, exc: Exception):
     from starlette.responses import JSONResponse
 
     logger.exception(
-        "[app] unhandled exception method={} url={}", request.method, request.url
+        "[app] unhandled exception method={} url={}",
+        request.method,
+        core_logging.mask_alert_webhook_path(str(request.url)),
     )
     # 打印异常链根因
     c = exc

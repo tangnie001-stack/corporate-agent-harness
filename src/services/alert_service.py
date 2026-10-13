@@ -31,20 +31,44 @@ from src.infra.llm.tracing import new_trace_id
 from src.services import turn_runner, wecom_service
 from src.utils.sse import SSEDoneEvent, SSEErrorEvent
 
+# 告警状态取值（Grafana/Alertmanager 风格载荷的顶层 `status`）
+_STATUS_FIRING: str = "firing"
+
+# 触发时用于正文的注解键优先级（实测 Grafana 用 summary/description，无 message）
+_DETAIL_KEYS: tuple[str, ...] = ("message", "summary", "description")
+
 
 @dataclass(frozen=True)
 class AlertEvent:
     """一次告警请求解析后的值对象。"""
 
-    alarm_id: str  # 报警标识（派生会话 key）
+    alarm_id: str  # 报警身份（优先顶层 alarmId；缺省用首条指纹）
     alertname: str  # 告警名称
     level: str  # 告警等级
     details: str  # 各条告警描述的合并文本
-    fingerprints: tuple[str, ...]  # 逐条告警指纹（入口去重键）
+    fingerprints: tuple[str, ...]  # 逐条告警指纹
+    status: str  # 告警状态：firing / resolved（其它值原样保留）
+
+    @property
+    def is_recovery(self) -> bool:
+        """是否为恢复通知（非 firing）。"""
+        return self.status != _STATUS_FIRING
+
+
+def _first_text(*candidates: object) -> str:
+    """返回第一个非空字符串候选；都不可用返回空串。"""
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return ""
 
 
 def parse_alert_payload(raw: bytes) -> AlertEvent:
-    """解析 ARMS 通知载荷（按约定模板的字段名）。
+    """解析 Grafana → webhook 的 Alertmanager 风格载荷。
+
+    实测字段（Grafana 直连）：顶层 `status` / `alerts[]`（含 `fingerprint`、
+    `labels`、`annotations`）/ `commonLabels` / `commonAnnotations` / `message`。
+    该载荷**不含** `alarmId`，故报警身份回退到首条 `fingerprint`（同一告警稳定）。
 
     Args:
         raw: 原始请求体字节
@@ -53,7 +77,7 @@ def parse_alert_payload(raw: bytes) -> AlertEvent:
         AlertEvent
 
     Raises:
-        ValueError: JSON 非法，或缺报警标识 / 缺告警名称 / 无任何指纹
+        ValueError: JSON 非法，或缺告警名称 / 无任何可用指纹
     """
     try:
         data: Any = json.loads(raw)
@@ -62,41 +86,51 @@ def parse_alert_payload(raw: bytes) -> AlertEvent:
     if not isinstance(data, dict):
         raise ValueError("告警载荷必须是 JSON 对象")  # noqa: TRY004
 
-    alarm_id = data.get("alarmId")
-    if not isinstance(alarm_id, str) or alarm_id == "":
-        raise ValueError("告警载荷缺 alarmId")
-
-    labels = data.get("commonLabels") or {}
-    alertname = labels.get("alertname") if isinstance(labels, dict) else None
+    raw_labels = data.get("commonLabels") or {}
+    labels = raw_labels if isinstance(raw_labels, dict) else {}
+    alertname = labels.get("alertname")
     if not isinstance(alertname, str) or alertname == "":
         raise ValueError("告警载荷缺 commonLabels.alertname")
 
-    level_raw = data.get("level")
-    level = level_raw if isinstance(level_raw, str) and level_raw else "-"
+    status = _first_text(data.get("status")) or _STATUS_FIRING
+    level = (
+        _first_text(
+            data.get("level"),
+            labels.get("severity"),
+            labels.get("_aliyun_arms_alert_level"),
+        )
+        or "-"
+    )
 
     raw_alerts = data.get("alerts")
     alerts = raw_alerts if isinstance(raw_alerts, list) else []
     fingerprints: list[str] = []
-    messages: list[str] = []
+    details_parts: list[str] = []
     for item in alerts:
         if not isinstance(item, dict):
             continue
         fp = item.get("fingerprint")
         if isinstance(fp, str) and fp:
             fingerprints.append(fp)
-        annotations = item.get("annotations") or {}
-        msg = annotations.get("message") if isinstance(annotations, dict) else None
-        if isinstance(msg, str) and msg:
-            messages.append(msg)
+        raw_annotations = item.get("annotations") or {}
+        annotations = raw_annotations if isinstance(raw_annotations, dict) else {}
+        text = _first_text(*(annotations.get(k) for k in _DETAIL_KEYS))
+        if text:
+            details_parts.append(text)
     if not fingerprints:
         raise ValueError("告警载荷无有效 fingerprint")
 
+    # 注解都没正文时，退回 Grafana 渲染好的顶层 message（多行文本）
+    if not details_parts:
+        details_parts.append(_first_text(data.get("message")))
+
     return AlertEvent(
-        alarm_id=alarm_id,
+        alarm_id=_first_text(data.get("alarmId")) or fingerprints[0],
         alertname=alertname,
         level=level,
-        details="\n".join(messages),
+        details="\n".join(p for p in details_parts if p),
         fingerprints=tuple(fingerprints),
+        status=status,
     )
 
 
@@ -125,6 +159,34 @@ def build_query(event: AlertEvent) -> str:
 def render_placeholder(event: AlertEvent) -> str:
     """受理占位文案（第一段推送）。"""
     return AlertTexts.PLACEHOLDER_TEMPLATE.format(alertname=event.alertname)
+
+
+def render_recovery(event: AlertEvent) -> str:
+    """恢复通知文案（不走大模型，直接推送）。
+
+    Args:
+        event: 解析后的事件（`is_recovery` 为真）
+
+    Returns:
+        形如 `[已恢复] <告警名>（<等级>）\\n<描述>`
+    """
+    head = f"{AlertTexts.RECOVERY_PREFIX} {event.alertname}（{event.level}）"
+    return f"{head}\n{event.details}" if event.details else head
+
+
+def dedup_keys(event: AlertEvent) -> tuple[str, ...]:
+    """入口去重键：`<指纹>|<状态>`。
+
+    状态参与键是**必需**的 —— 恢复通知与触发通知带同一个 `fingerprint`，
+    若不带状态，恢复会被"同指纹仍在窗口内"当成重复直接丢掉。
+
+    Args:
+        event: 解析后的事件
+
+    Returns:
+        逐条指纹派生出的去重键
+    """
+    return tuple(f"{fp}|{event.status}" for fp in event.fingerprints)
 
 
 def render_fallback(event: AlertEvent, max_chars: int) -> str:
@@ -217,71 +279,92 @@ def _reset_for_test() -> None:
 _REJECTED_BODY_MAX_CHARS: int = 4000
 
 
-def _log_rejected(raw_body: bytes, *, reason: str, token_present: bool) -> None:
-    """记录被拒绝请求的原始载荷，供与上游（ARMS 通知模板）核对实际形状。
+def _log_rejected(raw_body: bytes, *, reason: str) -> None:
+    """记录被拒绝请求的原始载荷，供与上游（Grafana contact point）核对形状。
 
     只在**拒绝路径**调用（正常受理不记），故不产生常态噪声。载荷按上限截断、
-    经 `encode_value` 转义为单行；**不记录 token 值**，只记其是否存在。
+    经 `encode_value` 转义为单行；**绝不记录 token 本身**。
 
     Args:
         raw_body: 原始请求体（可能非 UTF-8）
         reason: 拒绝原因标记（`token` / `payload`）
-        token_present: 请求是否携带了鉴权请求头
     """
     text = raw_body.decode("utf-8", errors="replace")
     if len(text) > _REJECTED_BODY_MAX_CHARS:
         text = text[:_REJECTED_BODY_MAX_CHARS] + "...(truncated)"
     logger.warning(
-        "[alert] rejected reason={} token_present={} body={}",
+        "[alert] rejected reason={} body={}",
         reason,
-        encode_value(token_present),
         encode_value(text),
     )
 
 
-def handle_webhook(raw_body: bytes, token_header: str | None) -> int:
+def handle_webhook(raw_body: bytes, token: str | None) -> int:
     """处理一次告警请求，返回 HTTP 状态码。
 
-    校验与去重通过后**立即**返回 202，把"跑 Agent → 推送"放进后台任务 ——
-    上游 Webhook 有 5 秒硬超时，等待分析会把响应拖过上限并触发重试。
+    鉴权 token 取自 **URL 路径**（Grafana 的 contact point 不支持自定义
+    请求头，故不能用 header 承载）。校验与去重通过后**立即**返回 202，把
+    "分析/推送"放进后台任务 —— 上游 Webhook 有 5 秒硬超时。
 
     Args:
         raw_body: 原始请求体
-        token_header: 请求头里的 token（缺失为 None）
+        token: URL 路径里的鉴权 token（路由保证非 None，可能为空串）
 
     Returns:
-        202 已受理（含去重丢弃）；404 token 不匹配或未配置；400 载荷非法
+        202 已受理（含去重丢弃）；401 token 不匹配或未配置；400 载荷非法
     """
     try:
         cfg = load_alert_config()
     except ValueError as e:
-        # 配置非法（正常已被启动期 fail-fast 拦下）：降级为 404，绝不 500
+        # 配置非法（正常已被启动期 fail-fast 拦下）：降级为 401，绝不 500
         logger.warning("[alert] config invalid err={}", encode_value(str(e)))
-        return 404
-    # token 为 ASCII 的前提不可假设：请求头可能含非 ASCII，故按字节比较
+        return 401
+    # token 为 ASCII 的前提不可假设：路径可能含非 ASCII，故按字节比较
     # （hmac.compare_digest 对含非 ASCII 的 str 会抛 TypeError ⇒ 逃逸成 500）
     if cfg.token == "" or not hmac.compare_digest(
-        (token_header or "").encode("utf-8"), cfg.token.encode("utf-8")
+        (token or "").encode("utf-8"), cfg.token.encode("utf-8")
     ):
-        _log_rejected(raw_body, reason="token", token_present=token_header is not None)
-        return 404
+        logger.warning("[alert] rejected reason=token")
+        return 401
     try:
         event = parse_alert_payload(raw_body)
     except ValueError as e:
         logger.warning("[alert] payload invalid err={}", e)
-        _log_rejected(raw_body, reason="payload", token_present=True)
+        _log_rejected(raw_body, reason="payload")
         return 400
-    if _get_dedup().is_duplicate(event.fingerprints):
+    if _get_dedup().is_duplicate(dedup_keys(event)):
         logger.info(
-            "[alert] duplicate dropped alarm_id={} n_fp={}",
+            "[alert] duplicate dropped alarm_id={} status={} n_fp={}",
             encode_value(event.alarm_id),
+            event.status,
             len(event.fingerprints),
         )
         return 202
-    task = asyncio.create_task(_run_analysis(cfg, event, target=cfg.target))
+    # 恢复通知不走大模型：直接推一条模板消息（省一次模型调用，也避免抖动刷屏）
+    coro = (
+        _push_recovery(event, target=cfg.target)
+        if event.is_recovery
+        else _run_analysis(cfg, event, target=cfg.target)
+    )
+    task = asyncio.create_task(coro)
     _pending_tasks.add(task)
     task.add_done_callback(_pending_tasks.discard)
     return 202
+
+
+async def _push_recovery(event: AlertEvent, *, target: AlertTarget | None) -> None:
+    """恢复通知：直接推模板消息，不建会话、不跑 Agent。
+
+    Args:
+        event: 解析后的事件（`is_recovery` 为真）
+        target: 目标群（None = 未配置，不发送）
+    """
+    if target is None:
+        logger.warning(
+            "[alert] no target configured alarm_id={}", encode_value(event.alarm_id)
+        )
+        return
+    await _safe_send(target, render_recovery(event))
 
 
 async def _get_service():

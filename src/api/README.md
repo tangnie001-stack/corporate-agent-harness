@@ -23,7 +23,7 @@
 | `ragas_generate.py` | 评估测试集生成 `POST /api/ragas/generate` |
 | `capabilities.py` | 能力清单 `GET /api/skills`、`GET /api/agents` |
 | `wecom.py` | 企微智能机器人回调 `GET /api/wecom/callback`（URL 验证）、`POST /api/wecom/callback`（收消息/事件）；受 `WECOM_BOT_ENABLED` 控制，关闭时 404；且仅在 `WECOM_BOT_MODE=callback` 时可用，`long_connection` 模式下 404（长连接不经 HTTP 回调） |
-| `alerts.py` | 阿里云告警接入 `POST /api/alerts/webhook`；受 `ALERT_WEBHOOK_TOKEN` 控制（请求头 `X-Alert-Token`），未配置或不匹配 404 |
+| `alerts.py` | 告警接入 `POST /api/alerts/webhook/{token}`（Grafana contact point 直连；token 在**路径**里，未配置或不匹配 `401`，路径缺 token 段 `404`） |
 
 ## 数据流
 

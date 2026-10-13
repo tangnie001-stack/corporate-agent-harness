@@ -1,4 +1,4 @@
-"""告警接收端点：鉴权与立即应答单测。"""
+"""告警接收端点：URL 路径 token 鉴权与立即应答单测。"""
 
 import json
 
@@ -7,8 +7,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.api import alerts as alerts_api
+from src.services import alert_service
 
-_HEADER = "X-Alert-Token"
+_URL = "/api/alerts/webhook"
 
 
 @pytest.fixture
@@ -21,70 +22,70 @@ def client() -> TestClient:
 
 @pytest.fixture
 def configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    """配置好 token，并清空进程级去重窗口（避免用例间互相污染）。"""
+    """配好 token，并清空进程级去重窗口（避免用例间互相污染）。"""
     monkeypatch.setenv("ALERT_WEBHOOK_TOKEN", "tok")
     monkeypatch.delenv("ALERT_TARGET", raising=False)
-    alerts_api.alert_service._reset_for_test()
+    alert_service._reset_for_test()
 
 
-def _body() -> bytes:
+def _body(*, status: str = "firing", fingerprint: str = "fp-a") -> bytes:
+    """构造一条最小可用载荷。"""
     return json.dumps(
         {
-            "alarmId": "ALM-001",
-            "level": "P2",
+            "status": status,
+            "alerts": [
+                {
+                    "status": status,
+                    "fingerprint": fingerprint,
+                    "labels": {"severity": "critical"},
+                    "annotations": {"summary": "m"},
+                }
+            ],
             "commonLabels": {"alertname": "CPU 高"},
-            "alerts": [{"fingerprint": "fp-a", "annotations": {"message": "m"}}],
         }
     ).encode()
 
 
-def test_token_missing_is_404(client: TestClient, configured: None) -> None:
-    resp = client.post("/api/alerts/webhook", content=_body())
-    assert resp.status_code == 404
+def test_token_in_path_accepted(client: TestClient, configured: None) -> None:
+    """正确的路径 token ⇒ 202。"""
+    assert client.post(f"{_URL}/tok", content=_body()).status_code == 202
 
 
-def test_token_wrong_is_404(client: TestClient, configured: None) -> None:
-    resp = client.post("/api/alerts/webhook", content=_body(), headers={_HEADER: "bad"})
-    assert resp.status_code == 404
+def test_wrong_token_is_401(client: TestClient, configured: None) -> None:
+    """token 不匹配 ⇒ 401（路径存在但凭据不对，与"没这个路由"可区分）。"""
+    assert client.post(f"{_URL}/bad", content=_body()).status_code == 401
 
 
-def test_token_correct_returns_202(client: TestClient, configured: None) -> None:
-    resp = client.post("/api/alerts/webhook", content=_body(), headers={_HEADER: "tok"})
-    assert resp.status_code == 202
-
-
-def test_unconfigured_token_always_404(
+def test_unconfigured_token_is_401(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """未配置 token ⇒ 一切请求 401。"""
     monkeypatch.delenv("ALERT_WEBHOOK_TOKEN", raising=False)
-    resp = client.post("/api/alerts/webhook", content=_body(), headers={_HEADER: "tok"})
-    assert resp.status_code == 404
+    alert_service._reset_for_test()
+    assert client.post(f"{_URL}/tok", content=_body()).status_code == 401
 
 
-def test_token_non_ascii_is_404(client: TestClient, configured: None) -> None:
-    """非 ASCII 的 token 头 ⇒ 404（不是 TypeError 逃逸成 500）。"""
-    # 传字节：真实非 ASCII 头在服务端按 latin-1 解码成含非 ASCII 的 str
-    resp = client.post(
-        "/api/alerts/webhook", content=_body(), headers={_HEADER: "café".encode()}
-    )
-    assert resp.status_code == 404
+def test_path_without_token_segment_is_404(
+    client: TestClient, configured: None
+) -> None:
+    """不带 token 段的路径 ⇒ 404（路由不匹配，与 401 语义区分开）。"""
+    assert client.post(_URL, content=_body()).status_code == 404
 
 
 def test_bad_payload_is_400(client: TestClient, configured: None) -> None:
-    resp = client.post(
-        "/api/alerts/webhook", content=b"{not json", headers={_HEADER: "tok"}
-    )
-    assert resp.status_code == 400
+    """token 对但载荷非法 ⇒ 400。"""
+    assert client.post(f"{_URL}/tok", content=b"{not json").status_code == 400
 
 
 def test_duplicate_still_202(client: TestClient, configured: None) -> None:
-    """第二条（全部指纹命中）仍返回 202，不是错误码。"""
-    h = {_HEADER: "tok"}
+    """第二条（同指纹同状态）仍 202，不是错误码。"""
+    assert client.post(f"{_URL}/tok", content=_body()).status_code == 202
+    assert client.post(f"{_URL}/tok", content=_body()).status_code == 202
+
+
+def test_recovery_payload_accepted(client: TestClient, configured: None) -> None:
+    """恢复载荷同样 202（去重键含状态，故不被触发那条吃掉）。"""
+    assert client.post(f"{_URL}/tok", content=_body(status="firing")).status_code == 202
     assert (
-        client.post("/api/alerts/webhook", content=_body(), headers=h).status_code
-        == 202
-    )
-    assert (
-        client.post("/api/alerts/webhook", content=_body(), headers=h).status_code
-        == 202
+        client.post(f"{_URL}/tok", content=_body(status="resolved")).status_code == 202
     )

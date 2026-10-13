@@ -512,10 +512,25 @@ RAGAS_METRIC_COLUMNS: tuple[str, ...] = (
 EVAL_RETRIEVAL_COVERAGE_MIN: float = 0.5
 
 
+# ── RAGAS 测试集人设 ──
+# 固定测试集生成用的人设，交给 TestsetGenerator 以跳过其内置的随机 persona 生成。
+# 为什么固定：内置生成步 temperature=1.0，模型常产出重名（如 "Chen Wei" 与
+# "Wei Chen"）或把角色描述并进 name（"Chen Wei (Equity research analyst ...)"）
+# 的名字；而 ragas 的 PersonaList 按 name 精确匹配，任一畸变都会让出题阶段
+# 抛 KeyError。名字须唯一且不含括号（角色描述由 role_description 单独承载）。
+RAGAS_TEST_PERSONAS: tuple[tuple[str, str], ...] = (
+    ("财报分析员", "分析上市公司定期财务报告，评估经营业绩、会计质量与投资风险。"),
+    ("投资经理", "结合财务报表与行业信息进行估值判断与投资决策。"),
+    ("财经记者", "采写上市公司年报与经营动态的财经报道。"),
+)
+
+
 # ── 阿里云告警接入（change: alibaba-alert-notify） ──
 
-# 告警接收端点路径（api 层只引用本常量，不 import config 其它模块）
-ALERT_WEBHOOK_PATH: Final[str] = "/alerts/webhook"
+# 告警接收端点路径模板（api 层只引用本常量，不 import config 其它模块）。
+# `{token}` 是 FastAPI 的路径参数：鉴权 token 走**路径**而非请求头 —— 上游是
+# Grafana 的 contact point，它不支持自定义请求头。日志侧对该段做了脱敏。
+ALERT_WEBHOOK_PATH: Final[str] = "/alerts/webhook/{token}"
 
 # 报警会话的固定归属：全零 UUID，与任何登录用户 uid 都不同 ⇒ 会话列表天然查不到
 ALERT_USER_ID: Final[str] = "00000000-0000-0000-0000-000000000000"
@@ -531,6 +546,8 @@ class AlertTexts:
     PLACEHOLDER_TEMPLATE: str = "收到告警「{alertname}」，正在分析…"
     # 兜底转发前缀（与正常结论区分）
     FALLBACK_PREFIX: str = "[原始告警]"
+    # 恢复通知前缀（恢复不走大模型，直接推模板消息）
+    RECOVERY_PREFIX: str = "[已恢复]"
     # 喂给 Agent 的输入模板；{alertname}/{level}/{details} 由载荷渲染
     QUERY_TEMPLATE: str = (
         "收到一条云监控告警，请分析其含义、可能原因与处置建议。\n"

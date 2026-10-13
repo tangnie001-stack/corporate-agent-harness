@@ -23,9 +23,13 @@
 
 ## Decisions
 
-### D1 入口走 ARMS「通用 Webhook」通知对象，而不是 Grafana 直连
+### D1 入口走 **Grafana 直连**（~~ARMS「通用 Webhook」~~，2026-10-13 实测推翻）
 
-保留 ARMS 的事件分组、重复通知、自动恢复与告警历史；且 Grafana 自身的 webhook 载荷不是我们要的形状。
+**原设计**：经 ARMS 告警管理转发（保留其事件分组/重复通知/自动恢复/告警历史）。
+**实测推翻**：Grafana 的 contact point 里直接就能填一个 Webhook 地址，且推来的是**原生 Alertmanager
+载荷**（`status` / `alerts[].fingerprint` / `commonLabels` / `message` 齐全），比经 ARMS 再渲染一层
+更直观、少一跳、少一个会漂移的中间模板。⇒ 采用 Grafana 直连。
+**代价**：失去 ARMS 侧的分组/去重/自动恢复 —— 这些改由本端点自己承担（去重见 D8、恢复见 D22）。
 
 ### D2 端点契约：收包即返，不等待分析
 
@@ -33,13 +37,21 @@ ARMS Webhook **硬超时 5 秒**，超时即判发送失败（可能重试）。
 
 **返回码不承载分析结果** —— 分析失败由群消息兜底体现，端点不因分析失败而改变应答。
 
-### D3 鉴权用请求头 token（不放 URL 路径）
+### D3 鉴权 token 走 **URL 路径**（~~请求头~~，2026-10-13 实测推翻）
 
-**替代方案**：token 放 URL 路径。**弃选理由**：现有中间件会把完整 path 打进日志（`response_processor` 与异常处理器打印 `request.url`），Nginx `access.log` 也记 —— token 是唯一凭据，进日志就等于泄露，而泄露的后果是**有人能往值班群灌假告警**。
+**原设计**：token 放请求头，理由是 URL 会进 `nginx access.log` 与应用日志 ⇒ 凭据泄露。
+**实测推翻**：上游是 **Grafana 的 contact point，它没有自定义请求头的能力** —— 只能把 token 放进 URL。
+⇒ 改为 `POST /api/alerts/webhook/{token}`，并把"不进日志"这条**从"靠不放 URL 规避"改成"主动脱敏"**：
+- nginx：`deploy/nginx/nginx.conf` 的 `masked` log_format（贴在 **server 层** —— 写在 http 层只会与
+  镜像默认那条并列，token 仍会以原文落进默认那条；实测踩到过）
+- 应用：`src/core/logging.py` 的 `mask_alert_webhook_path`，由 `response_processor` 与 `main.py`
+  的异常处理器调用
 
-ARMS Webhook 通知对象支持自定义 Header ⇒ 用请求头承载 token 可行。
+**顺带把 `404` 改成 `401`**：路径存在但凭据不对应是 401，而 `404` 留给"URL 没带 token 段"。
+原设计用 404 是想"不暴露端点存在"，但实测排障时**"没上线"与"被拒"无法区分**，代价大于收益
+（端点路径本身也不是秘密，runbook 里就写着）。
 
-token 在配置中为**独立键**（`ALERT_WEBHOOK_TOKEN`），**不塞进目标群 JSON** —— 密钥与目标结构解耦，便于单独脱敏与轮换。
+token 在配置中仍为**独立键**（`ALERT_WEBHOOK_TOKEN`），**不塞进目标群 JSON** —— 密钥与目标结构解耦。
 
 校验用 `hmac.compare_digest`（常数时间）；不匹配返回 **404**（不返回 401/403，不暴露端点存在）。
 
@@ -160,13 +172,27 @@ token 在配置中为**独立键**（`ALERT_WEBHOOK_TOKEN`），**不塞进目�
 
 ⇒ 结论 SHALL 取**净化正文**（复用生成侧同一套分拣逻辑，而非自行累积 token）；也**不回读 DB**（避免与收尾写入竞态）。
 
-### D21 载荷契约由"我们规定的 ARMS 自定义模板"保证（模板为必需）
+### D21 载荷契约以**实测的 Grafana 原生载荷**为准（~~自定义模板为必需~~，2026-10-13 实测推翻）
 
-**ARMS 默认 Webhook 模板只渲染**：告警名称 / 集群名称 / 应用名称 / 通知策略 / 告警时间 / 告警内容 —— **不含 `alarmId`、`fingerprint`、`level`**。而 `alarmId` 是我们**派生会话标识**的键、`fingerprint` 是**入口去重**的键 ⇒ **默认模板根本跑不通，自定义 body 模板是必需项，不是可选项。**
+**原设计**：ARMS 默认模板不含 `alarmId`/`fingerprint` ⇒ 必须自定义 body 模板。
+**实测推翻**：Grafana 直连推来的就是**原生 Alertmanager 载荷**，**无需任何模板**，且：
+- `alerts[].fingerprint` ✅ 有（`af1f08f7368a765e`，同告警重复通知时恒定，实测三连推一致）
+- `commonLabels.alertname` ✅ 有
+- `annotations.summary` / `description` ✅ 有（**没有** `message` —— 原设计按 `message` 读会取到空正文）
+- `commonLabels.severity` / `_aliyun_arms_alert_level` ✅ 有（等级取真值）
+- 顶层 `status`（`firing` / `resolved`）✅ 有 ⇒ 恢复可判
+- **`alarmId` ❌ 没有** ⇒ 报警身份回退到首条 `fingerprint`（D7 随之调整）
 
-模板正文由**本项目规定**并记录在 `deploy-runbook.md`（字段：`alarmId`、各 alert 的 `fingerprint`、`level`、`alertname`、message），spec 的字段清单与之**一一对应**。
+⇒ 解析器按实测字段实现（`alert_service.parse_alert_payload`），字段清单以 `docs/agents/api_contract.md` §2.9 为准。
 
-**理由**：这是**外部接口**，契约必须单点定义，否则"谁改模板谁弄挂后端"；把模板正文写进文档，等于把"改模板"变成一次**可评审的变更**。落地动作：runbook 补模板正文 + tasks 加一步"用 ARMS『发送测试』抓真实 body 核对字段名"。
+### D22 恢复通知（`status=resolved`）直接推模板消息，不走大模型
+
+恢复是"警报解除"信号，不需要"分析原因"；且在告警抖动（报→好→报）时恢复消息可能比触发还多，
+跑模型不值。⇒ 恢复**不建会话、不跑 Agent**，直接推一条
+`[已恢复] <告警名>（<等级>）\n<描述>`（文案在 `AlertTexts.RECOVERY_PREFIX`）。
+
+**配套（必须）**：去重键改成 `<fingerprint>|<status>` —— 恢复与触发带**同一个** `fingerprint`，
+键里不带状态的话，恢复会在 300s 窗口内被当成"重复"直接丢掉（实测隐患，已修）。
 
 ## Risks / Trade-offs
 

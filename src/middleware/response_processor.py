@@ -11,6 +11,8 @@ from collections.abc import Awaitable, Callable
 from fastapi import Request, Response
 from loguru import logger
 
+from src.core.logging import mask_alert_webhook_path
+
 # 跳过处理的白名单路径
 _SKIP_PATHS = {"/api/health", "/api/chat/stream"}
 
@@ -35,9 +37,13 @@ async def response_processor_middleware(
             return response
 
         # 非 GET 请求日志 — 只记路径和状态码，不记响应体
+        # 路径先过 mask：告警端点把 token 放在 URL 里，凭据不得进日志
         if request.method != "GET":
             logger.info(
-                "[API] {} {} | status={}", request.method, path, response.status_code
+                "[API] {} {} | status={}",
+                request.method,
+                mask_alert_webhook_path(path),
+                response.status_code,
             )
 
         return response
@@ -49,7 +55,7 @@ async def response_processor_middleware(
         logger.error(
             "[API] {} {} | 异常: type={} msg={}",
             request.method,
-            path,
+            mask_alert_webhook_path(path),
             type(e).__name__,
             e,
         )
