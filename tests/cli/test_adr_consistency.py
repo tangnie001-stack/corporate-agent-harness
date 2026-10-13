@@ -4,6 +4,10 @@
 件事出现过四种写法、且被局部推翻的旧 ADR 一条反向指针都没有 —— 本测试既断言
 **真实目录当前一致**（error 档为空），也用合成样本断言**漂移确实会被抓出来**
 （否则检查器会退化成永不报错的空壳）。
+
+A 系列（头部/索引自洽）与 R2（调研引用不落草稿区）在 `_run_all` 里一并跑；R2 还额外
+断言**历史豁免集合恰好等于真实违规集合**，防两个方向的漂移：多一条是遮蔽新违规，
+少一条是让存量踩红线。
 """
 
 from pathlib import Path
@@ -56,6 +60,7 @@ def _run_all(adr_dir: Path) -> list[ca.AdrFinding]:
     findings.extend(ca._check_required_fields(adrs))
     findings.extend(ca._check_pointer_symmetry(adrs, by_number))
     findings.extend(ca._check_index(adrs, adr_dir / "README.md"))
+    findings.extend(ca._check_research_refs(adrs))
     return findings
 
 
@@ -255,3 +260,62 @@ def test_real_index_parses():
     assert order == sorted(order)
     assert set(order) == {a.number for a in ca._load_adrs(ca._ADR_DIR)}
     assert statuses["0003"] == "Accepted"
+
+
+def _write_adr_citing(directory: Path, number: str, cited: str) -> None:
+    """写一条正文引用某调研文档的最小 ADR。
+
+    引用写进「背景与问题」小节，即头部之外 —— 这正是 R2 必须扫全文、不能只读头部
+    的原因（`_parse_header` 遇到第一个 `##` 就停）。
+
+    Args:
+        directory: ADR 目录
+        number: 四位编号
+        cited: 被引用的路径原文
+    """
+    (directory / f"{number}-cites-research.md").write_text(
+        f"# ADR-{number}：示例\n\n"
+        "- **Status**：Accepted\n- **Date**：2026-10-13\n- **Deciders**：用户\n\n"
+        "## 背景与问题\n\n"
+        f"一手证据见 `{cited}`。\n",
+        encoding="utf-8",
+    )
+
+
+def test_draft_area_research_citation_is_detected(tmp_path):
+    """ADR 引用 docs/tmp/ 下的调研 → error（证据链不得挂在随时会被清理的目录上）。"""
+    _write_adr_citing(tmp_path, "0001", "docs/tmp/deep-research-example.md")
+
+    findings = ca._check_research_refs(ca._load_adrs(tmp_path), exempt=frozenset())
+
+    assert any("草稿区" in f.message for f in findings), findings
+    assert any("docs/tmp/deep-research-example.md" in f.message for f in findings), (
+        findings
+    )
+
+
+def test_research_dir_citation_passes(tmp_path):
+    """ADR 引用 docs/research/ 下的调研 → 不报。"""
+    _write_adr_citing(tmp_path, "0001", "docs/research/2026-10-13-example.md")
+
+    assert ca._check_research_refs(ca._load_adrs(tmp_path), exempt=frozenset()) == []
+
+
+def test_legacy_exempt_number_is_honored(tmp_path):
+    """豁免编号引用草稿区 → 默认不报；去掉豁免则报（证明豁免确实在起作用）。"""
+    _write_adr_citing(tmp_path, "0002", "docs/tmp/deep-research-legacy.md")
+    adrs = ca._load_adrs(tmp_path)
+
+    assert ca._check_research_refs(adrs) == []
+    assert ca._check_research_refs(adrs, exempt=frozenset()) != []
+
+
+def test_legacy_exempt_set_is_exactly_real_offenders():
+    """豁免集合 == 真实目录里引用草稿区的 ADR 集合。
+
+    防两个方向的漂移：多一条是遮蔽新违规，少一条是让存量踩红线。
+    """
+    adrs = ca._load_adrs(ca._ADR_DIR)
+    offenders = {f.adr for f in ca._check_research_refs(adrs, exempt=frozenset())}
+
+    assert offenders == set(ca._LEGACY_DRAFT_CITATION_EXEMPT), offenders

@@ -91,4 +91,4 @@
 
 ## 6. 方法说明
 
-本轮为直接读取三个 SKILL.md 全文（合计约 9 KB），**未派背景代理**：`research` 技能的背景代理设计目标是"边读边干"，在 9 KB 场景下派代理的固定开销大于读取成本。该技能的纪律（一手来源、单一文件、按仓库约定落盘）已遵守——本文件落在 `docs/` 根目录，与既有 `docs/comparison_qyznkf_vs_financial_rag.md` 同构。
+本轮为直接读取三个 SKILL.md 全文（合计约 9 KB），**未派背景代理**：`research` 技能的背景代理设计目标是"边读边干"，在 9 KB 场景下派代理的固定开销大于读取成本。该技能的纪律（一手来源、单一文件、按仓库约定落盘）已遵守——本文件落在 `docs/research/`，与既有 `comparison_qyznkf_vs_financial_rag.md` 同构。

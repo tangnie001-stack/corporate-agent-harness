@@ -14,6 +14,10 @@
   - A4 指针有效：`Supersedes` 与完全取代的 `Status` 指向的 ADR 必须存在
   - A5 反向指针对称：被取代的旧 ADR，其 `Status` 必须提到取代者的编号
   - A6 索引覆盖一致：README 索引表覆盖全部 ADR，且 `Status` 列与文件头部一致
+  - R2 调研引用不落草稿区：引用的调研文档不得位于 `docs/tmp/`（见 README「证据与引用」）
+
+A 系列管头部与索引的自洽；R 系列管**证据链**（规则见 README「证据与引用」）。R 系列
+只覆盖可机械判定的那条 —— R1（证据三选一）与 R3（偏离须记明）靠语义判断，留在规范里。
 
 用法：
     python -m src.cli.check_adr
@@ -40,6 +44,19 @@ _ADR_REF_RE = re.compile(r"ADR-(\d{4})")
 _INDEX_ROW_RE = re.compile(r"^\|\s*\[(\d{4})\]\(([^)]+)\)\s*\|")
 
 _REQUIRED_FIELDS = ("Status", "Date", "Deciders")
+
+# R2：草稿区路径（`docs/tmp/` 下的文件随时可被清理，证据链不得挂在那里）
+_DRAFT_AREA_RE = re.compile(r"docs/tmp/[\w.-]+(?:/[\w.-]+)*")
+
+# R2 历史豁免：规则落地（2026-10-13）前既存的草稿区引用。这些 ADR 的正文引用写于
+# 规则之前，且正文不可变（均已落地代码，不适用「落地前原地修订」例外）——迁移调研
+# 文件也改不掉正文里的旧路径，故只能豁免，不能追溯。豁免是**封闭集合**：不新增条目，
+# 新 ADR 引草稿区一律 error。集合内容由 tests/cli/test_adr_consistency.py 的
+# `test_legacy_exempt_set_is_exactly_real_offenders` 锁死（多一条遮蔽新违规、少一条
+# 让存量踩红线，两个方向都报错）。
+_LEGACY_DRAFT_CITATION_EXEMPT = frozenset(
+    {"0002", "0004", "0005", "0006", "0009", "0011"}
+)
 
 
 @dataclass
@@ -364,6 +381,54 @@ def _check_index(adrs: list[Adr], index_file: Path) -> list[AdrFinding]:
     return findings
 
 
+def _check_research_refs(
+    adrs: list[Adr], exempt: frozenset[str] | None = None
+) -> list[AdrFinding]:
+    """R2：ADR 引用的证据材料不得位于草稿区（`docs/tmp/`）。
+
+    拦的是**任何** `docs/tmp/` 路径引用，不限于标题里写的"调研" —— 实测记录、探针
+    输出、临时清单同样属证据，同样不该挂在会被随时清理的地方。
+
+    判据是「证据链不能挂在会被随时清理的地方」：ADR 不可变，一旦它引用的材料被从
+    草稿区清掉，这条决策就永久失去可复核的依据。
+
+    扫的是**全文**而非头部 —— 引用通常出现在「背景与问题」「候选方案」「理由」等
+    正文小节里，`_parse_header` 只解析到第一个 `##` 就停，读不到。
+
+    Args:
+        adrs: 全部 ADR
+        exempt: 豁免编号集合；None 时用 `_LEGACY_DRAFT_CITATION_EXEMPT`
+
+    Returns:
+        error 档列表（每行最多报一次，避免同一行多命中刷屏）
+    """
+    exempt_numbers = exempt
+    if exempt_numbers is None:
+        exempt_numbers = _LEGACY_DRAFT_CITATION_EXEMPT
+    findings: list[AdrFinding] = []
+    for adr in adrs:
+        if adr.number in exempt_numbers:
+            continue
+        for lineno, line in enumerate(
+            adr.path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            hits = _DRAFT_AREA_RE.findall(line)
+            if not hits:
+                continue
+            findings.append(
+                AdrFinding(
+                    adr=adr.number,
+                    line=lineno,
+                    message=(
+                        f"引用的证据材料位于草稿区（`{hits[0]}`）——ADR 不可变，"
+                        "证据链不得挂在会被随时清理的目录上；请把调研落进 "
+                        "`docs/research/` 再引用（见 README「证据与引用」R2）"
+                    ),
+                )
+            )
+    return findings
+
+
 def main() -> None:
     """CLI 入口 — 执行全部 ADR 头部检查并按 error 数决定退出码。"""
     adrs = _load_adrs(_ADR_DIR)
@@ -374,6 +439,7 @@ def main() -> None:
     findings.extend(_check_required_fields(adrs))
     findings.extend(_check_pointer_symmetry(adrs, by_number))
     findings.extend(_check_index(adrs, _INDEX_FILE))
+    findings.extend(_check_research_refs(adrs))
 
     for f in findings:
         location = f"ADR-{f.adr}" if f.adr != "index" else "docs/adr/README.md"
