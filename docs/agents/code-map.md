@@ -48,6 +48,7 @@ api/               纯路由层：请求校验 → 调 service → 返回（不�
   ├─ feedback.py   回答反馈 `api/feedback`
   ├─ llm_test.py   连通性自检 `api/llm/test`
   ├─ ragas_generate.py  评估测试集生成 `api/ragas/generate`
+  ├─ alerts.py     阿里云告警接入 `api/alerts/webhook`（读请求头 token 后交 alert_service）
   └─ capabilities.py    能力清单 `api/skills`、`api/agents`（经 service 派生）
   ⚠ SSE 序列化不在本层：`src/utils/sse.py`（本层只调 `to_sse`，不得内联格式化）
   ⚠ 路由的权威清单（含方法与请求体）见 `src/api/README.md` 与 `api_contract.md`
@@ -56,6 +57,7 @@ services/          业务编排：app_service → kb / document / chat(agent)
   capability_service.py  能力清单：/api/skills、/api/agents 由 registry 派生（fail-open）
   summary_scheduler.py  跨轮历史摘要调度：触发判据 / best-effort 抢锁 / 后台生成（回合正常完成分支发起）
   summary_lock.py  跨轮摘要并发守卫（Redis SETNX，前缀 chat_summary_lock:，独立于轮次锁 chat_lock:）
+  alert_service.py  阿里云告警接入：载荷解析 / 逐条指纹去重 / 编排（占位 → 跑 Agent（禁澄清）→ 结论或兜底转发）
 agents/            LangGraph agent 循环
   ├─ graph/        workflow(建图) / state / agent_factory(唯一装配入口 build_agent) / middleware(循环四件套) / agent_node(首轮组装 + 循环包装节点) / message_payload(消息→trace 载荷纯函数) / history_window(历史窗口切分纯函数，裁剪与摘要触发判据同口径) / nodes / verify / skill_direct(命令行直出节点)
   ├─ tools/        retrieve_kb、ask_user、search_web、task、registry( + readonly 声明表)
@@ -66,7 +68,7 @@ chat/              对话管理：manager(Redis) / persistence(PostgreSQL) / str
 chunking/          分块：router(策略路由) / strategies(4 种) / validator / scorer
 parsers/           文档解析：pdf / docx / txt + base / router
 core/              日志：logging / log_events / log_event_specs
-config/            settings(环境变量) / const(常量/文案/枚举) / response_codes / wecom_bots(多机器人配置解析/校验)
+config/            settings(环境变量) / const(常量/文案/枚举) / response_codes / wecom_bots(多机器人配置解析/校验) / alert(告警配置解析/校验)
   └─ prompts/      prompt 模板包：__init__.py(7 条行为键常量 VERIFY_* / FORK_*) / loader.py(唯一读取点) / validation.py(启动期校验) / templates/*.yaml(22 条模板：段模板 `kind: section` 14 条 + 独立任务模板 `kind: task` 8 条)
                    —— 段模板(`kind: section`)与独立任务模板(`kind: task`)同处一包；改 prompt 文案改 YAML，改规则的挂载点改代码
 infra/             基础设施：db(engine/DSN + transaction 事务边界 + models + repos + vector_store + lexical_query) / llm(tracing 为 Langfuse 开关/flush/trace id 校验唯一入口；langfuse_purge 为保留期删除的 SQL 后端；token_count 为统一 token 计数入口——tiktoken 近似，encoder 缺失时降级 `len(text)//2` 并记一次 warning；**provider/ 为 provider 兼容层，见下**) / search(tokenizer 为唯一 jieba 分词入口) / auth / redis_client

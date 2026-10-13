@@ -243,6 +243,20 @@ provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定�
 
 > 例（百炼 → DeepSeek）：`.env` 设 `LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY`，**删** `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` / `CLASSIFY_MODEL`；保留 `DASHSCOPE_API_KEY` / `EMBEDDING_*` / `RERANK_*`（embedding / rerank 仍走百炼）。
 
+### 2.8 告警接入（阿里云 ARMS → 企微群）
+
+把 ARMS 告警接进企微群自动分析：端点 `/api/alerts/webhook` 受 `ALERT_WEBHOOK_TOKEN` 控制（**未配置或不匹配恒 `404`**），校验后立即 `202`、分析在后台任务里跑（**5 秒内返回**，见 `docs/agents/api_contract.md` §2.9）。配置项见 `src/config/alert.py`，编排见 `src/services/alert_service.py`。
+
+1. **目标机 `.env` 写 `ALERT_WEBHOOK_TOKEN` 与 `ALERT_TARGET`**（键形与默认值见 `.env.template` 的「阿里云告警接入」段）。**先同步 `.env`、再上新制品**——顺序陷阱同 §1.4（新制品不含 `.env`；端点读不到 token 会恒 `404`）。
+2. **ARMS 侧建「通用 Webhook」通知对象**：URL 填 `https://<站点>/api/alerts/webhook`、自定义 Header `X-Alert-Token: <token>`、**自定义 body 模板为必需项**（ARMS 默认模板不含 `alarmId`/`fingerprint`，缺了端点直接 `400`）。**模板正文即解析契约**，示例：
+
+   ```gotemplate
+   {"alarmId":"{{ .alarmId }}","level":"{{ .level }}","commonLabels":{"alertname":"{{ .commonLabels.alertname }}"},"alerts":[{{ range $i, $a := .alerts }}{{ if $i }},{{ end }}{"fingerprint":"{{ $a.fingerprint }}","annotations":{"message":"{{ $a.annotations.message }}"}}{{ end }}]}
+   ```
+3. **在通知策略里引用该通知对象**；用「发送测试」抓一份真实 body 核对字段名（字段名即 `alert_service.parse_alert_payload` 读的键：`alarmId` / `level` / `commonLabels.alertname` / `alerts[].fingerprint` / `alerts[].annotations.message`）。
+4. **首次取群 `chatid`**：在目标群 **@ 一次机器人** → 查 `sessions.title`（形如 `[企微·dev] 群聊 <chatid>`）→ 把 `chatid` 填进 `ALERT_TARGET`（`bot_key` 复用 `WECOM_BOTS` 里的 key）→ 重新发布。
+5. **冒烟**：真实触发一次告警 → 群里**先收受理占位、后收结论**；再造一次分析失败 → 兜底转发带 `[原始告警]` 前缀。
+
 ---
 
 ## 3. 首次上机

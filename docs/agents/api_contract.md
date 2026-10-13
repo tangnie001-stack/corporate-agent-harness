@@ -799,6 +799,30 @@ Success:
 
 约定：`msgsignature = sha1(sort(token, 请求timestamp, 请求nonce, 回包encrypt))`；普通消息只支持 `stream`/`template_card` 回复。
 
+### 2.9 阿里云告警 Webhook（`/api/alerts/webhook`）
+
+阿里云 ARMS 告警接入端点，非前端消费；受 `ALERT_WEBHOOK_TOKEN` 控制（未配置或不匹配 → `404`）。
+路由在 `src/api/alerts.py`，解析 / 去重 / 编排在 `src/services/alert_service.py`。
+
+| 方法 | 鉴权 | 请求体 | 成功响应 | 失败 |
+|---|---|---|---|---|
+| `POST` | 请求头 `X-Alert-Token`（**不放 URL**，避免被访问日志记录） | ARMS 自定义模板渲染的 JSON | `202`（已受理，含去重丢弃） | 鉴权失败 `404`；载荷非法 `400` |
+
+请求体字段（ARMS 侧按本项目规定的自定义模板渲染，**字段名即解析契约**；模板示例与接入步骤见 `docs/agents/deploy-runbook.md`「告警接入」）：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `alarmId` | str | 报警标识（派生报警会话 key，**必填**；缺失或空串 → `400`） |
+| `commonLabels.alertname` | str | 告警名称（**必填**；缺失或空串 → `400`） |
+| `level` | str | 告警等级（可选；缺失或空串回落 `-`） |
+| `alerts[]` | list | 告警明细列表（可选；非列表按空处理） |
+| `alerts[].fingerprint` | str | 逐条告警指纹（**入口去重键**；全批无有效项 → `400`） |
+| `alerts[].annotations.message` | str | 该条告警描述（可选；多条以换行合并为分析正文） |
+
+约束：**必须在 5 秒内返回**（ARMS Webhook 硬超时，超时触发上游重试）；校验与去重通过后立即
+`asyncio.create_task` 起后台任务（占位 → 跑 Agent（禁澄清）→ 结论 / 兜底），**分析不在响应路径上**。
+去重为逐条指纹的时间窗判定：仅当全部指纹都命中窗口才丢弃（同样返回 `202`），否则登记整批并正常处理。
+
 ---
 
 ## 3. 接口层：AppService ↔ Repo 层

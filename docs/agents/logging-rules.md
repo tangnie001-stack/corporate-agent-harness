@@ -45,7 +45,7 @@
 ## trace_id / session_id / channel
 由 `src/core/logging.py` patcher 自动注入日志行第 3/4/5 段（trace_id / session_id /
 channel），业务不手写。channel 取值见 `src/config/const.py` 的 `Channel`
-（`web` 站点 / `wecom` 企业微信 / `feishu` 预留），未设置时以 `none` 占位、**不留空段**
+（`web` 站点 / `wecom` 企业微信 / `alert` 阿里云告警自动分析轮次 / `feishu` 预留），未设置时以 `none` 占位、**不留空段**
 （下游按段位解析；第 3 段 trace_id 的口径见「症状指标」）。各渠道在跑一轮之前写入
 `current_channel`，落点与排障用法见 `docs/agents/troubleshooting.md`。
 
