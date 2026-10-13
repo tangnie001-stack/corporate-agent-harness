@@ -125,20 +125,10 @@ docker compose build --no-cache app    # 改依赖后重建
 - **注释陈述契约，不写推理记录**：保留做什么、行为、失败、时序、后果；删除推理过程、测试讲解、代码复述。
 
 ## 参考项目
-写对应领域代码前优先参考（评分排序与架构详情见 docs/agents/reference-projects.md）：
+
+本地 `../github/` 下镜像了一批开源参考项目（另有 `~/.agents/skills/` 下的参考技能）。
+
+**完整清单 / 按域分组 / 优先级排序 / 许可证 / 每条「何时查阅」→ 一律看 `docs/agents/reference-projects.md`**。
+写对应领域代码前，**先读该域的条目再动手**，不要凭记忆挑参考。
 
 **选型纪律**：技术选型 SHALL 优先对齐「**生产在跑 + 领域契合**」的实现；凡有意偏离基线，SHALL 写下偏离理由与代价。基线与当前对齐状态见 docs/agents/selection-baseline.md。
-
-- `../github/fastapi-0.141.1` — API 路由、中间件、依赖注入、异常处理
-- `../github/langgraph-1.2.10` — StateGraph、流式事件、子图、Checkpoint、Human-in-the-loop
-- `../github/financial_rag-main` — 同领域财税法务 RAG：多智能体、混合检索、答案校验（FaithfulnessChecker/ReflectAgent）
-- `../github/claude-code` — 框架层混合编排最完整参考（coordinator 多 agent/Plan mode/hooks/子代理/压缩）
-- `../github/fastapi-langgraph-agent-production-ready-template-master` — FastAPI+LangGraph 生产化：LLM 容错、限流、Eval、监控
-- `../github/dify-1.16.1` — 工作流引擎、RAG 管道、插件体系
-- `../github/deepseek-harness` — 事件钩子横切、工具内嵌子循环、会话事件溯源
-- `../github/codex` — 编排工具化、Rust 执行/沙箱/压缩
-- `../github/ragflow-0.26.4` — 文档解析、模板化分块、引用溯源
-- `../github/Qwen-Agent` — Python 薄层多智能体（react_chat/router/group_chat）
-- `../github/awesome-llm-apps-main` — AI Agent/RAG 模板集（理念参考）
-- `../github/full-stack-fastapi-template-0.10.0` — 全栈模板（含前端，本项目后端为主）
-- `../github/fastapi-best-architecture-1.15.0` — 社区最佳实践（与本项目 rules.md 重叠）

@@ -35,6 +35,15 @@
 - FastAPI 官方源码。API 路由、中间件、依赖注入、异常处理、响应模型。
 - **何时查阅**：改 `src/api/` 路由、`src/middleware/`、全局异常处理器时。
 
+**ragas**
+- **RAGAS 官方源码**（`vibrantlabsai/ragas`，Apache-2.0）。本项目 RAGAS 评测链路的**唯一行为依据**：`src/cli/eval_ragas.py`（评估）与 `src/cli/eval_ragas_generate.py`（出题）的全部行为以它为准。本地克隆 ref `298b682`（2026-02-23），与在装 `ragas==0.4.3` 的**真实差异仅 10 个文件**（testset 模块 4 个、最多 34 行）。⚠️ **克隆是 CRLF**：直接 `diff` 会把 239 个文件全报成差异，须加 `--strip-trailing-cr` 才看得出真差异。
+- **成熟度与活跃度（2026-10-13 GitHub API 实测）**：**16,008 ⭐ / 1,758 fork**，创建于 2023-05，LLM 评测领域的**事实标准之一**（本域"广泛被用"的成熟库）。⚠️ **但最近一次提交就是 `298b682`（2026-02-24），约 8 个月无推送** ⇒ **成熟但开发停滞**：不要指望上游"很快修"下面这些已知缺口，要么接受、要么自建（出题无问题级校验、`evaluate()` 弃用与现代 API 长期并存）。
+- **API 代际是本库最大的坑**（本项目评估层整层建在弃用面上）：`evaluate()` / `aevaluate()` 已弃用，官方指向 **`@experiment`**（`src/ragas/evaluation.py:448` / `:106`）；`from ragas.metrics import …` 的经典指标与 `LangchainLLMWrapper` / `LangchainEmbeddingsWrapper` 均已弃用，应换 `metrics.collections` + `llm_factory` / `embedding_factory`。**且现代指标进不了 `evaluate()`**——它要求 `isinstance(m, Metric)`（`evaluation.py:132`），而 collections 指标不是 `Metric` 子类 ⇒ **迁移必然要重写执行层**，不能只换 import。
+- **出题链无"问题级"校验**：整个 `testset/` 对 `self-contained` / `QuestionFilter` **零命中**（克隆至今仍为零）；出题 prompt（`testset/synthesizers/single_hop/prompts.py`）只要求"答案忠于上下文"。旧版曾有 `QuestionFilter`（Independence + Clear Intent，不合格则重写），随 PR #1401（2024-10-02，＋101/−6785 行）整体替换时删除且**官方无任何说明**。⇒ **"选哪些文档"与"题面是否自足"是使用方职责**（决策见 `docs/adr/0022-ragas-testset-input-scope.md`）。
+- **`MetricResult` 有 `reason` 通道，但经典指标不填**（`src/ragas/metrics/result.py:11`）：faithfulness / context_recall / context_precision 的裁判 LLM **已逐条产出 reason**（如 `StatementFaithfulnessAnswer.reason`），聚合时只取 verdict、把 reason 丢弃 ⇒ **要"低分能解释"必须换 rubric 类指标或自建诊断层**，官方不给。
+- **自带 10 个官方示例工程**（`examples/ragas_examples/`，本地可直接读；`ragas quickstart <name>` 可生成）：与本项目最相关的是 `rag_eval`（RAG 评测，4 文件）、`agent_evals`（Agent 评测，3 文件）、`judge_alignment`（裁判与人工对齐）。⚠️ 官方**有意做极简**（PR #2319 明写"移除复杂的 async 模式、抽象与基础设施代码"，面向 beginner），**是教学脚手架、不是生产 harness**：它手写 3 条自足样本 + 自定准则指标，**不用出题器、也不评检索**。
+- **何时查阅**：改/排 `src/cli/eval_ragas*.py`、定 `eval_report` 契约、选指标、调裁判/embedding 工厂、怀疑"这个分 RAGAS 到底怎么算的"时**第一优先查它**；要看官方最佳实践样例就读 `examples/`。
+
 ---
 
 ## 域 2：同领域 RAG（最贴合参考）
@@ -61,7 +70,7 @@
 
 > 本站"主从委派 + skill 化业务解耦"升级路线的主参考域。
 > **本域按"分工"排序，不是按价值** —— 各项目覆盖不同侧面（委派范式 / 机制层 / 预设内容 / 企业级实物 / 委派落地实物 / 宿主-执行器分层），互补而非可选，因此不适用域内的价值权重。
-> 组内分工：claude-code 提供**委派范式**（AgentTool/skill fork）；deepseek-harness 提供**skill/配置机制层**（注册表/scope）；agency-agents 提供**智能体预设内容库**（现成的领域专家人格，可直接转成 `AgentPresetRegistry` 条目，见 change `session-agent-and-skill-invocation`）；WeKnora 提供**企业级机制实物**（skill 沙箱分发 / MCP OAuth / 压缩包 / 审批闸门 / **prompt 九段拼装**；Go 栈且**不含委派**）；**CowAgent / openakita 提供"主从委派落地实物"**（子代理上下文隔离、单跳工具黑名单、@寻址、跨进程防环）；**LangBot 提供"宿主-执行器分层与配置驱动编排"**（Runner 资源授权、配置化 stage 链、沙箱三层策略）。
+> 组内分工：claude-code 提供**委派范式**（AgentTool/skill fork）；deepseek-harness 提供**skill/配置机制层**（注册表/scope）；agency-agents 提供**智能体预设内容库**（现成的领域专家人格，可直接转成 `AgentPresetRegistry` 条目，见 change `session-agent-and-skill-invocation`）；WeKnora 提供**企业级机制实物**（skill 沙箱分发 / MCP OAuth / 压缩包 / 审批闸门 / **prompt 九段拼装**；Go 栈且**不含委派**）；**CowAgent / openakita 提供"主从委派落地实物"**（子代理上下文隔离、单跳工具黑名单、@寻址、跨进程防环）；**LangBot 提供"宿主-执行器分层与配置驱动编排"**（Runner 资源授权、配置化 stage 链、沙箱三层策略）；**hermes-agent 提供"技能自演化闭环 + 迭代预算兜底"**（skill 创建/管理、预算耗尽后的一次性 grace 调用、子代理 fresh budget；MIT，代码可借）。
 
 **claude-code**
 - Anthropic 终端编码 agent（闭源，~51 万行 TS；2026-03 因 npm source map 误发布泄露，本地为社区还原版 `claude-code-best/claude-code`）。
@@ -129,6 +138,18 @@
 - **反面**：业务文件裸 `print(traceback.format_exc())`（`wecombot.py:305/730/750`，`line.py` 等共 4 处）、`is_muted` 空实现 `pass`（`wecombot.py:862`、`wecom.py:336`）、`run_async` 用 `while True: sleep(1)` 空转占协程（`wecombot.py:838`、`wecom.py:318`）——本站规范禁止 print/空实现，保活应走事件等待。
 - **何时查阅**：设计 pipeline 阶段注册与配置驱动、宿主/执行器职责切分与资源授权、skill 渐进披露、沙箱策略与 fail-closed 时。企微通道另见域 5。
 
+**hermes-agent**（跨域登记：IM 通道另见域 5）
+- **Nous Research 的个人 AI agent**（`github.com/NousResearch/hermes-agent`，MIT，Copyright (c) 2025 Nous Research——**代码可借**）。**成熟度证据（2026-10-13 GitHub API 实测）**：**253,374 ⭐ / 54,942 fork**，创建于 2025-07、推送至今**活跃**（`pushed_at` 2026-10-13）。规模极大：**8452 个 .py / 约 227 万行**、29 个顶层目录，`agent/` 一个目录就 286 个 py（turn 被切成 ~30 个 `turn_*.py` 兄弟模块）。**先读它自带的两份架构地图**（根 `AGENTS.md` 11.9 KB 路由中枢 + `agent/AGENTS.md` 子系统地图），否则翻不完；扩展点优先级被刻意设计成"CLI 命令 + 技能 → 门控工具 → 插件 → MCP → 新核心工具"的**窄腰**结构（根 `AGENTS.md:24-26`）。
+- **主循环（全同步、非 async）**：门面 `run_agent.py`（`AIAgent` 由 mixin 拼装）→ turn 入口 `agent/turn_facade.py:22`（先取 session turn lease 再转发）→ 真正循环 `agent/conversation_loop.py:1648-1650`，条件 `(api_call_count < max_iterations and iteration_budget.remaining > 0) or _budget_grace_call`。**可直接借鉴的兜底**：**预算耗尽后仍给一次"无工具 grace 调用"**（消费点 `agent/turn_iteration_prep.py:408-416`，设置点 `agent/turn_truncation.py:630-635`）+ 跨线程中断标志（`agent/interrupt_control.py:128`）+ `IterationBudget` 的线程安全 consume/refund（`agent/iteration_budget.py`）。
+- **子代理委派与隔离（对标本仓 fork 子代理的高价值样本）**：`tools/delegate_tool.py:274` 构造**全新 `AIAgent`**；`skip_memory=True` / `skip_context_files=True`（`:279`）⇒ **不继承父的 messages 与记忆**，只继承 `prefill_messages`；工具面 = 父 toolsets 减去 `DELEGATE_BLOCKED_TOOLS`；**父只看到委派调用 + summary**，看不到子的中间工具调用与推理（`tools/delegate_tool.py:8-11` 模块 docstring）；并发默认 **10**、**深度扁平成 1**（`tools/delegate_tool_config.py:20`）。子代理有独立 `session_db`（`:271/284`）。
+- **skill 自创 / 自改进闭环（本域唯一覆盖这一侧的项目）**：技能格式走标准 **SKILL.md + agentskills.io**（`skills_tool.py:594/648`）；管理入口 `skill_manage`（`skill_manager_tool.py:1-11`）；**触发来自后台 review fork + nudge 间隔 10**（`background_review.py:1-5`、`agent_init.py:1380`、`turn_finalizer.py:763`）；curator **只归档不删**（`agent/curator.py:1-8`）；`skills/` 为内置、`optional-skills/` 随包不发。⚠️ **"使用中自改进"未找到确定性改写路径**（疑似纯 LLM 自觉）⇒ 引用时按"有创建/管理闭环"理解，**别按 README 的 "improves them during use"**。
+- **上下文压缩两层阈值**：agent 侧 50%（`agent/context_compressor.py:2804`）/ gateway 侧 85%（`gateway/run_turn.py:679`）；策略为先剪工具输出 → 选边界 → aux 摘要。
+- **执行后端抽象（spawn-per-call）**：`tools/environments/base.py:1-7` 统一"每条命令新起 `bash -c`"；**7 个后端与 README 一致**（`tools/terminal_tool_backends.py:54` = local/docker/singularity/modal/daytona/vercel_sandbox/ssh）；serverless 持久化落 Modal 跨会话快照 / Daytona `persistent_filesystem`。本仓短期用不上 serverless。
+- **trajectory 即数据集**：`agent/trajectory.py:38 save_trajectory()` 输出 **ShareGPT 格式 JSONL**（`trajectory_samples.jsonl` / 失败落 `failed_trajectories.jsonl`，带 flock 防交错），写入点 `agent/session_persistence.py:527`；`batch_runner.py` 多进程批量生成 + `--resume`。⚠️ README 说的 "trajectory compression for training the next generation of tool-calling models" **代码内无据**（只有生成/保存）。
+- **⚠️ 自带文档与代码不符三处（引用前必看，这是"别信 README"的活样本）**：① `max_iterations` **三个数字打架**——`run_agent.py:241` = `sys.maxsize`、`tools/delegate_tool.py:105` = **250**、`agent/AGENTS.md:15` 写 **500**；② 同一注释称 "shared with subagents"，而 `tools/delegate_tool.py:286` 明确 `iteration_budget=None  # fresh budget per subagent`（**独立预算**）；③ README 宣传的 **Honcho 不在本仓**（`plugins/AGENTS.md:16-24` 明写已移入 plugin catalog）。⇒ 它的 `AGENTS.md` / README 都不能当事实，**只读代码**。
+- **许可**：MIT（`LICENSE:1`）。⚠️ 但**无统一 `third_party/` 汇总**，多来源成分需逐项核对：外部 skill 各带自己的 `license` frontmatter、`native/fts5_cjk/` 由 PR 贡献、平台 SDK（Daytona/Modal/Vercel 等）走 `ensure_lazy_dep` 运行期懒加载（**不 vendored**）⇒ **真要借代码前，逐个看子目录/文件头**。
+- **何时查阅**：设计**子代理上下文隔离**（拿到什么/不拿到什么）、**迭代预算 + grace 兜底**、skill 创建与管理闭环、上下文压缩阈值、多平台网关组织（另见域 5）、执行后端抽象与 registry 时。
+
 ---
 
 ## 域 4：生产化模板 / 平台（参考思路）
@@ -171,8 +192,15 @@
 > 把外部 IM（重点：**企业微信智能机器人**）接到自有 agent 后端的参考。拆成三件事：**通道抽象**（平台差异挡在适配器内）、**传输**（URL 回调 Webhook vs WebSocket 长连接）、**流式呈现**（把 token 流映射成平台可渲染的帧）。
 > **背景（2026-10 官方能力）**：企业微信"智能机器人"两种 API 模式——URL 回调（`Token`+`EncodingAESKey`，需公网可访问 URL、需加解密）与 WebSocket 长连接（`BotID`+`Secret`，`wss://openws.work.weixin.qq.com`，**免公网、免加解密、官方推荐**）。长连接硬约束：**单机器人单连接**（新连接踢旧连接）、**30s 心跳**、流式**无刷新回调**须服务端主动推（`stream.id`+`finish`）、首帧起 **6 分钟**必须收尾。官方 SDK：Node `WecomTeam/aibot-node-sdk`、Python `wecom-aibot-python-sdk`；协议文档 path/101463（长连接）/ path/100719（回调）。**模式互斥**，切换会使另一种立即失效。
 
+**hermes-agent**（跨域登记：Agent 编排另见域 3）
+- Nous Research 个人 agent（`github.com/NousResearch/hermes-agent`，**MIT，代码可借**）。**按本清单权重（生产验证 > 领域契合）排本域首位**：**253,374 ⭐ / 54,942 fork**（2026-10-13 GitHub API 实测），创建于 2025-07、推送至今活跃；且**企微通道近期仍在修生产缺陷**——`plugins/platforms/wecom` 最新提交到 **2026-10-08**，含 `a959a6e fix(wecom): split long messages instead of silently truncating them`（2026-10-01，长消息被静默截断）。⚠️ **残留不确定**：星数是**项目级**成熟度，其企微子通道的独立生产规模无公开数据。
+- **与本域同源**：`plugins/platforms/wecom/plugin.yaml` 注册**两个平台**——`wecom`（**Smart Robot over WebSocket**）与 `wecom_callback`（自建应用走 HTTP 回调 + AES 消息加解密）；`adapter.py:1` 自述 "WeCom (Enterprise WeChat) **AI Bot adapter over the `openws` WebSocket gateway**"，`:49` `DEFAULT_WS_URL = "wss://openws.work.weixin.qq.com"`（**与本站同一端点**），协议命令 `aibot_subscribe` / `aibot_msg_callback` / `aibot_callback` / `aibot_event_callback`（`:51-54`）。凭据与本站同一套：`WECOM_BOT_ID` / `WECOM_SECRET`。
+- **组织方式（本域唯一按关注点拆文件的）**：6 个文件 2094 行 —— `adapter.py`(47KB) / `streaming.py`(21KB) / `media.py`(22KB) / `callback_adapter.py`(16KB) / `send_queue.py` / `wecom_crypto.py`（回调加解密）+ `plugin.yaml`。**同目录双传输但按文件拆开**——不像 CowAgent 那样单文件塞两套（1531 行）。
+- **流式**：`adapter.py:108` `SUPPORTS_NATIVE_STREAMING = True  # msgtype "stream" via aibot_respond_msg, not edit-based`——与本站已知的"每帧全量快照、非增量"同源；`streaming.py` 内有 `MAX_STREAM_CONTENT_LENGTH` / `STREAM_SAFE_DURATION_SECONDS` / `STREAM_KEEPALIVE_INTERVAL_SECONDS` 等常量，可与本站 6 分钟收尾约束逐项对照。
+- **何时查阅**：写/改企微智能机器人适配器时**先读它**（生产验证最足 + 代码可借 + 关注点拆分最干净）；要看流式保活常量、回调加解密、双传输骨架时。**规格清单（逐条清单式）仍首选 openakita**。
+
 **LangBot**（跨域登记：域 3、域 4）
-- Python 生产级多平台 IM 机器人平台（`github.com/langbot-app/LangBot`，**Apache-2.0——代码可借鉴**；18k star）。**本域唯一"生产在跑 + 授权宽松"的智能机器人实现**，其 `wecombot` 适配器近期仍在修生产缺陷（`fix(wecombot): stop empty bubbles and premature stream close on blank final chunks #2561`）。按新权重（生产验证优先）**本域实现首选**。
+- Python 生产级多平台 IM 机器人平台（`github.com/langbot-app/LangBot`，**Apache-2.0——代码可借鉴**；18k star）。**本域第 2 名**（首位让给 hermes-agent：后者项目级成熟度高一个数量级、同为宽松许可、且企微通道同样在修生产缺陷）——**生产在跑 + 授权宽松**，其 `wecombot` 适配器近期仍在修生产缺陷（`fix(wecombot): stop empty bubbles and premature stream close on blank final chunks #2561`）。
 - **适配器已拆包（当前实现）**：`pkg/platform/adapters/wecombot/`，7 文件 959 行（`adapter.py` 仅 341 行），带 `manifest.yaml`；**旧实现 `pkg/platform/sources/wecombot.py`（1051 行）并存**，被新适配器以 `LegacyWecomBotAdapter` 复用其静态工具方法（`adapters/wecombot/adapter.py:3`）。**一个适配器双传输**：`adapters/wecombot/adapter.py:56` 按配置 `enable-webhook` 选 `WecomBotWsClient`（长连接，默认，需 `BotId`/`Secret`）或 `WecomBotClient`（回调，需 `Token`/`EncodingAESKey`/`Corpid`）。
 - **随仓 vendored 的 Python 协议客户端**（`src/langbot/libs/wecom_ai_bot_api/`）：`ws_client.py`（1250 行，长连接）、`api.py`（2230 行，回调）、`WXBizMsgCrypt3.py`（278 行，腾讯官方回调加解密）、`wecombotevent.py`。**自研协议、不用官方 SDK**——与本站"用官方 `aibot` SDK"路线不同，可逐帧对照校验。
 - **长连接生产不变量（行号已核，`ws_client.py`）**：`DEFAULT_WS_URL:40` / `CMD_SUBSCRIBE:43` / `CMD_HEARTBEAT:44`；认证走 **`_send_auth:782` → `_wait_for_auth:794`（等 10s 并校验 `errcode==0`）——恰是本站官方 SDK 缺的一环**（SDK 的 `connect()` 不等认证即返回，auth 失败只走 `on_error`）；`_heartbeat_loop:814`（30s ping，连续 2 次无 pong 判死）；指数退避重连（1s→30s，`max_reconnect_attempts=-1` 无限）；**`_dispatch_event:1129` 按 `msg_id` 去重**（`_msg_id_map`，上限 `_DEDUP_CACHE_MAX=4096:60`）；`_send_reply:1148` 对**同一 req_id** 建串行队列（`asyncio.Queue` + worker），`_reply_queue_worker:1183` 逐条发 + `_send_and_wait_ack:1218`（`_reply_ack_timeout=5.0:131`）。
@@ -182,7 +210,7 @@
 - **何时查阅**：**本域实现首选**——写企微智能机器人适配器、流式投影、卡片交互、去重与背压时先读它；要一份完整 Python 长连接/回调客户端做对照，或看"双模适配器骨架"时。设计期的规格枚举再配合 openakita 的 `WEWORK_WS_IM_NOTES.md`。
 
 **CowAgent**（跨域登记：域 3）
-- 前身 `chatgpt-on-wechat`（CoW），现 `github.com/zhayujie/CowAgent`（**47.2k star、MIT——代码可借**；Python，750 文件）。**本域排第 2**——生产验证与领域广度都赢过 openakita（唯一输在可迁移深度）：`channel/` 下 13 个通道目录，且**把微信/企微生态 5 种形态都覆盖了**（`wecom_bot` 智能机器人 / `wechatcom` 企业微信应用 / `wechatmp` 公众号 / `wechat_kf` 微信客服 / `weixin` 个人微信）。但**栈与本站不兼容**（线程 + 同步 WS，见下），故按新权重定位为**参照价值高、可照搬度低**：看广度用它，写实现用 LangBot（规格清单用 openakita）。
+- 前身 `chatgpt-on-wechat`（CoW），现 `github.com/zhayujie/CowAgent`（**47.2k star、MIT——代码可借**；Python，750 文件）。**本域排第 3**——生产验证与领域广度都赢过 openakita（唯一输在可迁移深度）：`channel/` 下 13 个通道目录，且**把微信/企微生态 5 种形态都覆盖了**（`wecom_bot` 智能机器人 / `wechatcom` 企业微信应用 / `wechatmp` 公众号 / `wechat_kf` 微信客服 / `weixin` 个人微信）。但**栈与本站不兼容**（线程 + 同步 WS，见下），故按新权重定位为**参照价值高、可照搬度低**：看广度用它，写实现用 hermes-agent / LangBot（规格清单用 openakita）。
 - **单通道类双模**：`channel/wecom_bot/wecom_bot_channel.py:38` `WECOM_WS_URL=wss://openws.work.weixin.qq.com`、`:152` `self.mode = "websocket"`、`:167` 从配置 `wecom_bot_mode` 读（默认 websocket）；`wecom_bot_crypt.py` 负责回调加解密。⚠ 同文件塞两套传输、**1531 行**，违反本站 400 行红线。
 - **同步线程模型（决定"只借语义不搬实现"）**：`import threading` + 同步 `websocket-client` + `run_forever`（`:257-265` 起独立线程），`_on_close:240` 固定 **5s** 重连（**非指数退避**）。本站是 asyncio/FastAPI，**借鉴协议而非实现**。
 - `req_id` 关联 + 流式：每条命令带 `req_id`，`_send_and_wait:499`（默认 **15s**）用 `threading.Event` 等匹配响应、`_handle_ws_message:512` 按 `req_id` 回填 `_pending_responses:147`；流式是**同一条 stream 消息**（末尾 `finish=true`），节流 **≤1 推/100ms 且长度未变即跳过**（`_make_stream_callback:666`、判据 `:685`）；工具轮次用 `\n\n---\n\n` 分段（`:727`）；状态 `_stream_states:149`（`req_id → {stream_id, content}`）。
@@ -191,7 +219,7 @@
 - **何时查阅**：看"IM 通道广度（尤含企微生态 5 形态）""单类双传输""流式 `---` 分段""response_url 兜底"时；其企微实现**只借协议语义**，不照搬（线程模型 + 1531 行双传输）。子代理隔离另见域 3。
 
 **openakita**（跨域登记：域 3、域 4）
-- **本域排第 3**——生产验证最弱（2k star；域 3 另记其核心 Ralph 循环是 TODO 桩）、**AGPL-3.0-only 只能取模式不可抄代码**；唯一领先项是**可迁移深度**（asyncio 同栈 + 本域唯一成篇规格）。规格正文：`docs/WEWORK_WS_IM_NOTES.md`（520 行 / 27KB）把长连接适配器（`src/openakita/channels/adapters/wework_ws.py`，2434 行）的**功能清单 / 帧协议（10 个 cmd） / 9 条必须保持的逻辑约束 / 配置 / 数据流 / 已知限制 / 25 项修改检查清单**全列了出来——**可直接当实现规格/清单搬运**；第三节是"长连接 vs 回调"官方差异对照表。
+- **本域排第 4**——生产验证最弱（2k star；域 3 另记其核心 Ralph 循环是 TODO 桩）、**AGPL-3.0-only 只能取模式不可抄代码**；唯一领先项是**可迁移深度**（asyncio 同栈 + 本域唯一成篇规格）。规格正文：`docs/WEWORK_WS_IM_NOTES.md`（520 行 / 27KB）把长连接适配器（`src/openakita/channels/adapters/wework_ws.py`，2434 行）的**功能清单 / 帧协议（10 个 cmd） / 9 条必须保持的逻辑约束 / 配置 / 数据流 / 已知限制 / 25 项修改检查清单**全列了出来——**可直接当实现规格/清单搬运**；第三节是"长连接 vs 回调"官方差异对照表。
 - 两套适配器并存：`wework_ws.py`（长连接，`class WeWorkWsAdapter:514`）与 `wework_bot.py`（回调，`BotMsgCrypt:81` AES-256-CBC、`STREAM_TIMEOUT=330:280`、`StreamSession:288`）。
 - 长连接实现要点（行号已核）：`_connection_loop:736`（指数退避 1s→30s）、`_send_auth:843`、`_heartbeat_loop:857`（30s；**发心跳前**查 missed_pong，连续 2 次判死）、`_route_frame:907`、`_handle_msg_callback_safe:962`（`asyncio.wait_for` 超时 + 异常兜底必发 `finish=true`）、`_send_stream_reply:1799`、`_send_reply_with_ack:2066`（同 `req_id` 串行 + 15s 回执）、`_stream_keepalive_loop:1977`（4min 发 `finish=false` 防 6min 超时）、`_ws_upload_media`（init/chunk/finish）。
 - 防御件（可直接抄的模式）：`_seen_msg_ids:586`（OrderedDict，10min TTL + 500 上限双淘汰）、`_peer_locks:604`（按 chat_id 串行）、`_reply_locks:583`、`_pending_replies:607`（断线暂存、重连重试）、`_pending_media_msgs:601`、`MAX_INTERMEDIATE_STREAM_MSGS=85:101`、`_parse_quote_content:250`、`_normalize_think_tags:310`、`_WebhookSender:385`（WS 失败回退）。**被踢正确处置**：`disconnected_event` → `_displaced=True`（`:579`/`:1254`）→ **停止重连**（防被踢后无限重连互踢）。
