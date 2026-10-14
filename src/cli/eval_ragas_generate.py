@@ -215,6 +215,39 @@ def _load_latest_testset(
     return questions, ground_truth
 
 
+def _context_header(meta: dict) -> str:
+    """从分块元数据构造【公司名 · 报告期】锚点前缀（design D8 的 P1）。
+
+    RAGAS 出题 prompt 只收到 `page_content` + `themes`，而中文年报正文常自称
+    「本公司」、正文不出现公司全名 ⇒ 模型无实体可消解，产出「本报告期…」
+    这类题面不自足的题。故在送入出题前，把分块元数据里的公司名与报告期
+    前置进正文，给出题模型一个明确的实体锚点。（只影响出题用的 KG，
+    不动生产索引与评估检索栈。）
+
+    取值优先级：`company` → `source`（文件名兜底）；`report_period` →
+    `year` + `quarter`。两者皆无可用值时返回空串（不产生半截锚点）。
+
+    Args:
+        meta: 分块元数据字典（`document_metadata`）
+
+    Returns:
+        形如 `"【东软集团股份有限公司 · 2025年第一季度】\\n"` 的前缀；无可用字段时 ""
+    """
+    company = str(meta.get("company") or "").strip()
+    period = str(meta.get("report_period") or "").strip()
+    if not period:
+        year = str(meta.get("year") or "").strip()
+        quarter = str(meta.get("quarter") or "").strip()
+        period = f"{year}{quarter}"
+    if not company:
+        company = str(meta.get("source") or "").strip()
+
+    fields = [f for f in (company, period) if f]
+    if not fields:
+        return ""
+    return "【" + " · ".join(fields) + "】\n"
+
+
 def _make_generator(llm, embeddings):
     """构造 TestsetGenerator，并带上自足性约束（design D8）。"""
     from ragas.testset.synthesizers.generate import TestsetGenerator
@@ -353,7 +386,8 @@ def run_generate(
             meta["parent_content"] = ""  # 清空原文，避免敏感信息泄漏
             langchain_chunks.append(
                 LCDocument(
-                    page_content=safe_content,
+                    # 前置【公司·报告期】实体锚点，使出题模型点名公司（design D8 的 P1）
+                    page_content=_context_header(meta) + safe_content,
                     metadata=meta,
                 )
             )
