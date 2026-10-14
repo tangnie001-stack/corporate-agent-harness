@@ -1036,7 +1036,7 @@ git commit -m "docs(openspec): ragas-modern-stack 活体验收记录"
 | 静态闸门 | `openspec validate --strict` valid；`check_docs` 21 篇 0 error；`check_adr` 23 条 0 error；`ruff check .` 1 error = `src/infra/db/engine.py:33 UP047`，**既存**（主仓 dev-wsl 同样报，且该文件不在本分支 diff 内） |
 | 迁移对照 | 同题三配置（legacy+qwen3.8-max-0902 / legacy+kimi-k3 / **modern+qwen3.8-flash**）五项**最大绝对差 0.0023**，全为真值 |
 | 1 题冒烟 | ✅ 2m18s；stdout **恰五行**全真值；**无 `DeprecationWarning`**；CSV 含 `error` 列；MD **无**「两口径分叉」Note；均值行五项 |
-| 出题验收 | ⚠️ **部分通过**：abstract 出题器**已恢复**；题面自足性**未达成**（见下） |
+| 出题验收 | ✅ **通过**（v4，见下）：abstract 恢复（7/7/7）；题面自足 **21/21（100%）** |
 
 冒烟五行：`faithfulness=1.0000 · answer_relevancy=0.9357 · context_precision=0.9167 · context_recall=1.0000 · answer_correctness=0.7472`
 
@@ -1058,6 +1058,31 @@ git commit -m "docs(openspec): ragas-modern-stack 活体验收记录"
 - `上市公司定期财务报告：营业收入增长1.06%，归属净利润为何因营业成本增加而下滑？`
 
 ⇒ **`llm_context` 是软引导，不足以把"题面点名公司"变成硬保证**（与 design D8 的既有判断一致：官方无问题级硬校验）。
+
+### 出题验收结果（P1 修复后重出，2026-10-15，`--generate --size 20`，21m14s，产出 **v4** / 21 条）
+
+**判据（对应 spec scenario）逐条核验：**
+
+| 判据 | 结果 |
+|---|---|
+| ① 日志无 `Skipping multi_hop_abstract_query_synthesizer` | ✅ 无（`CosineSimilarityBuilder` / `ThemesExtractor` 均执行） |
+| ② JSON 含 `multi_hop_abstract` ≥1 | ✅ **7 条**（分布 7 / 7 / 7） |
+| ③ 题面 **100% 命中** KB 内公司名 | ✅ **21/21（0 条缺失）** |
+| ④ `reference_contexts` 含【公司·报告期】锚点头 | ✅ **21/21**（多跳样本在 `<n-hop>` 标签后紧跟头部） |
+
+**关键对照（P1 前后）：**
+
+| | v3（P1 前） | v4（P1 后） |
+|---|---|---|
+| 题面不含公司名 | 12–13 / 21 | **0 / 21** |
+| 禁用指代「本报告期」「该公司」 | 出现（如「本公司 2024…」） | **0** |
+
+**结论**：**P1（源头锚定）单独即达成硬判据**——把实体前置进出题上下文后，题面自足率从 ~40% 提到 **100%**，印证了「自足与否取决于上下文是否携带实体」这一根因判断。
+
+**残留观察（非阻断）**：
+- 腾讯文档的锚点头为 `【tencent · 2024】`（源 `document_metadata.company` 即小写英文、无 `report_period` 故回落到 `year`）——自足但不够规范；如需统一，属**上游元数据**质量问题，不在本 change。
+- `#21` 上下文跨「腾讯 + 东软」两家公司、题面**同时点名两家**（自足）；`#20` 出现非常规实体串 `TencentGlobal`（疑似语料/抽取产物），题面仍含 `Tencent`。
+
 
 **③ 附带发现**：`--generate --size 20` 在此环境下需 **29 分钟**（KG transforms 约 12 分钟 + 场景/样本生成约 12 分钟），且**此前曾无超时无限挂起**（已由修复波给 `get_judge_llm` 补 `RAGAS_JUDGE_TIMEOUT`）。
 
@@ -1083,20 +1108,20 @@ git commit -m "docs(openspec): ragas-modern-stack 活体验收记录"
 - [ ] **Step 2: 实现**
   - 新增 `_context_header(meta: dict) -> str`；在 `run_generate` 的 chunk→`LCDocument` 组装处，`page_content = header + safe_content`。
   - **不得**改 `document_metadata` 本身，**不得**动生产索引 / 检索栈。
-- [ ] **Step 3: 跑通 + 提交**
+- [x] **Step 3: 跑通 + 提交**
   - Run: `POSTGRES_HOST=localhost pytest tests/ -q && ruff check .`
-  - 提交：`feat(eval): 出题上下文前置【公司·报告期】锚点（P1）`
+  - 提交：`feat(eval): 出题上下文前置【公司·报告期】锚点（P1）`（`f326383f`）
 
 ### Task 11: P2 —— 出题后自足性门
 
-- [ ] **设计**：定义「自足」判据（题面含 KB 内公司名；多公司 multi-hop 无唯一解者丢弃）、改写 vs 丢弃策略、判据来源（分块元数据的公司名集合）。
+- [ ] **设计**：定义「自足」判据（题面含 KB 内公司名；多公司 multi-hop 无唯一解者丢弃）、改写 vs 丢弃策略、判据来源（`reference_contexts` 的【】锚点头 → 公司名集合）。
 - [ ] **TDD 实现**：`_ensure_self_contained(samples, companies, llm)`；不达标样本：能唯一确定实体则**保义替换**，否则**丢弃**。
 - [ ] **测试**：给合成样本，断言「已自足 / 替换 / 丢弃」三条路径。
 - [ ] 提交：`feat(eval): 出题后自足性门（P2）`
 
 ### Task 12: 出题验收（须重出）
 
-- [ ] **先删 KG 缓存**：`rm data/ragas/kg_<kb>.json`（否则 transforms 跳过、P1 不生效）。
-- [ ] Run: `POSTGRES_HOST=localhost python -m src.cli.eval_ragas --kb-id <kb> --generate --size 20`
-- [ ] **判据**（对应 spec scenario）：① 日志无 `Skipping multi_hop_abstract_query_synthesizer`；② JSON 含 `multi_hop_abstract` ≥1；③ **题面 100% 命中 KB 内公司名**；④ 抽检 `reference_contexts` 首行含公司名与报告期。
-- [ ] 结果写入本文件「验收记录」。
+- [x] **先删 KG 缓存**：旧 KG 已备份为 `data/ragas/kg_<kb>.json.bak`（否则 transforms 跳过、P1 不生效）。
+- [x] Run: `POSTGRES_HOST=localhost python -m src.cli.eval_ragas --kb-id 4a1dcb… --generate --size 20` → 21m14s，产出 **v4 / 21 条**。
+- [x] **判据**（对应 spec scenario）：① 无 `Skipping multi_hop_abstract_query_synthesizer` ✅；② `multi_hop_abstract` = 7 ✅；③ 题面 **21/21 命中** ✅；④ `reference_contexts` **21/21** 含【公司·报告期】✅。
+- [x] 结果写入本文件「验收记录」（见上）。
