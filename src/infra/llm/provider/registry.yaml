@@ -20,7 +20,7 @@ providers:
       main: qwen3.8-flash
       classify: qwen3.8-flash
       summary: qwen3.8-flash
-      judge: qwen3.8-max
+      judge: kimi-k3
       embedding: qwen3.7-text-embedding-flash
       rerank: qwen3.7-text-rerank
     catalog:

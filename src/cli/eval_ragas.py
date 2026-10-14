@@ -721,7 +721,12 @@ def main() -> None:
             sut=settings.LLM_MODEL,
             judge=judge_llm.model_name,
         )
-        llm_wrapper = LangchainLLMWrapper(judge_llm, bypass_n=True)
+        # bypass_temperature：RAGAS 默认把裁判温度覆盖为 0.01，而部分推理模型
+        # （如百炼 kimi-k3）只接受 {0,1} 或省略，0.01 直接 400。置 True 后 RAGAS
+        # 不再改写，裁判才真正跑在 get_judge_llm 设定的 temperature=0。
+        llm_wrapper = LangchainLLMWrapper(
+            judge_llm, bypass_n=True, bypass_temperature=True
+        )
         embeddings_wrapper = LangchainEmbeddingsWrapper(embeddings)
 
         # 构建 LangGraph

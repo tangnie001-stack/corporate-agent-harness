@@ -9,7 +9,7 @@ def test_get_judge_llm_uses_judge_role(monkeypatch):
 
     monkeypatch.setattr(factory, "_REGISTRY", None)
     llm = get_judge_llm()
-    assert llm.model_name == "qwen3.8-max"  # registry.models[judge]
+    assert llm.model_name == "kimi-k3"  # registry.models[judge]
 
 
 def test_get_llm_defaults_to_registry(monkeypatch):
