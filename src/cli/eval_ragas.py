@@ -31,6 +31,7 @@ from langfuse.decorators import langfuse_context, observe
 
 from src.cli.eval_scoring import (
     apply_sample_masks,
+    build_metrics,
     classify_sample,
     main_score_means,
     retrieval_coverage,
@@ -40,6 +41,7 @@ from src.cli.eval_scoring import (
 from src.config import settings
 from src.config.const import (
     EVAL_RETRIEVAL_COVERAGE_MIN,
+    RAGAS_EVAL_CONCURRENCY,
     RAGAS_METRIC_COLUMNS,
     SAMPLE_CLASS_EMPTY,
     SAMPLE_CLASS_PURE_KB,
@@ -311,109 +313,124 @@ async def generate_answers_and_contexts(
     )
 
 
+class _EvalResult:
+    """`Experiment` 的行序适配 + `.to_pandas()` 契约（产出层零改动）。
+
+    `Experiment.to_pandas()` 的行序是 `arun` 的**完成序**，不保证与输入下标对齐
+    （实测 `experiment.py:188` 用 `as_completed`）；本类持一个已按 `q_index` 排好
+    的 DataFrame，并保留既有 `.to_pandas()` 调用面。
+    """
+
+    def __init__(self, df: pd.DataFrame) -> None:
+        """保存已排序的结果表。
+
+        Args:
+            df: 已按 q_index 排序并重置索引的结果表
+        """
+        self._df = df
+
+    def to_pandas(self) -> pd.DataFrame:
+        """返回已排序的结果表（与旧 `EvaluationResult.to_pandas()` 同形）。"""
+        return self._df
+
+
+async def _score_metrics(metric_name: str, metric, row: dict):
+    """按指标名调 `ascore`（各指标入参各不相同，在此集中映射）。"""
+    if metric_name == "faithfulness":
+        return await metric.ascore(
+            user_input=row["question"],
+            response=row["answer"],
+            retrieved_contexts=row["contexts"],
+        )
+    if metric_name == "context_precision":
+        return await metric.ascore(
+            user_input=row["question"],
+            reference=row["ground_truth"],
+            retrieved_contexts=row["contexts"],
+        )
+    if metric_name == "context_recall":
+        return await metric.ascore(
+            user_input=row["question"],
+            retrieved_contexts=row["contexts"],
+            reference=row["ground_truth"],
+        )
+    if metric_name == "answer_correctness":
+        return await metric.ascore(
+            user_input=row["question"],
+            response=row["answer"],
+            reference=row["ground_truth"],
+        )
+    # answer_relevancy
+    return await metric.ascore(user_input=row["question"], response=row["answer"])
+
+
 def run_evaluation(
     questions: list[str],
     ground_truth: list[str],
     answers: list[str],
     contexts: list[list[str]],
-    llm_wrapper: Any,
-    embeddings_wrapper: Any,
+    metrics: dict,
 ) -> Any:
-    """运行 RAGAS 五指标评估.
+    """用现代 RAGAS 栈评五项指标，返回 `Experiment`（`.to_pandas()` 供产出层）。
 
-    每个指标内部会多次调用 LLM（非简单的一次一问一答），
-    因此评估耗时明显长于回答生成：
-      - faithfulness: 将回答拆成陈述句后逐句判断，N+1 次 LLM
-      - answer_relevancy: 从回答反向生成候选项问题，M 次 LLM
-      - context_recall: 逐条判断上下文是否覆盖参考答案，P 次 LLM
-      - context_precision: 逐条判断上下文是否与问题相关，Q 次 LLM
-      - answer_correctness: 比对回答与参考答案的事实/语义一致性，R 次 LLM
-    综上，评估阶段 LLM 调用次数 = 指标内调用次数 × 指标数 × QA 对数。
+    逐行独立打分：任一指标失败在该行记 `error`（design D2）——**不丢行、不写 NaN
+    冒充分数**。行级并发受 `RAGAS_EVAL_CONCURRENCY` 限制（design D5）。`arun` 按
+    **完成序** append，故每行带 `q_index` 并在返回前按它回排，保证与
+    questions/trace_ids 的下标对齐契约（写错 trace 是静默事故）。
 
     Args:
         questions: 问题列表
         ground_truth: 参考答案列表
         answers: 系统生成的回答列表
         contexts: 检索到的上下文列表
-        llm_wrapper: RAGAS 用 LLM 封装器（LangchainLLMWrapper 实例）
-        embeddings_wrapper: RAGAS 用 Embeddings 封装器（LangchainEmbeddingsWrapper 实例）
+        metrics: `eval_scoring.build_metrics` 产物的指标实例表
 
     Returns:
-        包含评估结果的 EvaluationResult 对象（可调用 .to_pandas() 转为 DataFrame）
+        Experiment：行含五项指标 + `q_index` + `error`
     """
-    from datasets import Dataset
-    from ragas import evaluate
-    from ragas.metrics import (
-        AnswerCorrectness,
-        answer_relevancy,
-        context_precision,
-        context_recall,
-        faithfulness,
-    )
-    from ragas.run_config import RunConfig
+    from ragas import Dataset, experiment
 
-    data = {
-        "question": questions,
-        "answer": answers,
-        "contexts": contexts,
-        "ground_truth": ground_truth,
-    }
-    dataset = Dataset.from_dict(data)
-
-    core_logging.log_event(Event.EVALUATION_START, samples=len(questions))
-    # ragas.evaluate 无类型标注（推断为 Executor），实际返回 EvaluationResult，显式标注 Any
-    # 默认 RunConfig.timeout=180s，长答案的 faithfulness/answer_relevancy 会超时
-    # 返回 nan（raise_exceptions=False 吞掉 TimeoutError），故放宽到 10 分钟
-    result: Any = evaluate(
-        dataset=dataset,
-        llm=llm_wrapper,
-        embeddings=embeddings_wrapper,
-        metrics=[
-            context_precision,
-            context_recall,
-            faithfulness,
-            answer_relevancy,
-            AnswerCorrectness(),  # 实例化；类会 TypeError。列映射 ground_truth→reference
-        ],
-        raise_exceptions=False,
-        run_config=RunConfig(timeout=600),
-    )
-
-    df = result.to_pandas()
-    core_logging.log_event(Event.EVALUATION_DONE)
-    for col in df.columns:
-        if col in [
-            "faithfulness",
-            "answer_relevancy",
-            "context_recall",
-            "context_precision",
-            "answer_correctness",
-        ]:
-            core_logging.log_event(
-                Event.METRIC_MEAN,
-                metric=col,
-                mean=round(float(df[col].mean()), 4),
-            )
-
-    # 显式暴露被吞掉的指标失败：ragas executor 在 raise_exceptions=False 时
-    # 会把异常（如 API 额度耗尽 403 / 超时）转成 nan，并记入 "Exception raised
-    # in Job[...]" 日志。这里汇总提示，避免 nan 被静默带进报告。
-    metric_cols = [
-        "faithfulness",
-        "answer_relevancy",
-        "context_recall",
-        "context_precision",
-        "answer_correctness",
+    rows = [
+        {
+            "q_index": i,
+            "question": q,
+            "answer": a,
+            "ground_truth": g,
+            "contexts": c,
+        }
+        for i, (q, a, g, c) in enumerate(
+            zip(questions, answers, ground_truth, contexts, strict=True)
+        )
     ]
-    nan_counts = {
-        col: int(df[col].isna().sum())
-        for col in metric_cols
-        if col in df.columns and df[col].isna().any()
-    }
-    if nan_counts:
-        core_logging.log_event(Event.METRICS_NAN, counts=nan_counts)
 
-    return result
+    dataset = Dataset(name="ragas_eval", backend="inmemory")
+    for r in rows:
+        dataset.append(r)
+
+    sem = asyncio.Semaphore(max(1, RAGAS_EVAL_CONCURRENCY))
+
+    @experiment()
+    async def _score_row(row: dict) -> dict:
+        out: dict = {"q_index": row["q_index"], "error": ""}
+        errors: list[str] = []
+        async with sem:
+            for name, metric in metrics.items():
+                try:
+                    res = await _score_metrics(name, metric, row)
+                    out[name] = float(res.value)
+                except Exception as exc:  # noqa: BLE001  # 失败可见，不吞
+                    out[name] = float("nan")
+                    errors.append(f"{name}:{type(exc).__name__}")
+        out["error"] = ";".join(errors)
+        return out
+
+    core_logging.log_event(Event.EVALUATION_START, samples=len(rows))
+    view = asyncio.run(_score_row.arun(dataset))
+    core_logging.log_event(Event.EVALUATION_DONE)
+    # arun 按【完成序】append；按 q_index 回排后再交产出层，保证下标对齐契约
+    # （不对齐会把分数静默写到别的 trace 上）。
+    df = view.to_pandas().sort_values("q_index").reset_index(drop=True)
+    return _EvalResult(df)
 
 
 def save_results_csv(
@@ -688,22 +705,13 @@ def main() -> None:
         from src.cli.eval_ragas_generate import _ensure_vertexai_stub
 
         _ensure_vertexai_stub()
-        from datasets import Dataset  # noqa: F401
-        from ragas import evaluate  # noqa: F401
-        from ragas.embeddings import LangchainEmbeddingsWrapper
-        from ragas.llms import LangchainLLMWrapper
-        from ragas.metrics import (  # noqa: F401
-            answer_relevancy,
-            context_precision,
-            context_recall,
-            faithfulness,
-        )
 
         from src.agents.graph.workflow import build_graph
         from src.infra.db.engine import run_and_dispose
         from src.infra.db.vector_store import VectorStore
         from src.infra.llm.prompt_manager import PromptManager
-        from src.models import get_embeddings, get_judge_llm, get_llm, get_rerank
+        from src.infra.llm.provider import factory as _llm_factory
+        from src.models import get_judge_llm, get_llm, get_rerank
 
         core_logging.log_event(Event.RAG_COMPONENT_INIT)
         vector_store = VectorStore()
@@ -714,20 +722,18 @@ def main() -> None:
         #   评分，避免自我评价偏置；模型名空/None 时由 registry 兜底。
         llm = get_llm()  # 选手：生产模型（含生产 temperature）
         reranker = get_rerank()
-        embeddings = get_embeddings()
         judge_llm = get_judge_llm()
         core_logging.log_event(
             Event.EVAL_MODEL_INIT,
             sut=settings.LLM_MODEL,
             judge=judge_llm.model_name,
         )
-        # bypass_temperature：RAGAS 默认把裁判温度覆盖为 0.01，而部分推理模型
-        # （如百炼 kimi-k3）只接受 {0,1} 或省略，0.01 直接 400。置 True 后 RAGAS
-        # 不再改写，裁判才真正跑在 get_judge_llm 设定的 temperature=0。
-        llm_wrapper = LangchainLLMWrapper(
-            judge_llm, bypass_n=True, bypass_temperature=True
+        # 裁判与 embeddings 走现代 RAGAS 工厂：采样策略（temperature=0、不发
+        # top_p）与显式超时已在 build_ragas_judge / build_ragas_embeddings 内落定。
+        metrics = build_metrics(
+            _llm_factory.build_ragas_judge(),
+            _llm_factory.build_ragas_embeddings(),
         )
-        embeddings_wrapper = LangchainEmbeddingsWrapper(embeddings)
 
         # 构建 LangGraph
         prompt_manager = PromptManager()
@@ -772,8 +778,7 @@ def main() -> None:
             ground_truth,
             answers,
             contexts,
-            llm_wrapper,
-            embeddings_wrapper,
+            metrics,
         )
 
         # 统一「主分」口径：报告 / stdout / 门禁都读同一张已掩码表（纯 KB 样本）。

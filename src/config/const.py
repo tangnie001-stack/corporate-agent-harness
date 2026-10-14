@@ -510,6 +510,9 @@ RAGAS_METRIC_COLUMNS: tuple[str, ...] = (
 )
 # 门禁：检索覆盖率下限（低于此值判失败，杜绝"不检索即跳空 context 指标"的规避）
 EVAL_RETRIEVAL_COVERAGE_MIN: float = 0.5
+# 现代 RAGAS 评测的行级并发上限（N 题 × 5 指标 × 每题内部多次裁判调用，
+# 全量并发会打爆裁判端点/额度；5 为实测安全的起点）。
+RAGAS_EVAL_CONCURRENCY: int = 5
 
 
 # ── RAGAS 测试集人设 ──

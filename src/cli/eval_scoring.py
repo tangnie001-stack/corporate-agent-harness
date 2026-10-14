@@ -20,6 +20,33 @@ from src.config.const import (
 from src.rag.context import RAGContext
 
 
+def build_metrics(judge, embeddings) -> dict:
+    """构造现代 collections 五指标实例（口径与 legacy 对齐，design D3）。
+
+    Args:
+        judge: 现代裁判 LLM（`llm_factory` 产物）
+        embeddings: 现代 embeddings（`embedding_factory` 产物）
+
+    Returns:
+        指标名 -> 指标实例（顺序即评估顺序）
+    """
+    from ragas.metrics.collections import (
+        AnswerCorrectness,
+        AnswerRelevancy,
+        ContextPrecision,
+        ContextRecall,
+        Faithfulness,
+    )
+
+    return {
+        "faithfulness": Faithfulness(llm=judge),
+        "answer_relevancy": AnswerRelevancy(llm=judge, embeddings=embeddings),
+        "context_precision": ContextPrecision(llm=judge),
+        "context_recall": ContextRecall(llm=judge),
+        "answer_correctness": AnswerCorrectness(llm=judge, embeddings=embeddings),
+    }
+
+
 def classify_sample(contexts: list[RAGContext]) -> str:
     """按检索来源把单个样本分为纯 KB / 含 web / 无检索 三类。
 
