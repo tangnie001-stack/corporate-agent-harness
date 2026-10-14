@@ -767,7 +767,7 @@ def test_save_eval_report_tolerates_nan_metric() -> None:
     ``except`` 吞掉、``eval_report`` 表静默无记录。修复后改走 ``pd.isna`` 守卫，
     ``insert_eval_report`` 必被调用，且该指标在 ``detail_json`` 中保留 NaN。
     """
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     import pandas as pd
 
@@ -782,8 +782,6 @@ def test_save_eval_report_tolerates_nan_metric() -> None:
             "answer_correctness": pd.Series([0.5, 0.4], dtype="object"),
         }
     )
-    mock_result = MagicMock()
-    mock_result.to_pandas.return_value = mock_df
 
     captured: dict = {}
 
@@ -813,7 +811,9 @@ def test_save_eval_report_tolerates_nan_metric() -> None:
         patch("src.services.app_service.AppService", return_value=_FakeSvc()),
         patch("src.infra.db.engine.run_and_dispose", side_effect=_fake_run_and_dispose),
     ):
-        _save_eval_report("kb1", mock_result, 2, "/tmp/unused.csv")
+        _save_eval_report(
+            "kb1", mock_df, 2, "/tmp/unused.csv", None, sample_classes=["pure_kb"] * 2
+        )
 
     assert "entity" in captured
     entity = captured["entity"]

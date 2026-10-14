@@ -40,6 +40,7 @@ from src.cli.eval_scoring import (
 )
 from src.config import settings
 from src.config.const import (
+    EVAL_PASS_THRESHOLD,
     EVAL_RETRIEVAL_COVERAGE_MIN,
     RAGAS_EVAL_CONCURRENCY,
     RAGAS_METRIC_COLUMNS,
@@ -540,8 +541,7 @@ def save_markdown_report(
     """将评估结果保存为 Markdown 摘要报告，与 CSV 同路径（.md 后缀）.
 
     均值行统一写「主分」（仅纯 KB 样本的指标均值），与 CSV / stdout / 门禁
-    口径一致；先按样本类别掩码，报告携带 sample_class / skipped 列。均值行下
-    附一行 Note，注明 DB（`eval_report`）为全量口径、与主分不是同一个数。
+    口径一致；先按样本类别掩码，报告携带 sample_class / skipped 列。
 
     Args:
         result: RAGAS evaluate() 返回的结果对象
@@ -584,13 +584,6 @@ def save_markdown_report(
     means = main_score_means(df)
     avg_parts = ", ".join(f"{m}={means[m]:.4f}" for m in actual_metrics if m in means)
     lines.append(f"**Main scores (pure-KB):** {avg_parts}")
-    lines.append("")
-    # 口径分叉提示：同一次运行的 DB 落库走全量口径（见 _save_eval_report），
-    # 与上方主分不是同一个数；此处显式标注，避免读者误以为二者应一致。
-    lines.append(
-        "**Note:** `eval_report` DB row stores full-sample (unmasked) `detail_json` /"
-        " `avg` / `overall_score`; they may differ from the pure-KB main scores above."
-    )
     lines.append("")
 
     os.makedirs(os.path.dirname(md_path) or ".", exist_ok=True)
@@ -820,7 +813,14 @@ def main() -> None:
 
         # 先落库：DB 写入不受第三方观测系统（Langfuse）影响，故排在回写之前
         # _save_eval_report 需要 questions 长度
-        _save_eval_report(kb_id, result, len(questions), output_path, retrieval_details)
+        _save_eval_report(
+            kb_id,
+            result.to_pandas(),
+            len(questions),
+            output_path,
+            retrieval_details,
+            sample_classes,
+        )
 
         # 观测旁路回写：排在落库之后、门禁之前（失败只记 warning，见 write_scores）
         _write_langfuse_scores(masked_df, trace_ids)
@@ -924,66 +924,63 @@ def _build_eval_detail(
     return detail, avg
 
 
+def _eval_report_deps() -> tuple[Any, Any]:
+    """DB 落库依赖（独立函数便于测试替身注入）。"""
+    from src.infra.db.models.eval_report import EvalReportModel as EvalReportEntity
+    from src.services.app_service import AppService
+
+    return AppService(), EvalReportEntity
+
+
 def _save_eval_report(
     kb_id: str,
-    result,
+    df: pd.DataFrame,
     qa_count: int,
     output_path: str,
     retrieval_details: list[list[dict]] | None = None,
+    sample_classes: list[str] | None = None,
 ) -> None:
-    """将 RAGAS 评估结果持久化到 eval_report 表.
+    """把评估结果持久化到 eval_report 表。
+
+    `overall_score` 统一到**主分口径**（纯 KB 五项均值，design D11），替换原先
+    「四项加权、未掩码」的旧口径；`passed` 取常量 `EVAL_PASS_THRESHOLD`。
+    传入 `sample_classes` 时先按样本类别掩码，使落库的逐题明细与各指标均值
+    同为主分口径。
 
     Args:
         kb_id: 知识库 UUID
-        result: RAGAS evaluate() 返回的结果对象
+        df: RAGAS 结果表（行序与 sample_classes 对齐）
         qa_count: QA 对数
         output_path: CSV 报告文件路径
         retrieval_details: 每 query 的检索明细（与 detail 数组按 q_index 对齐），
             传入后并入对应 detail_json 条目，供低分 query 下钻检索环节
+        sample_classes: 每题的样本类别；传入后先掩码再算主分与明细
     """
     try:
+        from src.cli import eval_scoring
         from src.infra.db.engine import run_and_dispose
-        from src.infra.db.models.eval_report import EvalReportModel as EvalReportEntity
-        from src.services.app_service import AppService
 
-        svc = AppService()
+        svc, eval_report_entity = _eval_report_deps()
+        if sample_classes is not None:
+            df = eval_scoring.apply_sample_masks(df, sample_classes)
+        detail, _avg = _build_eval_detail(df, qa_count, retrieval_details)
 
-        detail, avg = _build_eval_detail(
-            result.to_pandas(), qa_count, retrieval_details
-        )
-
-        faith = avg.get("faithfulness")
-        recall = avg.get("context_recall")
-        precision = avg.get("context_precision")
-        relevancy = avg.get("answer_relevancy")
-
-        weights = {
-            "faithfulness": 0.3,
-            "context_recall": 0.3,
-            "context_precision": 0.2,
-            "answer_relevancy": 0.2,
-        }
-        weighted_sum = 0.0
-        total_w = 0.0
-        for k, w in weights.items():
-            v = avg.get(k)
-            if v is not None:
-                weighted_sum += v * w
-                total_w += w
-        overall = weighted_sum / total_w if total_w > 0 else None
+        means = eval_scoring.main_score_means(df)
+        present = [v for v in means.values() if pd.notna(v)]
+        overall = float(sum(present) / len(present)) if present else None
 
         async def _do_insert():
-            entity = EvalReportEntity(
+            entity = eval_report_entity(
                 id=str(uuid.uuid4()),
                 kb_id=kb_id,
                 run_type="manual",
                 qa_count=qa_count,
-                faithfulness=faith,
-                answer_relevancy=relevancy,
-                context_precision=precision,
-                context_recall=recall,
+                faithfulness=means.get("faithfulness"),
+                answer_relevancy=means.get("answer_relevancy"),
+                context_precision=means.get("context_precision"),
+                context_recall=means.get("context_recall"),
                 overall_score=overall,
-                passed=overall >= 0.70 if overall is not None else False,
+                passed=overall is not None and overall >= EVAL_PASS_THRESHOLD,
                 report_path=output_path,
                 triggered_by=None,
                 detail_json=detail,

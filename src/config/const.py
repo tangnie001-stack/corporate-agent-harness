@@ -513,6 +513,10 @@ EVAL_RETRIEVAL_COVERAGE_MIN: float = 0.5
 # 现代 RAGAS 评测的行级并发上限（N 题 × 5 指标 × 每题内部多次裁判调用，
 # 全量并发会打爆裁判端点/额度；5 为实测安全的起点）。
 RAGAS_EVAL_CONCURRENCY: int = 5
+# 评测「通过」阈值（单一来源：落库 passed 与 kb_eval API 下发同用此值）。
+# 口径已由旧「四项加权、未掩码」改为「纯 KB 五项均值」，新口径系统性偏低
+# 0.03~0.13（实测 n=7，区间 0.68~0.92）——此值**待标定**，暂沿用 0.70。
+EVAL_PASS_THRESHOLD: float = 0.70
 
 
 # ── RAGAS 测试集人设 ──
