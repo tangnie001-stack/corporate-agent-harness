@@ -1,0 +1,199 @@
+## Context
+
+本仓 RAGAS 评测链路的现状（**实读 + 活体实测**核实）：
+
+- **执行入口是 legacy**：`src/cli/eval_ragas.py:367` 用 `evaluate(dataset=…, llm=LangchainLLMWrapper(...), embeddings=LangchainEmbeddingsWrapper(...), metrics=[…], raise_exceptions=False, run_config=RunConfig(timeout=600))`；指标来自 `from ragas.metrics import …`（`:346`）。
+- **每次评测打出 7 条 `DeprecationWarning`**（实测）：5 条指标导入 + `LangchainLLMWrapper` + `LangchainEmbeddingsWrapper`。
+- **代际断层是硬边界**：`evaluate()` 要求所有指标 `isinstance(m, Metric)`（`ragas/evaluation.py:132`），而 `ragas.metrics.collections.*` **不是**该子类 ⇒ **现代指标进不了 `evaluate()`**，执行层无法局部替换。
+- **现代栈可用性已活体验证**：`llm_factory` + 百炼 `kimi-k3` 可跑通（唯需 `temperature=0, top_p=None`）；`embedding_factory` + 百炼 `qwen3.7-text-embedding-flash` 可嵌入（dim=1024）；5 指标在现代栈跑同题，**4/5 与 legacy 逐位一致**（见「证据」）。
+- **出题链缺 transform**：我们手搓 5 个 transforms（`eval_ragas_generate.py:386-395`），官方 `default_transforms` 有 7 个（`transforms/default.py:185-207`），**缺 `ThemesExtractor` + `CosineSimilarityBuilder`** ⇒ `MultiHopAbstractQuerySynthesizer` 静默丢弃（日志 `logs/app_2026-10-13.log:3871`：`Skipping multi_hop_abstract_query_synthesizer ... Cannot form clusters`；v1 测试集实测 abstract = **0 条**）。
+- **出题 prompt 无问题级校验**：`ragas/testset/synthesizers/single_hop/prompts.py` 的 instruction 只要求「答案忠于上下文」，**对问题自足性零要求**；0.4.3 全 testset 包 grep `self-contained`/`ambiguity`/`QuestionFilter` **零命中**（旧版有 `QuestionFilter`，随 PR #1401 于 v0.2.0 整体移除，官方无说明）。
+- **失败静默**：`raise_exceptions=False` 把异常变 `nan`（实测：裁判 `kimi-k3` 因温度 400 → 5 指标全 nan；legacy 5 题中 5 个作业 `TimeoutError` → CSV 5 个空格）。
+- **白名单两端口径不一致**：出题读 `RAGAS_DOC_WHITELIST`（`eval_ragas_generate.py:268`），评估检索**整库**（`eval_ragas.py:737` → `get_all_chunks(kb_id)`）。
+- **可解释性缺口**：经典指标的 `MetricResult`（`ragas/metrics/result.py:11`）有 `reason` 字段，但 faithfulness / context_recall / context_precision 聚合时**只取分数、丢弃 reason**；只有 6 个 rubric/多模态指标会回填 reason。
+
+**前身变更的边界**：`ragas-agent-eval`（已实施）的 Non-Goals 明写「**不引入 `ragas.metrics.collections` 现代指标与其 `llm_factory`/`instructor` 接线**（当时 D3 选 legacy）」——本次正是接棒做它。
+
+## Goals / Non-Goals
+
+**Goals:**
+
+- 评测执行内核迁移到**现代 RAGAS 栈**，消除 7 条弃用警告，不再依赖 v1.0 将移除的 API。
+- **失败不再静默**：任一指标失败在原样行上显式可见，不丢行、不写 NaN。
+- **裁判可复现且可靠**：采样参数由我们显式控制；裁判选型以「结构化输出可靠性」为判据；超时给足。
+- **出题产出可唯一作答的题**：恢复 abstract 题路，题面点名公司/报告期。
+- **出题与评估同范围**：落地 ADR-0022 决策 C。
+
+**Non-Goals:**
+
+- 不换评测框架（仍用 RAGAS）。
+- **不评多轮 / 澄清轮**（`ask_user`）——「澄清」应作为被评能力另案（需多轮 + 用户模拟器）。
+- **不改 rubric 类指标**（D3 选经典 5 指标的现代版；可解释性增强另案）。
+- 不改 `eval_report` 表 / `kb_eval` API / 前端。
+- 不动 `evaluation-pipeline` 的「Empty KB」「NLI context 实体渲染」「当前日期」三条既有条款。
+
+## Decisions
+
+### D1 — 执行内核整层换现代栈，不做混合
+
+**选**：`evaluate()` → `@experiment` + `ragas.Dataset`；`ragas.metrics` → `ragas.metrics.collections`；`Langchain*Wrapper` → `llm_factory`/`embedding_factory`。
+
+**Why**：`evaluate()` 与现代指标**类型不兼容**（`evaluation.py:132` 校验 `isinstance(m, Metric)`），混合态不存在；且 `evaluate()`/`aevaluate()` 已弃用（`evaluation.py:448`、`:106`）。
+
+**Alternatives**：① 留 legacy 不动 → v1.0 必碎，且持续吃弃用警告；② 只换客户端不换指标 → 类型不兼容，不可行。
+
+### D2 — 失败语义：行内 catch 记 `error`，不丢行、不写 NaN
+
+**选**：`@experiment` 的每行函数内部 `try/except`，失败时返回带 `error` 字段的行（指标留空但行保留）。
+
+**Why**：现代 `@experiment` 的 `arun` 对异常**默认丢行 + print**（`experiment.py:190-195`），同样是静默——与 legacy 的 NaN 同类问题。我们要的是「失败可见」（治本）。
+
+**Alternatives**：纯用 `arun` 默认行为 → 行数悄悄变少，报告看不出哪题失败。
+
+**边界（stdout 契约）**：`error` **只进 CSV/MD**（新增列；无下游消费者、无列名断言，仅须不进主分白名单 `eval_scoring.py:72-91`）。**stdout 的形状永远不改**——它是 `src/cli/compare_retrieval.py:82-110` 的解析契约（子进程跑 `eval_ragas` 后正则取均值），且被 `tests/cli/test_eval_ragas.py:659` 锁成**恰好 5 行**。失败信息另经**日志事件**暴露。
+
+### D3 — 指标集：沿用经典 5 个（collections 版），不加 rubric
+
+**选**：`Faithfulness` / `AnswerRelevancy` / `ContextPrecision` / `ContextRecall` / `AnswerCorrectness`（`ragas.metrics.collections`）。
+
+**Why**：口径与现状对齐（实测 4/5 与 legacy 逐位一致），迁移风险最小。rubric 类（带 `feedback`）是**可解释性**增强，属另一维度，另案。
+
+**Alternatives**：换 `RubricsScoreWithReference` → 改变分数口径、需自定义 rubric，且非本次目标（`ragas-agent-eval` 亦已推迟）。
+
+### D4 — 数据载体：`backend="inmemory"`，产物只走我们自己的报告层
+
+**选**：`@experiment` 的 `Dataset` 用 **`backend="inmemory"`**（ragas 侧**不落盘**）；产出仍只走我们既有的 `data/ragas/reports/`（CSV/MD）。
+
+**Why**：本仓**已有自己的报告层**（`data/ragas/reports/`）；若再用 `local/csv` 会额外产出 `data/ragas/datasets/` + `data/ragas/experiments/`，形成**双份产物 + 两个多余目录**。
+
+**Alternatives**：`backend="local/csv"` + `root_dir="data/ragas"` → 多两个目录、双份产物，否；照官方示例用 `evals/` → 与既有目录结构分叉，否。
+
+### D5 — 并发：行级信号量，默认 5
+
+**选**：加可配置**行级**信号量 `RAGAS_EVAL_CONCURRENCY`（默认 **5**）限制 `arun` 的并发行数；**行内 5 指标串行**（不做指标级并发）。
+
+**Why**：`arun` 对 dataset 全量 `as_completed`（`experiment.py:188`），无内建限流；实测裁判端点在连打下会 403/超时。限**行级**即可压住总并发（≈ `行并发 × 行内调用`），行内串行实现最简。
+
+### D6 — 裁判构造：选型判据 + 采样 + 超时（**本次核心增量**）
+
+**选**：
+0. **裁判模型 = `qwen3.8-flash`**（实测可靠，见「Resolved」）。主模型侧拟切 `qwen3.7-flash` ⇒ 裁判 ≠ 选手，无自评偏置。
+1. **选型判据 = 结构化输出可靠性**（活体抽样验证，不看「能不能调通」）。
+2. **采样** = `temperature=0` 且**不发 `top_p`**。
+3. **超时** = 思考模型须显式给足；失败按 D2 可见。
+4. legacy 路径（迁移完成前）关闭 RAGAS 对裁判温度的**静默覆盖**（`bypass_temperature=True`）。
+
+**Why（证据见下节）**：
+- 采样：RAGAS 内建默认 `temperature=0.01, top_p=0.1`（legacy `langchain_llm.py:73` / 现代 `InstructorModelArgs`），而百炼部分模型**直接 400 拒绝**；`temperature=0` 也**本来就是裁判正解**（评测要可复现）。
+- 选型：不同模型**在不同指标上**的结构化输出可靠性天差地别（`kimi-k3` 在 `context_recall` 上 9/10 返回空；`qwen3.8-flash` 0/10）——**必须实测**。
+- 超时：思考模型单次调用偶尔 >30s。
+
+**Alternatives**：① 吃 RAGAS 默认 → 在受限模型上直接 400；② 按「模型名气/价格」选裁判 → 实测会选中不可靠的（kimi-k3）。
+
+### D7 — 白名单只约束出题；评估检索镜像生产（**反转 ADR-0022 决策 C**）
+
+**选**：`RAGAS_DOC_WHITELIST` **仅**约束出题的输入文档范围。评估侧检索**保持整库**（= 生产口径），**不**按白名单收窄。
+
+**Why（反转理由，记明以免后人"修回"）**：
+1. 检索由**题面驱动**（`retrieval.search(query, kb_id, …)`，`src/agents/tools/rag_tools.py:148`），与白名单无关；自足题的**自然检索即应命中**对应文档。
+2. 检索命中白名单外文档是**切块/检索质量的可观测信号**——过滤会**掩盖**它。
+3. 人为收窄会让评测测一个**生产里不存在**的系统（生产搜全库）。
+4. 还可能使 `context_precision` **虚高**（把本该混进来的无关候选人为删掉）。
+
+**Alternatives**：按白名单过滤检索（= 原 D7）→ 需改共享的**生产**检索栈（`retrieval.search` / `vector_store.*_search` / `rag_tools` 均**无 doc 级过滤**，独立评审 F1 已核实），且引入上述 4 个问题；已否。
+
+**影响**：ADR-0022 的**决策 C（评估检索与出题同范围）**被本变更**局部取代** —— 新增 ADR-0023，并在 ADR-0022 的 `Status` 加反向指针。
+
+### D8 — 出题链整改
+
+**选**：① 改用官方 `default_transforms` 全量（补 `ThemesExtractor` + `CosineSimilarityBuilder`）；② 传 `llm_context` 表达「题面须点名公司/报告期」的自足性约束。
+
+**Why**：`default_transforms` 是官方路径（当前我们缺件导致 abstract 静默丢失）；`llm_context` 是官方**唯一**的问题级软通道（官方无问题级硬校验）。
+
+**`llm_context` 取值（定稿）**：新增常量 `RAGAS_SELF_CONTAINED_HINT`（`src/config/const.py`），**中英各一句**（英文对齐 RAGAS 出题 prompt 语境、中文对齐中文语料），核心要求写死：题面须点名**公司名 + 报告期**，禁用「本报告期」「该公司」等依赖原文的指代：
+
+```
+"Each question MUST be self-contained: name the company and the reporting "
+"period explicitly. Do NOT use context-dependent references such as "
+"\"this reporting period\" or \"the company\".\n"
+"每个问题必须自足：明确指出公司名称与报告期；禁止使用『本报告期』『该公司』"
+"等依赖原文的指代。"
+```
+
+**Alternatives**：① 不传 `llm_context` → 现状（产出歧义题），否；② 手写 golden set（参考项目 `financial_rag-main` 与官方示例都这么做）→ 可控但贵、且无生产真实问题可依，**列为后续选项**。
+
+### D9 — 现代 client 的构造归属与数据来源
+
+**选**：新增**按角色集中构造 native client** 的入口（置于 provider 层，与既有 `build_chat` / `build_embeddings` 同处）：从 `resolve_role(role, registry)`（`src/infra/llm/provider/spec.py`，已给出 `ResolvedModel.base_url` / `.api_key`）取端点与密钥，构造 **`AsyncOpenAI`**；**裁判 LLM（供 `llm_factory`）与 embedding（供 `embedding_factory`）共用同一入口**。
+
+**Why**：`llm_factory` / `embedding_factory` 的 `client` **必填且须 native `OpenAI` / `AsyncOpenAI`**；仓内现只有 LangChain `ChatOpenAI`（`get_judge_llm`），**无 native client 归属**；且 `answer_relevancy` / `answer_correctness` 依赖 embedding 侧，而 D6 只覆盖裁判 LLM。不指定归属 → 两种实现可自由发挥（端点/密钥解析外溢到 CLI）。
+
+**Alternatives**：在 `eval_ragas.py` 里就地 `AsyncOpenAI(...)` → 与 provider 层重复端点/密钥解析逻辑，且绕开既有 `resolve_role`。
+
+### D10 — 模型版图（本变更内一并定）
+
+**选**：`judge → qwen3.8-flash`；`main` / `classify` / `summary → qwen3.7-flash`。
+
+**Why**：① 裁判须**结构化输出可靠**（D6，实测 qwen3.8-flash 0/10 空）；② 裁判与选手**必须不同模型**以免自评偏置——现状 `main=qwen3.8-flash`，若只改 judge 则 `judge == 选手`；把 `main` 降到 `qwen3.7-flash` 后二者错开。③ `qwen3.7-flash` 更便宜（用户目标）。
+
+**Alternatives**：只改 judge 不动 main → `judge == 选手`，D6 的无偏置论据不成立（独立评审 F2）。
+
+**代价**：换**生产主模型**（影响线上答案质量），且**历史评测基线作废**（选手变了）。
+
+### D11 — `eval_report.overall_score` 统一到主分口径
+
+**选**：`eval_report` 的 `overall_score` 改为**主分口径** = `main_score_means(df)` 的**五项指标均值**（**纯 KB 掩码**、含 `answer_correctness`），替换现在的「旧四项加权」。同步：① **删掉** MD 报告里那行「两口径分叉」Note（`eval_ragas.py:575`）；② **API 补** `answer_correctness`（`src/api/kb_eval.py:44-59`）；③ 阈值提到**单一常量**（不在落库与前端各硬编码一份）。
+
+**Why**：现状 `overall_score`（`eval_ragas.py:955-965`）= `{faithfulness .3, context_recall .3, context_precision .2, answer_relevancy .2}` 加权——**漏 `answer_correctness`**、且**未按纯 KB 掩码**。而它是**用户可见**的（前端 `deploy/nginx/html/index.html:1113` 显示大分数并 `>= 0.7` 上色）⇒ 前端展示的正是**已知口径不对**的分。
+
+**「别动它」的三条理由经查均不成立**：① 「前端依赖」→ 前端依赖的恰是**该修的缺陷**；② 「属另一案」→ 本变更已在动评测产出层（D2）；③ 「历史不可比」→ **无消费方**（`kb_eval` API 只取 `get_latest_eval_report`，只显示最新一次，无趋势/告警读历史行）。
+
+**代价**：
+- **阈值要重标**：`passed = overall >= 0.70`（`eval_ragas.py:981`）与前端 `overall >= 0.7`（`index.html:1113`）都按旧口径标定。
+- **实测（粗参考，n=7）**：新口径**系统性低于**旧口径 **−0.03 ~ −0.13**（`answer_correctness` 偏低所致，其值约 0.75）。样本区间 ≈ **0.68 ~ 0.92**、均值 0.82。旧口径 `0.7662` 判过 → 新口径同题 `0.6780` **会 FAIL**。⇒ 阈值先维持 `0.70` 并标「**待标定**」（新口径分布未测够）。
+- 前端**展示值会变**——**这是目的**。
+
+**证据**：`src/cli/eval_ragas.py:955-965`（旧公式）、`:980-981`（落库 + passed）、`src/api/kb_eval.py:44-59`（API 缺 answer_correctness）、`deploy/nginx/html/index.html:1113`（前端展示 + 上色）、上表实测区间。
+
+## 证据（活体实测，2026-10-14）
+
+| 实验 | 结论 |
+|---|---|
+| 现代栈 5 指标 vs legacy 同题 | faithfulness 1.0000=1.0000 · answer_relevancy 0.9357≈0.9371 · context_precision 0.9167=0.9167 · answer_correctness 0.7471≈0.7470 ·（context_recall 因裁判问题 nan） |
+| **两栈对照的 nan 说明**（回应评审 OQ1） | 两次对照各**恰有 1 个 nan，成因不同且均可解释**：kimi-k3 裁判时 `context_recall` nan（模型返回**空分类**，n=10 实测 9/10 空）；qwen3.8-flash 裁判时 `faithfulness` nan（30s **超时**）。换正确裁判 + 充足超时后二者均正常（qwen 下 `context_recall`=1.0；`faithfulness` statements 空率 0/5）。⇒ 「5 指标齐出分」的验收**前提**= 可靠裁判（D6）+ 显式充足超时（D2/D6），而非「任取模型必得 5 分」。 |
+| `context_recall` 空返回率（n=10） | **qwen3.8-flash 0/10** ✅ · **kimi-k3 9/10** ❌ |
+| `faithfulness` statements 空率（n=5，qwen3.8-flash） | 0/5 ✅；但 30s 超时下 **2/5 超时** ⚠️ |
+| `kimi-k3` 温度/`top_p` 接受度 | 仅接受 {0,1} 或省略；`0.01` / 任意 `top_p` → 400 |
+| 排除假设（空分类成因） | 与 `max_tokens`（1024/4096/8192）、instructor mode（JSON/MD_JSON/TOOLS）**无关**；**裸调真实 prompt 亦 3/3 返回 `{"classifications": []}`** ⇒ 模型行为 |
+| 现代 `llm_factory` 配置 | 默认（0.01/0.1）失败；`temperature=0` 失败（top_p 仍在）；**`temperature=0, top_p=None` 成功** |
+
+## Risks / Trade-offs
+
+- **[现代栈是 `0.4.3` 的「新」接口，上游仍在动]** → 迁移后若上游再改，需跟版；缓解：调研文档记录版本基线（`docs/research/2026-10-13-ragas-testset-generation.md`），并固定 `ragas==0.4.3`。
+- **[思考模型慢/偶发超时]** → 超时给足 + D2 显式失败；若某题反复失败，报告可见而非静默。
+- **[裁判模型受额度/限流影响]** → D5 限流 + 报告 `error` 列；额度耗尽时输出「全 error」而非「全 nan」，一眼可辨。
+- **[出题仍无问题级硬校验（官方无此能力）]** → `llm_context` 只是软引导；缓解：出题后人工抽检 + D7 同范围。**不**复活旧 `QuestionFilter`（对已移除实现打补丁）。
+- **[`top_p` 不发对某些模型的影响未逐一验证]** → 只验证了 400 场景与成功场景；缓解：裁判构造集中在一处，便于按模型调。
+
+## Migration Plan
+
+1. **裁判构造与失败语义**（D6/D2/D9）：新增「按角色集中构造 native client」（采样 `temperature=0` / 不发 `top_p` + 显式超时）；失败记 `error`（**只进 CSV/MD，stdout 形状不变**）。legacy 路径的 `bypass_temperature` 已单独提交。
+2. **执行内核迁移**（D1）：`run_evaluation` 改 `@experiment` + `collections`（`Dataset` 用 **`inmemory`**，**行级**信号量 `RAGAS_EVAL_CONCURRENCY=5`）；产出层（CSV/MD/DB/Langfuse）改读新表结构。**验收通过后删除 legacy 路径**（`evaluate()` + 双 wrapper），**不长期并存**。
+3. **出题整改**（D8）：`default_transforms` 全量 + `RAGAS_SELF_CONTAINED_HINT`；重出测试集验证 abstract 恢复且题面自足。
+4. **模型版图**（D10）：registry 绑定（`judge→qwen3.8-flash`；`main`/`classify`/`summary→qwen3.7-flash`）+ `qwen3.7-flash` catalog 定价。
+5. **活体验收**：1 题冒烟 → 小批 → 全量；逐项核对与 legacy 的复现度（见「证据」）。
+- **回滚**：各步独立可回退；**legacy 路径在验收通过前保留**，通过即删（不长期并存）；配置/registry 单独提交。
+
+## Resolved（原 Open Questions，2026-10-14 定）
+
+1. **裁判模型**：定为 **`qwen3.8-flash`**。实测其结构化输出可靠（`context_recall` 空返回 0/10、`faithfulness` statements 空 0/5），而 `kimi-k3` 在 `context_recall` 上 9/10 返回空被否。主模型切 `qwen3.7-flash` **纳入本变更**（见 D10）⇒ **裁判 ≠ 选手，无自评偏置**。
+2. **`Dataset` 落盘**：定为 **`backend="inmemory"`**（不落任何目录），产物只走既有 `data/ragas/reports/`——见 **D4**。实测 `ragas.backends` 提供 `inmemory` / `local/csv` / `local/jsonl` / `gdrive` 四种。
+3. **裁判思考档位**：**默认开**。评测离线、调用量可控（20 题 × 5 指标），裁判质量是评测根基。实施时做一次同题 A/B（thinking on/off）确认分数稳定性/一致性是否有明显差异——有明显提升则保持开（若成本敏感再议）。
+4. **rubric 类指标**：本次不做（见 D3），留待「可解释性」另案。
+
+## Original Open Questions（存档）
+
+1. **D3 是否该上 rubric 类指标**（带 `feedback`）以补可解释性？——本次不做，留待另案。
+2. **裁判模型最终选谁**？`qwen3.8-flash` 实测可靠，但它是/曾是主模型同族；若主模型换 `qwen3.7-flash`，裁判 `qwen3.8-flash` 无自评偏置。**需用户定**。
+3. **`@experiment` 的 `Dataset` 落盘位置**：本地 CSV backend 会生成 `datasets/`+`experiments/` 子目录，是否接受与既有 `data/ragas/` 并存的目录结构。
+4. **思考档位**：裁判是否需要开思考（成本 vs 质量）——`qwen3.8-flash` 可配。

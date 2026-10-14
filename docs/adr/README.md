@@ -156,7 +156,8 @@ R3 的精神是 `CLAUDE.md`「选型纪律」的延伸：**凡有意偏离基线
 | [0019](0019-langfuse-public-exposure.md) | Langfuse 放开公网访问（`:3000` 对外），接受 EOL 服务的暴露风险 | Accepted | 局部取代 0011 的「暴露面收敛到仅回环」 |
 | [0020](0020-no-model-gateway-direct-provider.md) | 不启用 LiteLLM 模型网关，三类模型直连 Provider | Accepted | 与 `model-config` / `model-gateway` 规格相关；不取代任何在先 ADR；**0021 在其『不引入替代网关』边界内引入应用内 provider 兼容层** |
 | [0021](0021-provider-compat-layer.md) | 引入应用内 provider 兼容层（registry 数据面 + 思考形状归一化 + 角色解析），拒绝网关 | Accepted | 在 0020 之上构建，非网关；不取代任何在先 ADR |
-| [0022](0022-ragas-testset-input-scope.md) | RAGAS 出题的输入边界由使用方负责（白名单保留）；评估检索与出题同范围 | Accepted | 不取代任何在先 ADR；证据见 `docs/research/2026-10-13-ragas-testset-generation.md` |
+| [0022](0022-ragas-testset-input-scope.md) | RAGAS 出题的输入边界由使用方负责（白名单保留）；评估检索与出题同范围 | Accepted | 不取代任何在先 ADR；证据见 `docs/research/2026-10-13-ragas-testset-generation.md`；**其决策 C 已被 0023 局部取代** |
+| [0023](0023-ragas-whitelist-bounds-generation-only.md) | RAGAS 白名单只约束出题；评估检索镜像生产（整库），不按白名单收窄 | Accepted | 局部取代 0022 的决策 C |
 
 ## 模板
 

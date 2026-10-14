@@ -1,6 +1,6 @@
 # ADR-0022：RAGAS 出题的输入边界由使用方负责；评估检索与出题同范围
 
-- **Status**：Accepted
+- **Status**：Accepted（**决策 C（评估检索与出题同范围）已被 ADR-0023 取代**，其余决策仍有效）
 - **Date**：2026-10-13
 - **Deciders**：用户（决策：白名单保留，评估检索须搭配同一白名单）；Claude（调研与综合）
 - **关系**：为 RAGAS 评测链路（`evaluation-pipeline`）的输入口径决策，不取代任何在先 ADR。证据主体见 `docs/research/2026-10-13-ragas-testset-generation.md`。
