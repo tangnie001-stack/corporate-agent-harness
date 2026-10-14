@@ -104,13 +104,21 @@
 
 **影响**：ADR-0022 的**决策 C（评估检索与出题同范围）**被本变更**局部取代** —— 新增 ADR-0023，并在 ADR-0022 的 `Status` 加反向指针。
 
-### D8 — 出题链整改
+### D8 — 出题链整改（新增 D12：题面自足靠「源头锚定 + 出题后门」，非 `llm_context`）
 
-**选**：① 改用官方 `default_transforms` 全量（补 `ThemesExtractor` + `CosineSimilarityBuilder`）；② 传 `llm_context` 表达「题面须点名公司/报告期」的自足性约束。
+**选**：
+① 改用官方 `default_transforms` 全量（补 `ThemesExtractor` + `CosineSimilarityBuilder`）；
+② 传 `llm_context` 表达自足性期望（保留，但**不作为保证手段**）；
+③ **源头锚定（P1）**：chunk→KG 节点`page_content` 前置 `【公司名 · 报告期】` 头，取值分块 `document_metadata`（`company` / `report_period`；缺失时以 `year`+`quarter`、`source` 兜底）；
+④ **出题后自足性门（P2）**：生成样本经自足校验，不自足者改写或丢弃。
 
-**Why**：`default_transforms` 是官方路径（当前我们缺件导致 abstract 静默丢失）；`llm_context` 是官方**唯一**的问题级软通道（官方无问题级硬校验）。
+**Why**：`default_transforms` 是官方路径（当前我们缺件导致 abstract 静默丢失）。而**自足性**：原方案只传 `llm_context`，实测**不达成**——
 
-**`llm_context` 取值（定稿）**：新增常量 `RAGAS_SELF_CONTAINED_HINT`（`src/config/const.py`），**中英各一句**（英文对齐 RAGAS 出题 prompt 语境、中文对齐中文语料），核心要求写死：题面须点名**公司名 + 报告期**，禁用「本报告期」「该公司」等依赖原文的指代：
+- 官方的 `llm_context` 在 prompt 里是**第 3/4 条「Additional Context」**，原文定位为「guidance for **what type of question** to generate」（题型建议，如比较/因果题），**不是**命名/指代硬约束；且官方 testset 链路**无任何改写/指代消解步骤**（全包 grep `coreference`/`rewrite` 零命中）。
+- **实测证据（2026-10-14，KB `test` v3 / 21 条）**：12 条题面不含公司名，**这 12 条的 `reference_contexts` 里一个公司名都没有**；对照全 21 条，「上下文含公司名 ⇒ 题面必含」（4/4），「上下文不含 ⇒ 12/17 不含」，**不存在"上下文有、题面却用『本公司』"**。⇒ 模型被要求"只用上下文作答"，而中文年报正文自称「本公司」，**它手上根本没有实体可消解**，不是它不消解。
+- **实体本来就在手边**：同节点 `document_metadata` 已含 `company`/`report_period`/`sec_code`/`source`，`entities`/`themes` 亦含公司名；但出题 prompt 只收到 `context=[page_content]`+`themes`，**元数据从未进 prompt**。⇒ P1 只需把已有信息前置进上下文即可。
+
+**`llm_context` 取值（保留）**：常量 `RAGAS_SELF_CONTAINED_HINT`（`src/config/const.py`），中英各一句：
 
 ```
 "Each question MUST be self-contained: name the company and the reporting "
@@ -120,7 +128,11 @@
 "等依赖原文的指代。"
 ```
 
-**Alternatives**：① 不传 `llm_context` → 现状（产出歧义题），否；② 手写 golden set（参考项目 `financial_rag-main` 与官方示例都这么做）→ 可控但贵、且无生产真实问题可依，**列为后续选项**。
+**P1 边界**：头部只进**出题用 KG** 的 `page_content`；**不动**生产索引、**不动**评估检索栈（ADR-0023），故评估仍镜像生产。副作用：测试集 `reference_contexts` 首行会带公司/报告期（可接受的增强，且成为可核验点）。缓存的 `data/ragas/kg_<kb>.json` 需重建方能生效。
+
+**P2 边界**：只做**保义替换**（referent 不变 ⇒ 答案仍成立、检索输入微变可接受）。**多公司 multi-hop 题**（如「围绕联营公司与合营公司…」两跳来自不同公司）「本公司」**无唯一解**，替换不可行 ⇒ 只能丢弃或改写成显式"甲公司 vs 乙公司"对比题（后者属重写，非替换）。
+
+**Alternatives**：① 不传 `llm_context` → 现状（产出歧义题），否；② **只靠 `llm_context`** → 实测 12/21 不达成，否（原方案）；③ 单公司语料出题 → 源头消除歧义但丢失跨文档题、需改编排，列为 P2 之外的后续选项；④ 手写 golden set（`financial_rag-main` 与官方示例做法）→ 可控但贵、且无生产真实问题可依，列为后续选项；⑤ 多轮评测 → 属评估侧规避、不改善题面质量，另案。
 
 ### D9 — 现代 client 的构造归属与数据来源
 
@@ -166,20 +178,21 @@
 | `kimi-k3` 温度/`top_p` 接受度 | 仅接受 {0,1} 或省略；`0.01` / 任意 `top_p` → 400 |
 | 排除假设（空分类成因） | 与 `max_tokens`（1024/4096/8192）、instructor mode（JSON/MD_JSON/TOOLS）**无关**；**裸调真实 prompt 亦 3/3 返回 `{"classifications": []}`** ⇒ 模型行为 |
 | 现代 `llm_factory` 配置 | 默认（0.01/0.1）失败；`temperature=0` 失败（top_p 仍在）；**`temperature=0, top_p=None` 成功** |
+| 出题自足性（`--generate --size 20`，v3 / 21 条） | **12/21 题面不含公司名；这 12 条的 `reference_contexts` 全无公司名**；「上下文含公司名 ⇒ 题面必含」4/4 ⇒ 自足性由**上下文是否带实体**决定，与 `llm_context` 无关（D8） |
 
 ## Risks / Trade-offs
 
 - **[现代栈是 `0.4.3` 的「新」接口，上游仍在动]** → 迁移后若上游再改，需跟版；缓解：调研文档记录版本基线（`docs/research/2026-10-13-ragas-testset-generation.md`），并固定 `ragas==0.4.3`。
 - **[思考模型慢/偶发超时]** → 超时给足 + D2 显式失败；若某题反复失败，报告可见而非静默。
 - **[裁判模型受额度/限流影响]** → D5 限流 + 报告 `error` 列；额度耗尽时输出「全 error」而非「全 nan」，一眼可辨。
-- **[出题仍无问题级硬校验（官方无此能力）]** → `llm_context` 只是软引导；缓解：出题后人工抽检 + D7 同范围。**不**复活旧 `QuestionFilter`（对已移除实现打补丁）。
+- **[出题自足需自建（官方无问题级硬校验、无改写步）]** → 已由 D8 的 **P1 源头锚定** + **P2 出题后门**覆盖；P2 对多公司 multi-hop 题可能只能丢弃。**不**复活旧 `QuestionFilter`（对已移除实现打补丁）。
 - **[`top_p` 不发对某些模型的影响未逐一验证]** → 只验证了 400 场景与成功场景；缓解：裁判构造集中在一处，便于按模型调。
 
 ## Migration Plan
 
 1. **裁判构造与失败语义**（D6/D2/D9）：新增「按角色集中构造 native client」（采样 `temperature=0` / 不发 `top_p` + 显式超时）；失败记 `error`（**只进 CSV/MD，stdout 形状不变**）。legacy 路径的 `bypass_temperature` 已单独提交。
 2. **执行内核迁移**（D1）：`run_evaluation` 改 `@experiment` + `collections`（`Dataset` 用 **`inmemory`**，**行级**信号量 `RAGAS_EVAL_CONCURRENCY=5`）；产出层（CSV/MD/DB/Langfuse）改读新表结构。**验收通过后删除 legacy 路径**（`evaluate()` + 双 wrapper），**不长期并存**。
-3. **出题整改**（D8）：`default_transforms` 全量 + `RAGAS_SELF_CONTAINED_HINT`；重出测试集验证 abstract 恢复且题面自足。
+3. **出题整改**（D8）：`default_transforms` 全量 + `RAGAS_SELF_CONTAINED_HINT` + **P1 源头锚定** + **P2 出题后门**；重出测试集验证 abstract 恢复**且题面 100% 自足**（须先删 `data/ragas/kg_<kb>.json` 重建 KG 方能生效）。
 4. **模型版图**（D10）：registry 绑定（`judge→qwen3.8-flash`；`main`/`classify`/`summary→qwen3.7-flash`）+ `qwen3.7-flash` catalog 定价。
 5. **活体验收**：1 题冒烟 → 小批 → 全量；逐项核对与 legacy 的复现度（见「证据」）。
 - **回滚**：各步独立可回退；**legacy 路径在验收通过前保留**，通过即删（不长期并存）；配置/registry 单独提交。

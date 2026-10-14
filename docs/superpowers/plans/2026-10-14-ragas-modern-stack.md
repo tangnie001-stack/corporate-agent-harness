@@ -1065,3 +1065,38 @@ git commit -m "docs(openspec): ragas-modern-stack 活体验收记录"
 
 - `EVAL_PASS_THRESHOLD` 最终值**待标定**（新口径实测区间 0.68~0.92，n=7）——Task 4 先沿用 `0.70`。
 - 出题环节的 `judge` 与评估**共用**同一角色（`get_judge_llm`）——本计划不改这一事实，仅随 Task 8 一并切到 `qwen3.8-flash`。
+
+---
+
+## 追加修复波（2026-10-15）：题面自足（D8 升级）
+
+**背景**：Task 6/7 落实后，v3 出题的 abstract 已恢复，但**题面自足未达成**（12/21 题面不含公司名）——spec「Generated questions are self-contained」scenario 未满足。经查根因：自足与否取决于**上下文是否带公司名**（12 条不自足样本的 `reference_contexts` 全无公司名），而实体本就在同节点 `document_metadata`（`company`/`report_period`），只是没进 prompt；官方无改写步、`llm_context` 只是软引导。⇒ 升级为 **P1（源头锚定）+ P2（出题后门）**。
+
+### Task 10: P1 —— 出题上下文注入实体锚点
+
+**Files**：`src/cli/eval_ragas_generate.py`（+ 测试）
+
+- [ ] **Step 1: 写失败测试**
+  - 测 `_context_header(meta)`：给含 `company`/`report_period` 的 meta → 返回 `【公司 · 报告期】\n`；缺 `report_period` 时用 `year`+`quarter` 兜底；缺 `company` 时用 `source` 兜底；全缺 → 返回空串。
+  - 测「组装 chunk 时 `page_content` 以头部开头」。
+  - Run: `POSTGRES_HOST=localhost pytest tests/cli/test_eval_ragas_generate.py -q` → 预期 FAIL。
+- [ ] **Step 2: 实现**
+  - 新增 `_context_header(meta: dict) -> str`；在 `run_generate` 的 chunk→`LCDocument` 组装处，`page_content = header + safe_content`。
+  - **不得**改 `document_metadata` 本身，**不得**动生产索引 / 检索栈。
+- [ ] **Step 3: 跑通 + 提交**
+  - Run: `POSTGRES_HOST=localhost pytest tests/ -q && ruff check .`
+  - 提交：`feat(eval): 出题上下文前置【公司·报告期】锚点（P1）`
+
+### Task 11: P2 —— 出题后自足性门
+
+- [ ] **设计**：定义「自足」判据（题面含 KB 内公司名；多公司 multi-hop 无唯一解者丢弃）、改写 vs 丢弃策略、判据来源（分块元数据的公司名集合）。
+- [ ] **TDD 实现**：`_ensure_self_contained(samples, companies, llm)`；不达标样本：能唯一确定实体则**保义替换**，否则**丢弃**。
+- [ ] **测试**：给合成样本，断言「已自足 / 替换 / 丢弃」三条路径。
+- [ ] 提交：`feat(eval): 出题后自足性门（P2）`
+
+### Task 12: 出题验收（须重出）
+
+- [ ] **先删 KG 缓存**：`rm data/ragas/kg_<kb>.json`（否则 transforms 跳过、P1 不生效）。
+- [ ] Run: `POSTGRES_HOST=localhost python -m src.cli.eval_ragas --kb-id <kb> --generate --size 20`
+- [ ] **判据**（对应 spec scenario）：① 日志无 `Skipping multi_hop_abstract_query_synthesizer`；② JSON 含 `multi_hop_abstract` ≥1；③ **题面 100% 命中 KB 内公司名**；④ 抽检 `reference_contexts` 首行含公司名与报告期。
+- [ ] 结果写入本文件「验收记录」。
