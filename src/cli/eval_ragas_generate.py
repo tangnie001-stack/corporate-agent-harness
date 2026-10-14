@@ -215,6 +215,17 @@ def _load_latest_testset(
     return questions, ground_truth
 
 
+def _make_generator(llm, embeddings):
+    """构造 TestsetGenerator，并带上自足性约束（design D8）。"""
+    from ragas.testset.synthesizers.generate import TestsetGenerator
+
+    from src.config.const import RAGAS_SELF_CONTAINED_HINT
+
+    return TestsetGenerator(
+        llm=llm, embedding_model=embeddings, llm_context=RAGAS_SELF_CONTAINED_HINT
+    )
+
+
 def _build_transforms(generator, use_filter: bool) -> list | None:
     """出题 transforms：默认走官方全量转换链（已分块版）。
 
@@ -317,7 +328,6 @@ def run_generate(
 
     import ragas
     from langchain_core.documents import Document as LCDocument
-    from ragas.testset.synthesizers.generate import TestsetGenerator
 
     from src.config import settings
     from src.models import get_embeddings
@@ -392,7 +402,7 @@ def run_generate(
     ragas_llm = _LLMWrapper(_langchain_llm, cache=_cache, bypass_n=True)
     embeddings_wrapper = _EmbeddingsWrapper(get_embeddings())
 
-    generator = TestsetGenerator(llm=ragas_llm, embedding_model=embeddings_wrapper)
+    generator = _make_generator(llm=ragas_llm, embeddings=embeddings_wrapper)
     # 固定人设：persona_list 非空时 ragas 会跳过其内置的随机 persona 生成步
     # （见 const.RAGAS_TEST_PERSONAS 注释说明的 KeyError 成因）。
     generator.persona_list = [

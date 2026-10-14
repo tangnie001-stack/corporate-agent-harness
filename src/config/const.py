@@ -531,6 +531,17 @@ RAGAS_TEST_PERSONAS: tuple[tuple[str, str], ...] = (
     ("财经记者", "采写上市公司年报与经营动态的财经报道。"),
 )
 
+# 出题自足性约束（design D8）：RAGAS 出题 prompt 对问题自足性零要求，官方唯一
+# 软通道是 TestsetGenerator 的 llm_context（注入 prompt 的 "Additional Context"）。
+# 中英各一句：英文对齐 RAGAS prompt 语境，中文对齐中文语料。
+RAGAS_SELF_CONTAINED_HINT: str = (
+    "Each question MUST be self-contained: name the company and the reporting "
+    "period explicitly. Do NOT use context-dependent references such as "
+    '"this reporting period" or "the company".\n'
+    "每个问题必须自足：明确指出公司名称与报告期；禁止使用『本报告期』『该公司』"
+    "等依赖原文的指代。"
+)
+
 
 # ── 阿里云告警接入（change: alibaba-alert-notify） ──
 
