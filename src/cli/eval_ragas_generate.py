@@ -215,6 +215,40 @@ def _load_latest_testset(
     return questions, ground_truth
 
 
+def _build_transforms(generator, use_filter: bool) -> list | None:
+    """出题 transforms：默认走官方全量转换链（已分块版）。
+
+    原实现手搓 5 个 transforms，**缺 `ThemesExtractor` 与
+    `CosineSimilarityBuilder`**，导致 `MultiHopAbstractQuerySynthesizer` 取不到
+    `summary_similarity` 聚类而被静默丢弃（design D8）。官方
+    `default_transforms_for_prechunked()` 含全部 7 步，且按 CHUNK 节点过滤，
+    契合本仓由分块构建的知识图谱（节点全为 `NodeType.CHUNK`）。
+
+    Args:
+        generator: TestsetGenerator 实例（提供 llm / embedding_model）
+        use_filter: True 时不设 transforms（交回 ragas 默认）
+
+    Returns:
+        transforms 列表；use_filter 为真时返回 None
+    """
+    if use_filter:
+        return None
+
+    from ragas.testset.transforms.default import default_transforms_for_prechunked
+
+    # ragas 的返回注解是 `Transforms`（含 `Parallel` 的联合类型），运行时确为列表
+    transforms = cast(
+        list,
+        default_transforms_for_prechunked(
+            llm=generator.llm, embedding_model=generator.embedding_model
+        ),
+    )
+    core_logging.log_event(
+        Event.TRANSFORMS_SETUP, steps=[type(t).__name__ for t in transforms]
+    )
+    return transforms
+
+
 def run_generate(
     kb_id: str,
     size: int,
@@ -366,38 +400,9 @@ def run_generate(
     ]
 
     # ---- 4. 构建 transforms ----
-    # LLM 步骤: SummaryExtractor + NERExtractor = 2 次/节点
-    # 非 LLM 步骤: CustomNodeFilter + EmbeddingExtractor + OverlapScoreBuilder
-    transforms: list | None = None
-    if not use_filter:
-        from ragas.testset.graph import NodeType
-        from ragas.testset.transforms.extractors import (
-            EmbeddingExtractor,
-            SummaryExtractor,
-        )
-        from ragas.testset.transforms.extractors.llm_based import NERExtractor
-        from ragas.testset.transforms.filters import CustomNodeFilter
-        from ragas.testset.transforms.relationship_builders import OverlapScoreBuilder
-
-        def _filter_chunks(node):
-            return node.type == NodeType.CHUNK
-
-        transforms = [
-            CustomNodeFilter(llm=generator.llm, filter_nodes=_filter_chunks),
-            SummaryExtractor(llm=generator.llm, filter_nodes=_filter_chunks),
-            EmbeddingExtractor(
-                embedding_model=generator.embedding_model,
-                property_name="summary_embedding",
-                embed_property_name="summary",
-                filter_nodes=_filter_chunks,
-            ),
-            NERExtractor(llm=generator.llm, filter_nodes=_filter_chunks),
-            OverlapScoreBuilder(threshold=0.01),
-        ]
-        core_logging.log_event(
-            Event.TRANSFORMS_SETUP,
-            steps=[type(t).__name__ for t in transforms],
-        )
+    # 默认走官方全量链（7 步，含 ThemesExtractor / CosineSimilarityBuilder）；
+    # use_filter 时交回 ragas 默认（不设 transforms）。
+    transforms: list | None = _build_transforms(generator, use_filter)
 
     # ---- 5. 构建知识图谱（支持中断恢复） ----
     from ragas.run_config import RunConfig
