@@ -6,6 +6,7 @@ import json
 
 from langchain_community.document_compressors.dashscope_rerank import DashScopeRerank
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from openai import AsyncOpenAI
 from pydantic import SecretStr
 
 from src.config import settings
@@ -83,6 +84,31 @@ def build_embeddings() -> OpenAIEmbeddings:
         base_url=resolved.base_url,
         check_embedding_ctx_length=False,
         chunk_size=chunk_size,
+    )
+
+
+def build_native_client(role: str, *, timeout: float | None = None) -> AsyncOpenAI:
+    """按角色构造 native `AsyncOpenAI` 客户端（供现代 RAGAS 工厂使用）。
+
+    现代 `llm_factory` / `embedding_factory` 的 `client` 必填且须 native 客户端；
+    端点/密钥取自既有 `resolve_role`（与 `build_chat` 同源），避免 CLI 重复解析。
+
+    Args:
+        role: 角色名（main/classify/summary/judge/embedding）。
+        timeout: 请求超时秒数；None 时沿用客户端默认。
+
+    Returns:
+        AsyncOpenAI：指向该角色最终生效端点的异步客户端。
+
+    Raises:
+        KeyError: 角色未知或无可用模型（沿用 resolve_role 的 fail-fast）。
+    """
+    resolved = _resolve_model(role)
+    extra_kwargs = {}
+    if timeout is not None:
+        extra_kwargs["timeout"] = timeout
+    return AsyncOpenAI(
+        api_key=resolved.api_key, base_url=resolved.base_url, **extra_kwargs
     )
 
 
