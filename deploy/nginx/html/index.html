@@ -1096,7 +1096,9 @@ async function loadRagasEval(kbId) {
         if (data.faithfulness == null && data.context_recall == null) { wrap.style.display = 'none'; return; }
         faithEl.textContent = data.faithfulness != null ? data.faithfulness.toFixed(2) : '—';
         recallEl.textContent = data.context_recall != null ? data.context_recall.toFixed(2) : '—';
-        const passed = (data.faithfulness ?? 0) >= 0.7 && (data.context_recall ?? 0) >= 0.7;
+        // 阈值唯一来源：后端下发的 pass_threshold（const.EVAL_PASS_THRESHOLD），前端不硬编码
+        const passThreshold = data.pass_threshold;
+        const passed = (data.faithfulness ?? 0) >= passThreshold && (data.context_recall ?? 0) >= passThreshold;
         iconEl.className = passed ? 'ragas-pass' : 'ragas-fail';
         iconEl.textContent = passed ? '✓' : '✗';
         wrap.style.display = '';
