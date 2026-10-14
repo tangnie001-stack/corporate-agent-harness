@@ -190,6 +190,8 @@ def get_judge_llm(model: str | None = None) -> ChatOpenAI:
 
     裁判独立于选手（被测系统 get_llm）评分，避免自我评价偏置；`judge` 角色独立
     缺省 dashscope（见 design D4），可用 `RAGAS_PROVIDER` / `RAGAS_LLM_MODEL` 覆盖。
+    显式设请求超时（settings.RAGAS_JUDGE_TIMEOUT）：judge 走思考模型且该客户端
+    无默认超时，缺省会在网络 I/O 上无限挂起（出题链即因此停滞）。
 
     Args:
         model: 覆盖 registry/env 解析出的裁判模型名；None 表示默认绑定。
@@ -197,10 +199,13 @@ def get_judge_llm(model: str | None = None) -> ChatOpenAI:
     Returns:
         ChatOpenAI：判别裁判模型实例。
     """
+    from src.config import settings
+
     return build_chat(
         "judge",
         model=model,
         temperature=0,
+        timeout=settings.RAGAS_JUDGE_TIMEOUT,
         callbacks=_content_logging_callbacks(),
     )
 

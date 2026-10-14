@@ -1350,8 +1350,8 @@ python -m src.cli.eval_ragas --list-kbs
 | context_precision | 0.80 |
 | context_recall | 0.70 |
 
-综合加权分 = 0.3×faithfulness + 0.3×context_recall + 0.2×context_precision + 0.2×answer_relevancy
-综合分 ≥ 0.70 视为通过。
+综合分 = 纯 KB 掩码后的五项指标均值（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`），与主分同口径（见 §8.4）。
+综合分 ≥ `EVAL_PASS_THRESHOLD`（当前 0.70）视为通过。
 
 门禁（`--gate`）判据在阈值之外还有两条前置：**纯 KB 样本数为 0** 或
 **检索覆盖率 < `EVAL_RETRIEVAL_COVERAGE_MIN`（0.5）** 直接判失败（杜绝"不检索
