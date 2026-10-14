@@ -157,6 +157,8 @@ ASK_USER_MODE_DSH: bool = os.getenv("ASK_USER_MODE_DSH", "true").lower() in (
 # 与 RAGAS 评估模型无关。RAGAS_LLM_MODEL 经 LangchainLLMWrapper(bypass_n=True)
 # 包装后强制 n=1，推理模型（如 qwen3.7-max）可正常使用（已实测）。
 RAGAS_LLM_MODEL: str = os.getenv("RAGAS_LLM_MODEL", "")
+# RAGAS 裁判/embedding 客户端请求超时秒数（思考模型偶尔 >30s，超时不足会把分数变成失败）
+RAGAS_JUDGE_TIMEOUT: float = float(os.getenv("RAGAS_JUDGE_TIMEOUT", "300"))
 # RAGAS 测试集生成条数
 RAGAS_TEST_SIZE: int = int(os.getenv("RAGAS_TEST_SIZE", "20"))
 # RAGAS 测试集存储目录

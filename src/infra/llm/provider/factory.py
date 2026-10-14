@@ -112,6 +112,39 @@ def build_native_client(role: str, *, timeout: float | None = None) -> AsyncOpen
     )
 
 
+def build_ragas_judge():
+    """构造现代 RAGAS 裁判 LLM（`llm_factory`）。
+
+    采样策略（design D6）：`temperature=0` 且**不传 `top_p`** —— RAGAS 内建默认
+    `temperature=0.01` / `top_p=0.1` 会被部分模型以 400 拒绝（实测百炼 kimi-k3）；
+    `top_p=None` 会被 instructor 从请求里摘掉。client 另设**显式超时**（思考模型慢，
+    超时不足会把分数变成失败）。
+
+    Returns:
+        InstructorBaseRagasLLM：供 `ragas.metrics.collections` 指标使用。
+    """
+    from ragas.llms import llm_factory
+
+    resolved = _resolve_model("judge")
+    client = build_native_client("judge", timeout=settings.RAGAS_JUDGE_TIMEOUT)
+    return llm_factory(resolved.model, client=client, temperature=0, top_p=None)
+
+
+def build_ragas_embeddings():
+    """构造现代 RAGAS embeddings（`embedding_factory`）。
+
+    供 `answer_relevancy` / `answer_correctness` 计算语义相似度。
+
+    Returns:
+        BaseRagasEmbedding：带 `aembed_text` / `embed_text` 的现代嵌入实例。
+    """
+    from ragas.embeddings.base import embedding_factory
+
+    resolved = _resolve_model("embedding")
+    client = build_native_client("embedding", timeout=settings.RAGAS_JUDGE_TIMEOUT)
+    return embedding_factory("openai", model=resolved.model, client=client)
+
+
 def build_rerank(model: str | None = None, top_n: int | None = None) -> DashScopeRerank:
     """构造精排模型（DashScope 专有，角色固定 rerank）。
 
