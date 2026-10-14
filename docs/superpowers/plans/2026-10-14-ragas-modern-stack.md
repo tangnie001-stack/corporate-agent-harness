@@ -1036,19 +1036,30 @@ git commit -m "docs(openspec): ragas-modern-stack 活体验收记录"
 | 静态闸门 | `openspec validate --strict` valid；`check_docs` 21 篇 0 error；`check_adr` 23 条 0 error；`ruff check .` 1 error = `src/infra/db/engine.py:33 UP047`，**既存**（主仓 dev-wsl 同样报，且该文件不在本分支 diff 内） |
 | 迁移对照 | 同题三配置（legacy+qwen3.8-max-0902 / legacy+kimi-k3 / **modern+qwen3.8-flash**）五项**最大绝对差 0.0023**，全为真值 |
 | 1 题冒烟 | ✅ 2m18s；stdout **恰五行**全真值；**无 `DeprecationWarning`**；CSV 含 `error` 列；MD **无**「两口径分叉」Note；均值行五项 |
-| 出题验收 | ⚠️ **未完成**（见下） |
+| 出题验收 | ⚠️ **部分通过**：abstract 出题器**已恢复**；题面自足性**未达成**（见下） |
 
 冒烟五行：`faithfulness=1.0000 · answer_relevancy=0.9357 · context_precision=0.9167 · context_recall=1.0000 · answer_correctness=0.7472`
 
-### 出题验收未完成（新发现：出题路径无显式超时）
+### 出题验收结果（`--generate --size 20`，29m28s，产出 v3 / 21 条）
 
-`--generate --size 20` 在 `Applying SummaryExtractor` 步**停滞 32 分钟**：进程 `Sl`（等网络 I/O）、仅写出 **3** 个 LLM 缓存条目、**未落 KG**。
+**① abstract 出题器：已恢复 ✅**
 
-**根因**：出题路径经 `get_judge_llm`（LangChain `ChatOpenAI`）构造模型，**没有显式请求超时**——本变更的 D6 超时策略只覆盖**评估裁判**（`build_ragas_judge`）与 embedding。（对照：评估冒烟 2m18s 正常。）
+```
+出题器分布：single_hop_specific 7 · multi_hop_abstract 7 · multi_hop_specific 7
+```
 
-- **已验**：abstract 出题器的**机制**已恢复 —— T6 单元测试断言链条含 `ThemesExtractor` + `CosineSimilarityBuilder`（其缺席正是原静默丢弃的根因）。
-- **未验**：真实输出里是否**出现** `multi_hop_abstract` 样本、题面是否**均含**公司名/报告期。
-- **建议**：给出题客户端补显式超时（与 D6 同策）后重跑本项。
+整改前实测为 **0 条 abstract**（`MultiHopAbstractQuerySynthesizer` 因 `Cannot form clusters` 被静默丢弃）。真实 KG 里 `summary_similarity` 关系 **9 条**、`entities_overlap` 68 条，每节点含 `themes` —— 正是 abstract 找簇所缺的那一种关系。
+
+**② 题面自足性：未达成 ❌**
+
+粗筛（题面是否含已知公司名：东软 / 腾讯 / 灿坤）：**13 / 21 条不含公司名**。例：
+
+- `某上市公司2025年3月31日净利润及归母净利润下降原因`
+- `上市公司定期财务报告：营业收入增长1.06%，归属净利润为何因营业成本增加而下滑？`
+
+⇒ **`llm_context` 是软引导，不足以把"题面点名公司"变成硬保证**（与 design D8 的既有判断一致：官方无问题级硬校验）。
+
+**③ 附带发现**：`--generate --size 20` 在此环境下需 **29 分钟**（KG transforms 约 12 分钟 + 场景/样本生成约 12 分钟），且**此前曾无超时无限挂起**（已由修复波给 `get_judge_llm` 补 `RAGAS_JUDGE_TIMEOUT`）。
 
 ## 未决
 
