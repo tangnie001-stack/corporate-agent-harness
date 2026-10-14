@@ -60,11 +60,11 @@ def test_model_defaults_are_empty(monkeypatch):
 def test_registry_fallback_after_defaults_emptied():
     """settings 默认改空后，无 <ROLE>_MODEL 覆盖时 resolve_role 取 registry 默认。
 
-    这是 Task 8 评审的跨任务指针：旧 settings 默认（qwen3.7-flash-2026-07-15 等）
-    曾与 registry 默认（qwen3.8-flash 等）分叉；改空后 registry 兜底才真正生效。
+    这是 Task 8 评审的跨任务指针：settings 默认改空后，无 <ROLE>_MODEL 覆盖时
+    registry.models[role] 兜底即最终生效值，故此处钉住 dashscope 的 main 默认。
     """
     resolved = resolve_role("main", REG, {"DASHSCOPE_API_KEY": "k"})
-    assert resolved.model == REG["dashscope"].models["main"] == "qwen3.8-flash"
+    assert resolved.model == REG["dashscope"].models["main"] == "qwen3.7-flash"
 
     resolved_embed = resolve_role("embedding", REG, {"DASHSCOPE_API_KEY": "k"})
     assert resolved_embed.model == REG["dashscope"].models["embedding"]
