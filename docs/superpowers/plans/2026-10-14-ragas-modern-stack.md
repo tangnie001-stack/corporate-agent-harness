@@ -1028,7 +1028,27 @@ git commit -m "docs(openspec): ragas-modern-stack 活体验收记录"
 
 ## 验收记录
 
-（执行时填写：日期 / 测试集版本 / 模型版图 / stdout 五行真值 / 迁移对照差异 / 出题 abstract 条数）
+**日期**：2026-10-14 · **分支**：`feat/ragas-modern-stack`
+**模型版图**：`judge=qwen3.8-flash` · `main`/`classify`/`summary=qwen3.7-flash` · `embedding=qwen3.7-text-embedding-flash`
+
+| 项 | 结果 |
+|---|---|
+| 静态闸门 | `openspec validate --strict` valid；`check_docs` 21 篇 0 error；`check_adr` 23 条 0 error；`ruff check .` 1 error = `src/infra/db/engine.py:33 UP047`，**既存**（主仓 dev-wsl 同样报，且该文件不在本分支 diff 内） |
+| 迁移对照 | 同题三配置（legacy+qwen3.8-max-0902 / legacy+kimi-k3 / **modern+qwen3.8-flash**）五项**最大绝对差 0.0023**，全为真值 |
+| 1 题冒烟 | ✅ 2m18s；stdout **恰五行**全真值；**无 `DeprecationWarning`**；CSV 含 `error` 列；MD **无**「两口径分叉」Note；均值行五项 |
+| 出题验收 | ⚠️ **未完成**（见下） |
+
+冒烟五行：`faithfulness=1.0000 · answer_relevancy=0.9357 · context_precision=0.9167 · context_recall=1.0000 · answer_correctness=0.7472`
+
+### 出题验收未完成（新发现：出题路径无显式超时）
+
+`--generate --size 20` 在 `Applying SummaryExtractor` 步**停滞 32 分钟**：进程 `Sl`（等网络 I/O）、仅写出 **3** 个 LLM 缓存条目、**未落 KG**。
+
+**根因**：出题路径经 `get_judge_llm`（LangChain `ChatOpenAI`）构造模型，**没有显式请求超时**——本变更的 D6 超时策略只覆盖**评估裁判**（`build_ragas_judge`）与 embedding。（对照：评估冒烟 2m18s 正常。）
+
+- **已验**：abstract 出题器的**机制**已恢复 —— T6 单元测试断言链条含 `ThemesExtractor` + `CosineSimilarityBuilder`（其缺席正是原静默丢弃的根因）。
+- **未验**：真实输出里是否**出现** `multi_hop_abstract` 样本、题面是否**均含**公司名/报告期。
+- **建议**：给出题客户端补显式超时（与 D6 同策）后重跑本项。
 
 ## 未决
 
