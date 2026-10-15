@@ -59,14 +59,21 @@ def main() -> None:
     args = parser.parse_args()
 
     lines = iter_trace_lines(args.trace_id, args.log_dir)
+    if not lines:
+        if args.count:
+            print(0)
+            return
+        print(f"未找到 trace_id={args.trace_id} 的日志（目录 {args.log_dir}）")
+        sys.exit(1)
     if args.grep:
         lines = [line for line in lines if args.grep in line]
+        if not lines and not args.count:
+            # trace 存在但无匹配行：与「trace 不存在」区分开，避免误导
+            print(f"trace_id={args.trace_id} 有日志，但没有匹配 {args.grep!r} 的行")
+            return
     if args.count:
         print(len(lines))
         return
-    if not lines:
-        print(f"未找到 trace_id={args.trace_id} 的日志（目录 {args.log_dir}）")
-        sys.exit(1)
     print("\n".join(lines))
 
 

@@ -134,6 +134,16 @@ index, question, ground_truth, trace_id, faithfulness, answer_relevancy, context
 
 MD 摘要表格同样带 `trace_id` 列。每个问题在评估时会生成独立的 `eval_<hex>` 格式 trace_id，并注入到该问题期间的所有日志行（loguru patcher 读取 `current_trace_id`），同时作为 Langfuse trace id —— 用 CSV 里的 trace_id 即可在日志 / Langfuse 中回溯这个问题的完整链路（分类 → 改写 → 检索 → 精排 → 生成），定位指标异常的根因（前提：`.env` 的 `LANGFUSE_ENABLE=true` 且 Langfuse 后端可达 —— 关闭时该列无对应 trace）。
 
+**按 trace_id 查日志（含裁判调用与底层模型原始响应）**：
+
+```bash
+python -m src.cli.trace_logs eval_19128e15c446                    # 该题的全部日志
+python -m src.cli.trace_logs eval_19128e15c446 --grep "judge call" # 只看裁判调用
+python -m src.cli.trace_logs eval_19128e15c446 --count             # 只看行数
+```
+
+裁判每次调用记 `judge call` 事件（`metric` / `q_index` / `trace_id` / `attempt` / `seconds` / `ok` / `note`）；**失败时 `note` 带出 `finish_reason` + 输出 token 数 + 原始输出片段**（来自 instructor 异常的 `last_completion`），用于区分「模型吐空结构」（`finish_reason=stop`、输出极短）与「截断」（撞 `max_tokens`）。
+
 MD 摘要末尾会给出整体平均值，例如：
 
 ```
