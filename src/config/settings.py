@@ -170,8 +170,10 @@ RAGAS_HTTP_TIMEOUT_CONNECT: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_CONNECT"
 RAGAS_HTTP_TIMEOUT_READ: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_READ", "150"))
 RAGAS_HTTP_TIMEOUT_WRITE: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_WRITE", "30"))
 RAGAS_HTTP_TIMEOUT_POOL: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_POOL", "10"))
-# SDK 自身重试次数：默认 2 且会重试 APITimeoutError（⊂ APIConnectionError），与 instructor
-# 自身的重试叠加成**乘法**放大。设为 0，把重试收敛到 instructor 单层。
+# SDK 自身重试次数：**实测唯一的重试放大层**。默认 2 且会重试 APITimeoutError
+# （⊂ APIConnectionError）⇒ 一个逻辑调用实际发出 1+2=3 次 HTTP 请求。
+# 设 0：整条链路只发 1 次、不重试（实测 mock transport：max_retries=2 → 3 次；=0 → 1 次）。
+# 注：instructor.from_openai 无 max_retries 参数，其自身只做 1 次尝试、不叠加。
 RAGAS_HTTP_MAX_RETRIES: int = int(os.getenv("RAGAS_HTTP_MAX_RETRIES", "0"))
 # 裁判单次生成的最大输出 token。RAGAS 内建默认仅 1024，遇到长上下文（年报表格 +
 # 多 statements/TP-FP-FN 拆解）会被截断 → `IncompleteOutputException`。思考 ON 时

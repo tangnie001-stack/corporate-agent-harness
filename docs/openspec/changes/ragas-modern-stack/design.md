@@ -82,7 +82,8 @@
 2. **采样** = `temperature=0` 且**不发 `top_p`**。
 3. **超时** = **细粒度分层 + 关闭 SDK 重试**（2026-10-15 定稿）。`httpx.Timeout(connect=10, read=150, write=30, pool=10)`，并把 SDK `max_retries=0`。失败按 D2 可见。
    - **依据（实测 5 题 69 次裁判调用）**：p50=7.6s · p95=66s · p99=111s。`read=150s` 高于 p99 约 35%（误杀少），同时把单次死等上限从 300s 压到 150s。
-   - **为何必须细粒度**：原先是平铺 `timeout=300`。openai SDK 默认 `DEFAULT_TIMEOUT=Timeout(connect=5, read=600, write=600, pool=600)`、`DEFAULT_MAX_RETRIES=2`，且 **`APITimeoutError` ⊂ `APIConnectionError` 会被 SDK 重试** ⇒ 一次挂死调用 = 300s × (1+2) = **900s** 空转，再叠加 instructor 自身重试。实测 21 题 91 分钟里约 80 分钟是这种空转。
+   - **为何必须细粒度**：原先是平铺 `timeout=300` —— **标量被 httpx 展开成四个维度全都 300**（`connect=read=write=pool=300`；httpx 无「整请求总预算」概念，四维是**分阶段**计时：pool→connect→write→read，平时命中的几乎总是 read）。且 openai SDK 默认 `DEFAULT_TIMEOUT=Timeout(connect=5, read=600, write=600, pool=600)`、`DEFAULT_MAX_RETRIES=2`，**`APITimeoutError` ⊂ `APIConnectionError` 会被 SDK 重试** ⇒ 一个逻辑调用最坏 = 3 × 300s = **900s** 空转。实测 21 题 91 分钟里约 80 分钟是这种空转。
+   - **重试层勘误**：**唯一的重试放大层是 openai SDK**（实测 mock transport：`max_retries=2` → 实际发 **3** 次 HTTP；`=0` → **1** 次）。`instructor.from_openai` **无 `max_retries` 参数**，其自身只做 `Total attempts: 1`、不叠加。（更正早前“instructor 再叠一层”的说法。）故 `max_retries=0` 后整链路**只发 1 次、不重试**。
    - **长尾的成因（非网关故障）**：全量 21 题的 16 次 `Request timed out` 全部发生在**思考 ON**；关思考后同一批调用 max=111s。`111s ≈ 跑满 max_tokens=8192`（≈74 tok/s）⇒ 长尾被**输出上限**顶住。⇒ 关思考 + 细粒度超时后：5 题 **0 失败**、max=60.9s、0 次 ≥150s。
    - **排查记录（否定项，避免后人重走）**：① 今天 `429` **0 条**、40 并发全成功 ⇒ 非限流；② `build_ragas_judge()` 全程只构造一次 ⇒ 非连接池抖动；③ 最小复现同步 `embed_text` 在运行循环中正常（3.0s）⇒ RAGAS 的跨线程/跨循环桥接**未证实**为本次元凶（保留观察）。
 4. legacy 路径（迁移完成前）关闭 RAGAS 对裁判温度的**静默覆盖**（`bypass_temperature=True`）。

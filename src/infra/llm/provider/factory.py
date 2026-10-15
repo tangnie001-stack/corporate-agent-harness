@@ -97,7 +97,8 @@ def build_native_client(role: str, *, read_timeout: float | None = None) -> Asyn
     **超时按细粒度区分**（design D6，2026-10-15）：`connect/read/write/pool` 各自取值，
     并经自定义 `http_client` 交给 SDK（SDK 会采用该 timeout）。此前用平铺 300s，导致
     一次挂死调用白等 300s，再叠加 SDK 默认 2 次重试 = 900s 空转。
-    `max_retries=0`：不让 SDK 与 instructor 的重试**乘法叠加**。
+    `max_retries=0`：**关闭 SDK 重试**（实测唯一的重试放大层：默认 2 次 ⇒ 一个逻辑调用
+    实际发出 3 次 HTTP；设 0 ⇒ 只发 1 次。instructor 自身无 max_retries 参数、不叠加）。
 
     Args:
         role: 角色名（main/classify/summary/judge/embedding）。
