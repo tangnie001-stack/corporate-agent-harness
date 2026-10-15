@@ -70,3 +70,21 @@ async def test_no_retry_when_attempts_is_one(monkeypatch):
     assert n == 1
     assert math.isnan(value)
     assert err.startswith("faithfulness:ValueError:")
+
+
+def test_exc_chain_summary_keeps_root_cause():
+    """只记类名会丢根因（实测 150s 超时被包成无消息 RuntimeError）——须带根因类与消息。"""
+    try:
+        try:
+            raise TimeoutError("Request timed out.")
+        except TimeoutError as inner:
+            raise RuntimeError("") from inner
+    except RuntimeError as exc:
+        summary = eval_ragas._exc_chain_summary(exc)
+        assert summary.startswith("RuntimeError<-TimeoutError:")
+        assert "timed out" in summary
+
+    assert (
+        eval_ragas._exc_chain_summary(ValueError("bad shape"))
+        == "ValueError: bad shape"
+    )

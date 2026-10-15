@@ -57,6 +57,7 @@
 - **超时也重试（实测修订）**：初版按"超时重试大概率再挂"的**推测**排除超时；随后实测抓到反例——一次 **150s（read 上限）超时，重试后成功恢复**，该指标拿到真值。故改为不排除超时。最坏代价 = 2 × read 上限 / 指标。
 - **Why not SDK 层**：SDK 重试是**静默乘法放大**（默认 2 ⇒ 3 次请求）；放在本层则**可见**（记 `metric retry` 事件）、**有界**、**逐指标独立**。SDK `max_retries` 保持 0。
 - **`error` 语义不变**：仍**只在最终失败时非空**（重试成功不写 error，值即真值）。
+- **记异常链（可诊断性）**：`error` 与 `metric retry` 事件均记 `_exc_chain_summary` = `外层类<-根因类: 根因消息`。**Why**：只记类名会丢根因——实测一次 150s 超时被包装成**无消息的 `RuntimeError`**，报告里只剩 `RuntimeError`，无从定位；带上链后可直接看出根因（如 `RuntimeError<-APITimeoutError: Request timed out.`）。
 
 ### D3 — 指标集：沿用经典 5 个（collections 版），不加 rubric
 

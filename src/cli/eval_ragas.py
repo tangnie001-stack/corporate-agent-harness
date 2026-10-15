@@ -365,6 +365,27 @@ async def _score_metrics(metric_name: str, metric, row: dict):
     return await metric.ascore(user_input=row["question"], response=row["answer"])
 
 
+def _exc_chain_summary(exc: BaseException, limit: int = 140) -> str:
+    """把异常链压成单行摘要：`外层类<-根因类: 根因消息`。
+
+    只记异常类名会丢掉根因（实测一次 150s 超时被包装成无消息的 `RuntimeError`，
+    报告里只剩 `RuntimeError`，无法定位）。故把 `__cause__`/`__context__` 链一并带上，
+    消息取**最内层**（根因）的、压成单行并截断。
+    """
+    names: list[str] = []
+    root = exc
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        names.append(type(cur).__name__)
+        root = cur
+        cur = cur.__cause__ or cur.__context__
+    msg = " ".join(str(root).split())[:limit]
+    chain = "<-".join(names)
+    return f"{chain}: {msg}" if msg else chain
+
+
 async def _score_metric_with_retry(
     metric_name: str, metric, row: dict
 ) -> tuple[float, str]:
@@ -395,14 +416,13 @@ async def _score_metric_with_retry(
                 Event.METRIC_RETRY,
                 metric=metric_name,
                 q_index=row.get("q_index"),
-                reason=type(exc).__name__,
+                reason=_exc_chain_summary(exc, 120),
             )
             await asyncio.sleep(0.5 * attempt)  # 轻量线性退避
             continue
         return float(res.value), ""
-    # 消息压缩成单行并截断，便于落 CSV/MD 定位（换行折空格）
-    msg = " ".join(str(last_exc).split())[:140]
-    return float("nan"), f"{metric_name}:{type(last_exc).__name__}:{msg}"
+    # 记**异常链 + 根因消息**（单行、截断），便于从报告/CSV 直接定位根因
+    return float("nan"), f"{metric_name}:{_exc_chain_summary(last_exc)}"
 
 
 def run_evaluation(
