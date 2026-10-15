@@ -164,6 +164,7 @@ class Event(str, Enum):
     KNOWLEDGE_GRAPH_SAVED = "knowledge graph saved"
     TESTSET_GENERATION_START = "testset generation start"
     TESTSET_SAVED = "testset saved"
+    TESTSET_SELF_CONTAINED_DROPPED = "testset self-contained dropped"
     KB_LOOKUP = "kb lookup"
     KB_NOT_FOUND = "kb not found"
     SEARCH_START = "search start"

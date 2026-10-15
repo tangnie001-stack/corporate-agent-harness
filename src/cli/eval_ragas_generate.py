@@ -22,6 +22,7 @@ from typing import cast
 
 from loguru import logger
 
+from src.cli.eval_self_contained import doc_exclusive_aliases, enforce_self_contained
 from src.config import RAGAS_DATA_DIR, RAGAS_DOC_WHITELIST, RAGAS_TESTSET_DIR
 from src.config.const import RAGAS_TEST_PERSONAS
 from src.core import logging as core_logging
@@ -246,6 +247,31 @@ def _context_header(meta: dict) -> str:
     if not fields:
         return ""
     return "【" + " · ".join(fields) + "】\n"
+
+
+def _build_company_aliases(kg) -> dict[str, set[str]]:
+    """从出题 KG 汇总「公司 → 别名集合」，供自足性门识别跨语言/简写公司名。
+
+    别名取自各节点的 `entities` / `themes`；跨文档通用词（如「人民币」「2024」）
+    由 `doc_exclusive_aliases` 的「只出现在单一文档」规则自动排除。
+
+    Args:
+        kg: 已应用 transforms 的 ragas `KnowledgeGraph`
+
+    Returns:
+        `{company: {alias, ...}}`，至少含 company 自身
+    """
+    by_company: dict[str, list[str]] = {}
+    for node in kg.nodes:
+        props = node.properties
+        meta = props.get("document_metadata") or {}
+        company = (meta.get("company") or "").strip()
+        if not company:
+            continue
+        tokens = by_company.setdefault(company, [])
+        tokens.extend(props.get("entities") or [])
+        tokens.extend(props.get("themes") or [])
+    return doc_exclusive_aliases(list(by_company.items()))
 
 
 def _make_generator(llm, embeddings):
@@ -518,6 +544,23 @@ def run_generate(
     samples_list = testset.to_list()
     # 校对乱码/错别字问题（同音字导致检索命中率下降）
     samples_list = _clean_garbled_questions(samples_list, _langchain_llm)
+
+    # 自足性门（design D8 的 P2）：题面须点名其上下文里的公司；
+    # 未点名但上下文只涉及一家公司 → 保义改写；多公司无唯一实体 → 丢弃。
+    total_samples = len(samples_list)
+    samples_list, dropped_samples = enforce_self_contained(
+        samples_list, _build_company_aliases(kg)
+    )
+    if dropped_samples:
+        for sample, reason in dropped_samples:
+            print(f"  ⚠ 自足性门丢弃：{reason}｜{sample.get('user_input', '')[:40]}")
+        core_logging.log_event(
+            Event.TESTSET_SELF_CONTAINED_DROPPED,
+            kept=len(samples_list),
+            dropped=len(dropped_samples),
+            total=total_samples,
+        )
+
     version = _find_next_version(kb_id)
 
     output = {
