@@ -406,6 +406,7 @@ class TestRunEvaluation:
             ["A1"],
             [["ctx1"]],
             _fake_metrics(),
+            ["trace_1"],
         )
 
         df = result.to_pandas()
@@ -431,6 +432,7 @@ class TestRunEvaluation:
             ["A1"],
             [[]],
             _fake_metrics(),
+            ["trace_1"],
         )
         df = result.to_pandas()
         assert len(df) == 1

@@ -39,6 +39,7 @@ def _run(metrics, n=2):
         [f"a{i}" for i in range(n)],
         [[f"c{i}"] for i in range(n)],
         metrics,
+        [f"trace{i}" for i in range(n)],
     )
 
 

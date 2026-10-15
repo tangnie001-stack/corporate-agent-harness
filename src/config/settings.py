@@ -176,17 +176,17 @@ RAGAS_HTTP_TIMEOUT_POOL: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_POOL", "10"
 # 注：instructor.from_openai 无 max_retries 参数，其自身只做 1 次尝试、不叠加。
 RAGAS_HTTP_MAX_RETRIES: int = int(os.getenv("RAGAS_HTTP_MAX_RETRIES", "0"))
 # 单指标最大尝试次数（我们自己这层的有界重试，替代被关掉的 SDK 重试）。
-# 依据：主因 `IncompleteOutputException`（输出爆量）是**随机**的——同输入一次 6.1s 成功、
-# 一次 110.9s 失败 ⇒ 重试成功率高；而不重试会把失败行踢出均值，造成乐观偏差。
-# **超时也重试**：实测抓到反例——一次 150s（read 上限）超时重试后成功恢复，故不排除超时。
-# 最坏代价 = attempts × read 上限 / 指标（默认 2 × 150s）。
-RAGAS_METRIC_MAX_ATTEMPTS: int = int(os.getenv("RAGAS_METRIC_MAX_ATTEMPTS", "2"))
-# 裁判单次生成的最大输出 token。RAGAS 内建默认仅 1024，遇到长上下文（年报表格 +
-# 多 statements/TP-FP-FN 拆解）会被截断 → `IncompleteOutputException`。思考 ON 时
-# 思考 token 另占预算，故取 8192（实测：1024 截断 / 4096 仍偏紧）。
-RAGAS_JUDGE_MAX_TOKENS: int = int(os.getenv("RAGAS_JUDGE_MAX_TOKENS", "8192"))
-# 裁判是否开思考。定稿 = **关**（2026-10-15 A/B：关思考 + 8192 → 0 失败且快 9×；
-# 开思考 + 8192 无结构失败但会**超时**：21 题全量 5/21 行 `Request timed out`、耗时 1h31m）。
+# 依据：失败主因是模型偶发「吐空结构」（`finish_reason=stop`、输出仅 148–215 token、
+# raw=`{"classifications":[{},{},{}]}`）——**快（7–16s）且随机**，重试成功率高；
+# 而不重试会把失败行踢出均值，造成乐观偏差 + 分母不齐。取 3（两次重试）。
+# 超时也重试（实测抓到一次 150s 超时重试后成功恢复）。代价上界 = attempts × read 上限。
+RAGAS_METRIC_MAX_ATTEMPTS: int = int(os.getenv("RAGAS_METRIC_MAX_ATTEMPTS", "3"))
+# 裁判单次生成的最大输出 token。RAGAS 内建默认仅 1024，长上下文会被截断 →
+# `IncompleteOutputException`。取 **4096**：正常输出仅约 600–2,400 字符（≈400–1,600 token）
+# ⇒ 仍有 ~2.5× 余量；而模型偶发「生成跑飞」撞上限时，单次最坏耗时约从 141s 砍到 ~70s。
+RAGAS_JUDGE_MAX_TOKENS: int = int(os.getenv("RAGAS_JUDGE_MAX_TOKENS", "4096"))
+# 裁判是否开思考。定稿 = **关**（2026-10-15 A/B：关思考显著更快；开思考在 21 题全量下
+# 出现 5/21 行 `Request timed out`、耗时 1h31m）。
 RAGAS_JUDGE_THINKING: bool = os.getenv("RAGAS_JUDGE_THINKING", "false").lower() in (
     "1",
     "true",

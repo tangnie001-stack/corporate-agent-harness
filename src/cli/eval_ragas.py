@@ -451,6 +451,7 @@ async def _score_metric_with_retry(
                 Event.JUDGE_CALL,
                 metric=metric_name,
                 q_index=row.get("q_index"),
+                trace_id=row.get("trace_id"),
                 attempt=attempt,
                 seconds=round(time.monotonic() - started, 1),
                 ok=False,
@@ -462,6 +463,7 @@ async def _score_metric_with_retry(
                 Event.METRIC_RETRY,
                 metric=metric_name,
                 q_index=row.get("q_index"),
+                trace_id=row.get("trace_id"),
                 reason=_exc_chain_summary(exc, 120),
             )
             await asyncio.sleep(0.5 * attempt)  # 轻量线性退避
@@ -470,6 +472,7 @@ async def _score_metric_with_retry(
             Event.JUDGE_CALL,
             metric=metric_name,
             q_index=row.get("q_index"),
+            trace_id=row.get("trace_id"),
             attempt=attempt,
             seconds=round(time.monotonic() - started, 1),
             ok=True,
@@ -486,6 +489,7 @@ def run_evaluation(
     answers: list[str],
     contexts: list[list[str]],
     metrics: dict,
+    trace_ids: list[str],
 ) -> Any:
     """用现代 RAGAS 栈评五项指标，返回 `Experiment`（`.to_pandas()` 供产出层）。
 
@@ -500,6 +504,8 @@ def run_evaluation(
         answers: 系统生成的回答列表
         contexts: 检索到的上下文列表
         metrics: `eval_scoring.build_metrics` 产物的指标实例表
+        trace_ids: 每题 trace id（与 questions 同序）。写入行并透传到 `judge call`
+            等事件，使「报告 trace_id → 日志 → 底层模型原始响应」可串起来查。
 
     Returns:
         Experiment：行含五项指标 + `q_index` + `error`
@@ -509,13 +515,14 @@ def run_evaluation(
     rows = [
         {
             "q_index": i,
+            "trace_id": t,
             "question": q,
             "answer": a,
             "ground_truth": g,
             "contexts": c,
         }
-        for i, (q, a, g, c) in enumerate(
-            zip(questions, answers, ground_truth, contexts, strict=True)
+        for i, (q, a, g, c, t) in enumerate(
+            zip(questions, answers, ground_truth, contexts, trace_ids, strict=True)
         )
     ]
 
@@ -885,6 +892,7 @@ def main() -> None:
             answers,
             contexts,
             metrics,
+            trace_ids,
         )
 
         # 统一「主分」口径：报告 / stdout / 门禁都读同一张已掩码表（纯 KB 样本）。
