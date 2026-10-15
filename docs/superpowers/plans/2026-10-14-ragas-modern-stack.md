@@ -1114,10 +1114,11 @@ git commit -m "docs(openspec): ragas-modern-stack 活体验收记录"
 
 ### Task 11: P2 —— 出题后自足性门
 
-- [ ] **设计**：定义「自足」判据（题面含 KB 内公司名；多公司 multi-hop 无唯一解者丢弃）、改写 vs 丢弃策略、判据来源（`reference_contexts` 的【】锚点头 → 公司名集合）。
-- [ ] **TDD 实现**：`_ensure_self_contained(samples, companies, llm)`；不达标样本：能唯一确定实体则**保义替换**，否则**丢弃**。
-- [ ] **测试**：给合成样本，断言「已自足 / 替换 / 丢弃」三条路径。
-- [ ] 提交：`feat(eval): 出题后自足性门（P2）`
+- [x] **设计**：「自足」= 题面点名其上下文公司；判据来源 = `reference_contexts` 的【】锚点头 + KG 文档专属别名；唯一公司 → 保义改写，多公司/无锚点 → 丢弃。
+- [x] **实现**：新增纯函数模块 `src/cli/eval_self_contained.py`（`header_entities` / `doc_exclusive_aliases` / `enforce_self_contained`），**无额外 LLM 调用**；`eval_ragas_generate.py` 接线（`_build_company_aliases(kg)`）+ 事件 `testset self-contained dropped`。
+- [x] **测试**：`tests/cli/test_self_contained_gate.py` 9 条（命名/跨语言别名→保留；多公司无命名→丢弃；单公司无命名→改写后保留；无锚点→丢弃；KG 适配层）。
+- [x] **v4 回放**：`kept=21 dropped=0`（零误伤）。
+- [x] 提交：`feat(eval): 出题后自足性门（P2）`
 
 ### Task 12: 出题验收（须重出）
 
