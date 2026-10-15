@@ -198,7 +198,7 @@
 | `kimi-k3` 温度/`top_p` 接受度 | 仅接受 {0,1} 或省略；`0.01` / 任意 `top_p` → 400 |
 | 排除假设（空分类成因） | 与 `max_tokens`（1024/4096/8192）、instructor mode（JSON/MD_JSON/TOOLS）**无关**；**裸调真实 prompt 亦 3/3 返回 `{"classifications": []}`** ⇒ 模型行为 |
 | 现代 `llm_factory` 配置 | 默认（0.01/0.1）失败；`temperature=0` 失败（top_p 仍在）；**`temperature=0, top_p=None` 成功** |
-| 裁判思考档位 × 输出预算（2026-10-15，v5 硬题 q2/q3 + 21 题全量） | **思考 OFF + 8192 → 0 失败、2 硬题 2m24s** ✅（定稿）；思考 ON + 8192 → 硬题 0 失败但 21 题全量 **5/21 行 `Request timed out`**、1h31m；思考 OFF + 4096 → `InstructorRetryException` 2/2（实为**截断**，8192 可救）。`Mode.TOOLS` 在思考 ON 下被百炼 400 拒（`tool_choice` 不支持 thinking mode）。 |
+| 裁判思考档位 × 输出预算（2026-10-15，v5 硬题 q2/q3 + 21 题全量） | **思考 OFF + 8192 → 0 失败、2 硬题 2m24s** ✅（定稿）；思考 ON + 8192 → 硬题 0 失败但 21 题全量 **5/21 行 `Request timed out`**、1h31m；思考 OFF + 4096 → 失败 2/2（**实为模型退化吐空对象，与 cap 无关**，见 ADR-0024 E11）。`Mode.TOOLS` 在思考 ON 下被百炼 400 拒（`tool_choice` 不支持 thinking mode）。**cap 最终取 8192**（证据强度与边界见 ADR-0024 决策 4）。 |
 | 裁判是否默认开思考（探测） | `qwen3.8-flash` **默认开**：一句「只回复 OK」产生 `reasoning_tokens=51` 且带 `reasoning_content`；显式 `extra_body={"enable_thinking": False}` 可关（`completion_tokens=1`、无 `reasoning_content`）。 |
 | 裁判调用耗时分布（5 题 69 次，思考 OFF） | p50=7.6s · p90=29.4s · p95=66.2s · p99=110.9s · max=110.9s；2 次失败为 `IncompleteOutputException` 且耗时 102.8s/110.9s（**撞满 max_tokens=8192**，同款正常仅 5.8s/454 字符）。 |
 | 细粒度超时前后（5 题） | 旧（平铺 300s + SDK 重试 2）：失败 **3/69**、max 110.9s、墙钟 5m32s；新（connect10/read150/write30/pool10 + `max_retries=0`）：失败 **0/70**、max 60.9s、0 次 ≥150s、墙钟 4m59s。 |

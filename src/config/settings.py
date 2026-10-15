@@ -181,10 +181,12 @@ RAGAS_HTTP_MAX_RETRIES: int = int(os.getenv("RAGAS_HTTP_MAX_RETRIES", "0"))
 # 而不重试会把失败行踢出均值，造成乐观偏差 + 分母不齐。取 3（两次重试）。
 # 超时也重试（实测抓到一次 150s 超时重试后成功恢复）。代价上界 = attempts × read 上限。
 RAGAS_METRIC_MAX_ATTEMPTS: int = int(os.getenv("RAGAS_METRIC_MAX_ATTEMPTS", "3"))
-# 裁判单次生成的最大输出 token。RAGAS 内建默认仅 1024，长上下文会被截断 →
-# `IncompleteOutputException`。取 **4096**：正常输出仅约 600–2,400 字符（≈400–1,600 token）
-# ⇒ 仍有 ~2.5× 余量；而模型偶发「生成跑飞」撞上限时，单次最坏耗时约从 141s 砍到 ~70s。
-RAGAS_JUDGE_MAX_TOKENS: int = int(os.getenv("RAGAS_JUDGE_MAX_TOKENS", "4096"))
+# 裁判单次生成的最大输出 token。RAGAS 内建默认仅 **1024**，会截断正常输出 → 必须上调。
+# 取 **8192** 而非 4096：两处独立观测都显示 8192 的失败**不多于** 4096
+# （A/B 探针 15 次/档：4096 失败 1、8192 失败 0；真实 21 题全量：4096 → 5/21、8192 → 3/21），
+# 且**均耗时无差异**（35s vs 33s；跑飞的调用本就稀有）⇒ 大 cap 不付时间代价。
+# 注意：cap 只是"缓解"——失败根因是模型偶发退化成吐空对象，与 cap 无关（详见 ADR-0024）。
+RAGAS_JUDGE_MAX_TOKENS: int = int(os.getenv("RAGAS_JUDGE_MAX_TOKENS", "8192"))
 # 裁判是否开思考。定稿 = **关**（2026-10-15 A/B：关思考显著更快；开思考在 21 题全量下
 # 出现 5/21 行 `Request timed out`、耗时 1h31m）。
 RAGAS_JUDGE_THINKING: bool = os.getenv("RAGAS_JUDGE_THINKING", "false").lower() in (

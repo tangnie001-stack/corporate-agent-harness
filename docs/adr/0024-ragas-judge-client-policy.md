@@ -39,13 +39,26 @@ RAGAS 评测（KB `4a1dcb8b…`，21 题全量）出现三类症状，排查耗�
 - **超时也重试**：曾按「超时重试大概率再挂」的**推测**排除超时，随后实测抓到反例（E6，一次 150s 超时重试后成功恢复）⇒ 不排除；
 - 放在本层而非 SDK 层，是因为本层**可见（事件留痕）、有界、逐指标独立**。
 
-### 决策 4：`RAGAS_JUDGE_MAX_TOKENS=4096`
+### 决策 4：`RAGAS_JUDGE_MAX_TOKENS=8192`
 
-**理由**：RAGAS 内建默认仅 **1024**（长上下文会被截断）；但 **8192 也无益**——正常输出实测仅约 600–2,400 字符（≈400–1,600 token，E4），4096 已有 ~2.5× 余量；而偶发「生成跑飞」撞上限时，单次最坏耗时约 **141s → 72.7s**（E7）。取 4096 而非 1024，是因为 1024 会真截断正常长输出。
+**理由**：RAGAS 内建默认仅 **1024**，会截断**正常**输出 ⇒ 必须上调。取 **8192 而非 4096**：
+- 两处**独立**观测都显示 8192 的失败**不多于** 4096：A/B 探针（同输入 16,988 字符，15 次/档）**4096 失败 1 / 8192 失败 0**（E10）；真实 21 题全量 **4096 → 5/21** vs **8192 → 3/21**（E9）。
+- 且**均耗时无差异**（探针 35s vs 33s）——跑飞的调用本就稀有，大 cap **不付时间代价**。
+
+**⚠ 证据强度（如实标注）**：n 小（探针 15/档、全量 1 轮/档），**方向一致但不构成硬证据**；决策的主要依据是「**8192 不比 4096 慢**」，在此前提下没有理由选更紧的 cap。
+
+**⚠⚠ 不得把 cap 当「时间旋钮」**：`max_tokens` 是**上限而非目标**——
+- 正常调用 `finish_reason=stop`（输出 200–1,500 token），**cap 与耗时无关**；
+- 只有「撞 cap」的调用，其耗时才随 cap 近似线性变化。
+
+⇒ cap↑ **不一定**变慢、cap↓ **不一定**变快。更要紧的是：**cap↓ 会让更多调用撞 cap → 更多失败 → 触发本层重试（每次重试都是一次完整调用）**，总时间**可能反而上升**。
+**判据应为「成功率」而非「耗时」**：4096 → 真实全量 5/21 行失败、探针 1/15；8192 → 3/21、0/15；而耗时 29m07s vs 29m48s（全量）、35s vs 33s（探针）**均在噪声内**，不构成取舍依据。
+
+**⚠ 必须记明的边界**：cap **不是**失败根因。失败根因是**模型偶发退化成吐空对象/垃圾对象**（E4/E8/E11），cap 只决定它**在哪一步被抓**（撞满 → `IncompleteOutputException`；自己停 → `ValidationError`）。⇒ **调 cap 不解决根因**，只是让失败落进"可被 instructor 内部重试"的类别（见 E11）。后续若换裁判模型或简化 schema，需重新取证。
 
 ### 决策 5：裁判**关闭思考**（`RAGAS_JUDGE_THINKING=false`）
 
-**理由**：`qwen3.8-flash` 默认开思考（实测一句「只回复 OK」亦产生 `reasoning_tokens=51`）。开思考在 21 题全量下出现 **5/21 行 `Request timed out`、耗时 1h31m**；关思考后同类运行显著更快。结构化判定在 `temperature=0` 下不依赖 CoT。（注：早期把「关思考」误判为引发 schema 形状错误，实为 `max_tokens=4096` 截断，见 E7。）
+**理由**：`qwen3.8-flash` 默认开思考（实测一句「只回复 OK」亦产生 `reasoning_tokens=51`）。开思考在 21 题全量下出现 **5/21 行 `Request timed out`、耗时 1h31m**；关思考后同类运行显著更快。结构化判定在 `temperature=0` 下不依赖 CoT。（注：早期曾把「关思考」误判为引发 schema 形状错误——当时的失败实为**模型退化吐空对象**，与思考档位无关，见 E11。）
 
 ### 决策 6：裁判失败**必须留下原始响应**，并挂 `trace_id`；提供 `trace_logs` 按链查询
 
@@ -66,10 +79,14 @@ RAGAS 评测（KB `4a1dcb8b…`，21 题全量）出现三类症状，排查耗�
 | E4 | 失败真因：同输入（16,037 字符）**并发 12 → 9/12 成功**（7–21s、1–2 条分类）；3 次失败均为 `finish_reason=**stop**`、`completion_tokens=**148–215**`、原始输出 `{ "classifications": [ { }, { }, { } ] }` ⇒ **模型偶发吐「空结构」**（pydantic 校验失败） |
 | E5 | prompt 规模分解（实测渲染）：RAGAS 官方模板**固定开销 5,767 字符**；每条 context ≈2,000 字符；5 条 ⇒ **16,037 字符**（与实测 16,674 吻合）。**chunk 不大**：DB 分块长度均值 **652**、最大 **1,998**（161 块）⇒ 推翻「chunk 太大 / 条数太多」 |
 | E6 | 超时可重试的反例：一次 `context_recall` 恰好 **150.0s**（read 上限）超时，重试后成功恢复 |
-| E7 | `max_tokens` 影响：撞上限的截断调用耗时 **141s（8192）→ 72.7s（4096）** |
+| E7 | `max_tokens` 对失败**耗时**的影响：撞 cap 的调用 **141s（cap=8192）→ 72.7s（cap=4096）**。⚠ 早期据此推断"4096 截断了合法长输出"，**已被 E11 推翻**（当时的失败实为退化空对象循环，不是合法输出被切） |
 | E8 | 单题完整因果链（`trace_logs eval_808341338592 --grep "judge call"`）：`attempt=1 72.7s ok=false IncompleteOutputException` → `attempt=2 5.5s ok=false InstructorRetryException<-ValidationError: 6 validation errors` → `attempt=3 4.2s ok=true`。⇒ 同一指标上**两种失败模式并存**（截断 / 空结构），且 `attempts=3` 当场救回该行（用 attempts=2 会丢该指标） |
 
 补充观测（未纳入决策，仅记录）：`prompt_tokens ≈ 38–40k` 且 `cached_tokens ≈ 39k`（E4 的 usage）——**字符数不能直接推 token 数**，与 E5 的字符分解不可混用。
+
+| E10 | `max_tokens` A/B 探针（同输入 16,988 字符、含 25 条陈述长参考，**各 15 次**）：**4096 → 成功 14/失败 1**（`IncompleteOutputException`，`finish_reason=length`、`out=4096`）；**8192 → 成功 15/失败 0**。**均耗时几乎相同**（35s vs 33s，max 59s vs 40s）⇒ 大 cap 不付时间代价 |
+| E11 | **失败根因的原始响应取证**（`trace_logs <trace_id> --grep "ok=false"`，2026-10-15 全量）：`q7 context_recall` attempt 1/2/3 全部 `finish_reason=length out=4096`，raw 均为**一长串空对象**（`{ "classifications": [ { }, { }, { }, …`）；`q8 faithfulness` attempt 1 `finish_reason=stop` + 69 个 `ValidationError`（`statements.0 = {}`），attempt 2 开头合法（`{ "statements": [ { "statement": "腾讯2024年度…"`）随后劣化为垃圾（`{ },{"},}{" : 1.0, ": " :"}`）。⇒ **两类异常名是同一根因的两种表现**（模型退化吐空/垃圾对象），**不是"合法长输出被截断"** |
+| E12 | **重试类的可重试性（源码级）**：`instructor/v2/core/retry.py:47` `_RETRYABLE_PARSE_ERRORS = (ValidationError, JSONDecodeError, AsyncValidationError, ResponseParsingError)` 会被 instructor **内部重试**；而 `IncompleteOutputException` 在同文件 184/227/259/429/472/504 处均为**显式 `raise`、不参与内部重试** ⇒ 失败落在哪一类，直接决定它还能否拿到额外重试机会 |
 
 ### E9 配置 → 耗时 / 失败行 对照（2026-10-14 ~ 10-15，同 KB，同一批测试集）
 

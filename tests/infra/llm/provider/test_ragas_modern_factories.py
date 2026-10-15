@@ -47,7 +47,7 @@ def test_ragas_judge_output_budget_and_thinking(monkeypatch):
 
     llm = cast(InstructorLLM, factory.build_ragas_judge())
 
-    assert llm.model_args["max_tokens"] == settings.RAGAS_JUDGE_MAX_TOKENS == 4096
+    assert llm.model_args["max_tokens"] == settings.RAGAS_JUDGE_MAX_TOKENS == 8192
     assert llm.model_args["extra_body"]["enable_thinking"] is False
 
 
