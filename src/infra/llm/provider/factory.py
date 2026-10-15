@@ -143,7 +143,8 @@ def build_ragas_judge():
       开思考 + 8192 无结构失败但 21 题全量 5/21 行 `Request timed out`、耗时 1h31m；
       **关思考 + 8192 → 0 失败且快 9×**。结构化判定在 `temperature=0` 下不依赖 CoT。
       （踩坑：一度把「关思考」误判为引发 schema 形状错误，实为 4096 截断，8192 可救。）
-    - client 另设**显式超时**（思考模型慢，超时不足会把分数变成失败）。
+    - client 另设**细粒度超时**（connect/read/write/pool 各自取值，见 `build_native_client`），
+      超时不当会把分数变成失败。
 
     Returns:
         InstructorBaseRagasLLM：供 `ragas.metrics.collections` 指标使用。

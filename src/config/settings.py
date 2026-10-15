@@ -175,6 +175,11 @@ RAGAS_HTTP_TIMEOUT_POOL: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_POOL", "10"
 # 设 0：整条链路只发 1 次、不重试（实测 mock transport：max_retries=2 → 3 次；=0 → 1 次）。
 # 注：instructor.from_openai 无 max_retries 参数，其自身只做 1 次尝试、不叠加。
 RAGAS_HTTP_MAX_RETRIES: int = int(os.getenv("RAGAS_HTTP_MAX_RETRIES", "0"))
+# 单指标最大尝试次数（我们自己这层的有界重试，替代被关掉的 SDK 重试）。
+# 依据：主因 `IncompleteOutputException`（输出爆量）是**随机**的——同输入一次 6.1s 成功、
+# 一次 110.9s 失败 ⇒ 重试成功率高；而不重试会把失败行踢出均值，造成乐观偏差。
+# 超时类失败**不重试**（挂死调用重试大概率再挂，白等一个 read 周期）。
+RAGAS_METRIC_MAX_ATTEMPTS: int = int(os.getenv("RAGAS_METRIC_MAX_ATTEMPTS", "2"))
 # 裁判单次生成的最大输出 token。RAGAS 内建默认仅 1024，遇到长上下文（年报表格 +
 # 多 statements/TP-FP-FN 拆解）会被截断 → `IncompleteOutputException`。思考 ON 时
 # 思考 token 另占预算，故取 8192（实测：1024 截断 / 4096 仍偏紧）。

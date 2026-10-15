@@ -26,6 +26,8 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
+import openai
 import pandas as pd
 from langfuse.decorators import langfuse_context, observe
 
@@ -365,6 +367,63 @@ async def _score_metrics(metric_name: str, metric, row: dict):
     return await metric.ascore(user_input=row["question"], response=row["answer"])
 
 
+_RETRY_TIMEOUT_HINTS = ("timed out", "timeout")
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    """判断异常（含被 instructor 包装的）是否属于超时类。
+
+    超时类的成因是"服务端在 read 上限内没回字节"——重试大概率再挂，白等一个 read 周期，
+    故**不重试**（见 settings.RAGAS_METRIC_MAX_ATTEMPTS 注释）。
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, (openai.APITimeoutError, httpx.TimeoutException)):
+            return True
+        if any(h in str(cur).lower() for h in _RETRY_TIMEOUT_HINTS):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+async def _score_metric_with_retry(
+    metric_name: str, metric, row: dict
+) -> tuple[float, str]:
+    """打分；**可重试**失败重试至多 `settings.RAGAS_METRIC_MAX_ATTEMPTS` 次。
+
+    为何在**本层**重试而非 SDK 层：SDK 重试是静默的乘法放大；这里的重试可见（记
+    `metric retry` 事件）、有界、且可只针对随机性失败。超时类不重试。
+
+    `error` 语义不变：**只在最终失败时非空**（重试成功不写 error，值即为真值）。
+
+    Returns:
+        `(值, 错误说明)`；成功时错误说明为 ""，最终失败时为 `"指标:异常类:消息"`。
+    """
+    attempts = max(1, settings.RAGAS_METRIC_MAX_ATTEMPTS)
+    last_exc: Exception = RuntimeError("unreachable")
+    for attempt in range(1, attempts + 1):
+        try:
+            res = await _score_metrics(metric_name, metric, row)
+        except Exception as exc:  # noqa: BLE001  # 失败可见，不吞
+            last_exc = exc
+            if _is_timeout_error(exc) or attempt >= attempts:
+                break
+            core_logging.log_event(
+                Event.METRIC_RETRY,
+                metric=metric_name,
+                q_index=row.get("q_index"),
+                reason=type(exc).__name__,
+            )
+            await asyncio.sleep(0.5 * attempt)  # 轻量线性退避
+            continue
+        return float(res.value), ""
+    # 消息压缩成单行并截断，便于落 CSV/MD 定位（换行折空格）
+    msg = " ".join(str(last_exc).split())[:140]
+    return float("nan"), f"{metric_name}:{type(last_exc).__name__}:{msg}"
+
+
 def run_evaluation(
     questions: list[str],
     ground_truth: list[str],
@@ -416,14 +475,10 @@ def run_evaluation(
         errors: list[str] = []
         async with sem:
             for name, metric in metrics.items():
-                try:
-                    res = await _score_metrics(name, metric, row)
-                    out[name] = float(res.value)
-                except Exception as exc:  # noqa: BLE001  # 失败可见，不吞
-                    out[name] = float("nan")
-                    # 记异常类名 + 压缩后的短消息（便于定位截断/解析类失败；换行折成空格）
-                    msg = " ".join(str(exc).split())[:140]
-                    errors.append(f"{name}:{type(exc).__name__}:{msg}")
+                value, err = await _score_metric_with_retry(name, metric, row)
+                out[name] = value
+                if err:
+                    errors.append(err)
         out["error"] = ";".join(errors)
         return out
 

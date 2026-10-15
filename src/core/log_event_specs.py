@@ -274,6 +274,9 @@ EVENT_SPECS: dict[str, EventSpec] = {
     "testset self-contained dropped": EventSpec(
         "testset self-contained dropped", "cli", "warning", ("kept", "dropped", "total")
     ),
+    "metric retry": EventSpec(
+        "metric retry", "cli", "info", ("metric", "q_index", "reason")
+    ),
     "kb lookup": EventSpec("kb lookup", "cli", "info", ("name",)),
     "kb not found": EventSpec("kb not found", "cli", "error", ("name",)),
     "search start": EventSpec("search start", "cli", "info", ("query", "top_k")),
