@@ -26,8 +26,6 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
-import openai
 import pandas as pd
 from langfuse.decorators import langfuse_context, observe
 
@@ -367,34 +365,17 @@ async def _score_metrics(metric_name: str, metric, row: dict):
     return await metric.ascore(user_input=row["question"], response=row["answer"])
 
 
-_RETRY_TIMEOUT_HINTS = ("timed out", "timeout")
-
-
-def _is_timeout_error(exc: BaseException) -> bool:
-    """判断异常（含被 instructor 包装的）是否属于超时类。
-
-    超时类的成因是"服务端在 read 上限内没回字节"——重试大概率再挂，白等一个 read 周期，
-    故**不重试**（见 settings.RAGAS_METRIC_MAX_ATTEMPTS 注释）。
-    """
-    seen: set[int] = set()
-    cur: BaseException | None = exc
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        if isinstance(cur, (openai.APITimeoutError, httpx.TimeoutException)):
-            return True
-        if any(h in str(cur).lower() for h in _RETRY_TIMEOUT_HINTS):
-            return True
-        cur = cur.__cause__ or cur.__context__
-    return False
-
-
 async def _score_metric_with_retry(
     metric_name: str, metric, row: dict
 ) -> tuple[float, str]:
-    """打分；**可重试**失败重试至多 `settings.RAGAS_METRIC_MAX_ATTEMPTS` 次。
+    """打分；失败（**含超时**）重试至多 `settings.RAGAS_METRIC_MAX_ATTEMPTS` 次。
 
     为何在**本层**重试而非 SDK 层：SDK 重试是静默的乘法放大；这里的重试可见（记
-    `metric retry` 事件）、有界、且可只针对随机性失败。超时类不重试。
+    `metric retry` 事件）、有界、且逐指标独立。
+
+    **超时也重试**（2026-10-15 实测修订）：曾按"超时重试大概率再挂"的推测排除超时，
+    但实测抓到反例——一次 150s（read 上限）超时，重试后**成功恢复**，该指标拿到真值。
+    故改为任何失败都重试，最坏 2×read 上限/指标，换取不丢指标、均值偏差最小。
 
     `error` 语义不变：**只在最终失败时非空**（重试成功不写 error，值即为真值）。
 
@@ -408,7 +389,7 @@ async def _score_metric_with_retry(
             res = await _score_metrics(metric_name, metric, row)
         except Exception as exc:  # noqa: BLE001  # 失败可见，不吞
             last_exc = exc
-            if _is_timeout_error(exc) or attempt >= attempts:
+            if attempt >= attempts:
                 break
             core_logging.log_event(
                 Event.METRIC_RETRY,

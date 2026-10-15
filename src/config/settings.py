@@ -178,7 +178,8 @@ RAGAS_HTTP_MAX_RETRIES: int = int(os.getenv("RAGAS_HTTP_MAX_RETRIES", "0"))
 # 单指标最大尝试次数（我们自己这层的有界重试，替代被关掉的 SDK 重试）。
 # 依据：主因 `IncompleteOutputException`（输出爆量）是**随机**的——同输入一次 6.1s 成功、
 # 一次 110.9s 失败 ⇒ 重试成功率高；而不重试会把失败行踢出均值，造成乐观偏差。
-# 超时类失败**不重试**（挂死调用重试大概率再挂，白等一个 read 周期）。
+# **超时也重试**：实测抓到反例——一次 150s（read 上限）超时重试后成功恢复，故不排除超时。
+# 最坏代价 = attempts × read 上限 / 指标（默认 2 × 150s）。
 RAGAS_METRIC_MAX_ATTEMPTS: int = int(os.getenv("RAGAS_METRIC_MAX_ATTEMPTS", "2"))
 # 裁判单次生成的最大输出 token。RAGAS 内建默认仅 1024，遇到长上下文（年报表格 +
 # 多 statements/TP-FP-FN 拆解）会被截断 → `IncompleteOutputException`。思考 ON 时

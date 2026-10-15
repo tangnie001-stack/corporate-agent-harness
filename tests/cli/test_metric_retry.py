@@ -40,16 +40,15 @@ async def test_retries_once_then_succeeds(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_timeout_is_not_retried(monkeypatch):
-    """超时类不重试：只尝试 1 次，误差如实记录。"""
+async def test_timeout_is_also_retried(monkeypatch):
+    """超时也重试（实测 150s 超时重试后恢复，故不排除超时）。"""
     value, err, n = await _run(
-        monkeypatch, fail_times=99, exc=RuntimeError("Request timed out.")
+        monkeypatch, fail_times=1, exc=TimeoutError("Request timed out.")
     )
 
-    assert n == 1
-    assert math.isnan(value)
-    assert err.startswith("faithfulness:RuntimeError:")
-    assert "timed out" in err
+    assert n == 2
+    assert value == 0.75
+    assert err == ""
 
 
 @pytest.mark.asyncio
@@ -71,16 +70,3 @@ async def test_no_retry_when_attempts_is_one(monkeypatch):
     assert n == 1
     assert math.isnan(value)
     assert err.startswith("faithfulness:ValueError:")
-
-
-def test_is_timeout_error_detects_wrapped_timeout():
-    """被包装（__cause__）的超时异常也要识别出来。"""
-    try:
-        try:
-            raise TimeoutError("Request timed out.")
-        except TimeoutError as inner:
-            raise RuntimeError("wrapped") from inner
-    except RuntimeError as exc:
-        assert eval_ragas._is_timeout_error(exc) is True
-
-    assert eval_ragas._is_timeout_error(ValueError("bad shape")) is False
