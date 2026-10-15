@@ -30,7 +30,7 @@
 - [x] **连带面**：出题**共用** judge 角色；`classify`/`summary` **一并**降级（影响文档分类 + 历史摘要）（见 D10 与 proposal Impact）。
 - [x] **回归基线**：**本变更不建**（门禁另案）；只留「迁移对照记录 + 首次 post-migration 分数快照」。
 - [x] **`overall_score` 口径**（D11）：统一到主分（**纯 KB 五项均值**，含 `answer_correctness`）；`kb_eval` API 补 `answer_correctness`；通过阈值**单一来源**（API 下发，前端不硬编码）；MD 删「两口径分叉」Note。**实测新口径区间 ≈ 0.68~0.92**（n=7 粗参考），系统性低于旧口径 **0.03~0.13** ⇒ 阈值先维持 `0.70` 并标「待标定」。
-- [x] **测试集版本**：删 `v2`/`v3`（冒烟临时）；留 `v1` 并在其 `metadata.note` 标「整改前（题面歧义）」；新出为 **v4**。
+- [x] **测试集版本**：清理旧版，只留 **v5**（P1+P2 后的整改版）；v2（冒烟残留）/v3/v4（整改过程版）已删。
 - [x] **出题验收判据**：三道一起 —— ① 生成日志**无** `Skipping multi_hop_abstract_query_synthesizer`；② 生成 JSON **含** `multi_hop_abstract` 样本 ≥1；③ 题面**全量命中** KB 内公司名（100%）。原「粗筛」判据 P1 前实测 **12/21 不达成** ⇒ 已升级为硬判据（见 D8）。
 - [x] **迁移对照脚本**：**一次性**（跑完即弃、**不入库**）；对照数字落 change 验收报告 / `docs/research/`。
 - [x] **catalog 定价**：补 `qwen3.7-flash` **与** `qwen3.8-flash` 的 `pricing`（数字取自百炼价目表）。
