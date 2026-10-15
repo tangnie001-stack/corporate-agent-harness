@@ -58,6 +58,8 @@
 - **Why not SDK 层**：SDK 重试是**静默乘法放大**（默认 2 ⇒ 3 次请求）；放在本层则**可见**（记 `metric retry` 事件）、**有界**、**逐指标独立**。SDK `max_retries` 保持 0。
 - **`error` 语义不变**：仍**只在最终失败时非空**（重试成功不写 error，值即真值）。
 - **记异常链（可诊断性）**：`error` 与 `metric retry` 事件均记 `_exc_chain_summary` = `外层类<-根因类: 根因消息`。**Why**：只记类名会丢根因——实测一次 150s 超时被包装成**无消息的 `RuntimeError`**，报告里只剩 `RuntimeError`，无从定位；带上链后可直接看出根因（如 `RuntimeError<-APITimeoutError: Request timed out.`）。
+- **记原始响应（因果关系，2026-10-15 追加）**：新增 `judge call` 事件（`metric`/`q_index`/`attempt`/`seconds`/`ok`/`note`），`note` 经 `_judge_failure_note` 带出 instructor 异常的 `last_completion`：`finish_reason` + `out_tokens` + **原始输出片段**。
+  - **Why**：此前只能凭结果反推成因（误判过"输入撑爆""生成失控"）。带上原始响应后一眼看出是**空结构输出**（`finish_reason=stop` + 输出仅 148–215 token + `{ }`），与"截断"是两种不同模式。`q_index` 使其可与报告行/trace 对齐。
 
 ### D3 — 指标集：沿用经典 5 个（collections 版），不加 rubric
 
@@ -200,6 +202,8 @@
 | 裁判是否默认开思考（探测） | `qwen3.8-flash` **默认开**：一句「只回复 OK」产生 `reasoning_tokens=51` 且带 `reasoning_content`；显式 `extra_body={"enable_thinking": False}` 可关（`completion_tokens=1`、无 `reasoning_content`）。 |
 | 裁判调用耗时分布（5 题 69 次，思考 OFF） | p50=7.6s · p90=29.4s · p95=66.2s · p99=110.9s · max=110.9s；2 次失败为 `IncompleteOutputException` 且耗时 102.8s/110.9s（**撞满 max_tokens=8192**，同款正常仅 5.8s/454 字符）。 |
 | 细粒度超时前后（5 题） | 旧（平铺 300s + SDK 重试 2）：失败 **3/69**、max 110.9s、墙钟 5m32s；新（connect10/read150/write30/pool10 + `max_retries=0`）：失败 **0/70**、max 60.9s、0 次 ≥150s、墙钟 4m59s。 |
+| **裁判失败的真实成因（2026-10-15，抓原始响应）** | 同输入（16,037 字符）并发 12：**9/12 成功**（7–21s、1–2 条分类）；3 次失败均为 `finish_reason=stop`、`completion_tokens=**148–215**`、原始输出 = `{ "classifications": [ { }, { }, { } ] }` 或 `{"": "", "": 0}` ⇒ **模型吐「空结构」**（pydantic 校验失败）。**推翻**此前"输入撑爆 / 生成失控"的推断。 |
+| 裁判 prompt 规模分解（实测渲染） | RAGAS 官方模板**固定开销 = 5,767 字符**（instruction+few-shot+schema）；每条 context ≈ 2,000 字符（DB 分块真实长度：均值 **652**、最大 **1,998** ⇒ **chunk 不大**）；5 条 ⇒ **16,037 字符**（与实测 16,674 吻合）。另：`prompt_tokens ≈ 38–40k`（`cached_tokens≈39k`）⇒ **字符数不可直接推 token**。 |
 | 出题自足性（`--generate --size 20`，v3 / 21 条） | **12/21 题面不含公司名；这 12 条的 `reference_contexts` 全无公司名**；「上下文含公司名 ⇒ 题面必含」4/4 ⇒ 自足性由**上下文是否带实体**决定，与 `llm_context` 无关（D8） |
 
 ## Risks / Trade-offs

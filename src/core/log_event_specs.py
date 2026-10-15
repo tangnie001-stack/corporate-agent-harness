@@ -277,6 +277,12 @@ EVENT_SPECS: dict[str, EventSpec] = {
     "metric retry": EventSpec(
         "metric retry", "cli", "info", ("metric", "q_index", "reason")
     ),
+    "judge call": EventSpec(
+        "judge call",
+        "cli",
+        "info",
+        ("metric", "q_index", "attempt", "seconds", "ok", "note"),
+    ),
     "kb lookup": EventSpec("kb lookup", "cli", "info", ("name",)),
     "kb not found": EventSpec("kb not found", "cli", "error", ("name",)),
     "search start": EventSpec("search start", "cli", "info", ("query", "top_k")),

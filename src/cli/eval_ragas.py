@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -386,6 +387,39 @@ def _exc_chain_summary(exc: BaseException, limit: int = 140) -> str:
     return f"{chain}: {msg}" if msg else chain
 
 
+def _judge_failure_note(exc: BaseException, limit: int = 200) -> str:
+    """失败备注：异常链 + **原始响应特征**（诊断为"空结构/截断"提供因果证据）。
+
+    instructor 的 `IncompleteOutputException` 等携带 `last_completion`＝原始响应；
+    只记异常类名会丢掉"模型到底回了什么"。这里把 `finish_reason` / 输出 token 数 /
+    原始输出片段一并带上（实测正是靠它区分出「空结构」与「截断」两种失败模式）。
+    """
+    note = _exc_chain_summary(exc)
+    completion = None
+    cur: BaseException | None = exc
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        completion = getattr(cur, "last_completion", None) or completion
+        if completion is not None:
+            break
+        cur = cur.__cause__ or cur.__context__
+    if completion is None:
+        return note
+    try:
+        choice = completion.choices[0]
+        usage = getattr(completion, "usage", None)
+        out_tokens = getattr(usage, "completion_tokens", None)
+        raw = getattr(getattr(choice, "message", None), "content", "") or ""
+        snippet = " ".join(raw.split())[:limit]
+        return (
+            f"{note} | finish_reason={getattr(choice, 'finish_reason', None)}"
+            f" out_tokens={out_tokens} raw={snippet!r}"
+        )
+    except Exception:  # noqa: BLE001  # 诊断信息尽力而为，绝不影响评测
+        return note
+
+
 async def _score_metric_with_retry(
     metric_name: str, metric, row: dict
 ) -> tuple[float, str]:
@@ -406,10 +440,22 @@ async def _score_metric_with_retry(
     attempts = max(1, settings.RAGAS_METRIC_MAX_ATTEMPTS)
     last_exc: Exception = RuntimeError("unreachable")
     for attempt in range(1, attempts + 1):
+        started = time.monotonic()
         try:
             res = await _score_metrics(metric_name, metric, row)
         except Exception as exc:  # noqa: BLE001  # 失败可见，不吞
             last_exc = exc
+            # 每次**尝试**都留痕（含 q_index + 耗时 + 原始响应特征），
+            # 使「哪题/哪个指标/第几次/耗时/原因」可在日志里串成链
+            core_logging.log_event(
+                Event.JUDGE_CALL,
+                metric=metric_name,
+                q_index=row.get("q_index"),
+                attempt=attempt,
+                seconds=round(time.monotonic() - started, 1),
+                ok=False,
+                note=_judge_failure_note(exc),
+            )
             if attempt >= attempts:
                 break
             core_logging.log_event(
@@ -420,6 +466,15 @@ async def _score_metric_with_retry(
             )
             await asyncio.sleep(0.5 * attempt)  # 轻量线性退避
             continue
+        core_logging.log_event(
+            Event.JUDGE_CALL,
+            metric=metric_name,
+            q_index=row.get("q_index"),
+            attempt=attempt,
+            seconds=round(time.monotonic() - started, 1),
+            ok=True,
+            note="",
+        )
         return float(res.value), ""
     # 记**异常链 + 根因消息**（单行、截断），便于从报告/CSV 直接定位根因
     return float("nan"), f"{metric_name}:{_exc_chain_summary(last_exc)}"

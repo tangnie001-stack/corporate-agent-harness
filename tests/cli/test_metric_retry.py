@@ -88,3 +88,49 @@ def test_exc_chain_summary_keeps_root_cause():
         eval_ragas._exc_chain_summary(ValueError("bad shape"))
         == "ValueError: bad shape"
     )
+
+
+class _Msg:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _Choice:
+    def __init__(self, content: str, finish_reason: str) -> None:
+        self.message = _Msg(content)
+        self.finish_reason = finish_reason
+
+
+class _Usage:
+    completion_tokens = 148
+
+
+class _Completion:
+    def __init__(self, content: str, finish_reason: str = "stop") -> None:
+        self.choices = [_Choice(content, finish_reason)]
+        self.usage = _Usage()
+
+
+class _Incomplete(RuntimeError):
+    """模拟 instructor 的 IncompleteOutputException：带 last_completion 原始响应。"""
+
+    last_completion: object = None
+
+
+def test_judge_failure_note_carries_raw_response():
+    """诊断要点：必须带出**原始响应**，才能区分「空结构」与「截断」。"""
+    exc = _Incomplete("boom")
+    exc.last_completion = _Completion('{ "classifications": [ { }, { } ] }')
+
+    note = eval_ragas._judge_failure_note(exc)
+
+    assert "_Incomplete" in note
+    assert "finish_reason=stop" in note
+    assert "out_tokens=148" in note
+    assert "classifications" in note
+
+
+def test_judge_failure_note_without_completion_is_exc_chain_only():
+    """无原始响应时退化为异常链摘要，且不得抛错。"""
+    note = eval_ragas._judge_failure_note(ValueError("bad shape"))
+    assert note == "ValueError: bad shape"
