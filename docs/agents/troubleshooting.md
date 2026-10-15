@@ -130,6 +130,7 @@ docker exec corporate-rag-app grep "<trace_id>" /data/logs/app_YYYY-MM-DD.log
 | 不知道是哪个渠道来的 | 日志第 5 段 `channel` | 本文件 §4 |
 | 企微不回 / 被顶号 | 渠道侧日志 + SDK 实测事实 | `docs/agents/wecom-sdk-facts.md` |
 | 部署/端口/发布异常 | 部署槽位日志与运行形态 | `docs/agents/deploy-runbook.md` |
+| 评测指标出现 `error` / 评测总耗时异常 | 该题 `trace_id` 下的 `judge call`（含失败时的**原始响应**） | 本文件 §10 + **ADR-0024** |
 
 ## 9. "查不到 → 加日志"落点清单
 
@@ -145,7 +146,44 @@ docker exec corporate-rag-app grep "<trace_id>" /data/logs/app_YYYY-MM-DD.log
 **加完必须两层一起动**：调用点用 `log_event` + 事件在 `EVENT_SPECS` 登记（漏登记 import 期即报错），
 口径见 `docs/agents/logging-rules.md`。若新增的是**层**，还要登记 `LOG_PREFIXES` 并加进前缀主表。
 
-## 10. 相关文档
+## 10. 案例：RAGAS 评测失败——不要凭结果反推，把原始响应接上 trace
+
+> 决策与证据 → **ADR-0024**（裁判客户端策略）。本节只记**排查方法**与**走错的路**。
+
+**症状**：21 题评测跑 **1h31m**（其中仅约 8 分钟在计算）；**5/21 行**指标带 `error`；异常类名随配置漂移
+（`IncompleteOutputException` / `InstructorRetryException` / `RuntimeError`）。
+
+**走错的两条路（务必别重复）**：
+
+1. **凭结果反推「prompt 太长 / 输入撑爆」** —— 实测否决：KB 分块长度均值 **652** 字符、最大 1,998；
+   失败题的上下文只有 **5 条**（正常值）；prompt 里 35% 是 RAGAS 官方模板自带的固定开销。
+2. **凭结果反推「模型生成失控、撞满 max_tokens」** —— 抓**原始响应**后否决：失败调用
+   `finish_reason=**stop**`、`completion_tokens` 仅 **148–215**、原始输出是 `{ "classifications": [ { }, { } ] }`
+   ⇒ 真因是**模型偶发吐「空结构」**，与"输出爆量"无关。
+
+**本次奏效的做法**（正是 §2「查不到 = 观测缺口」的落地）：
+
+1. 给裁判**每次尝试**加事件 `judge call`（`metric` / `q_index` / `trace_id` / `attempt` / `seconds` / `ok` / `note`）；
+2. `note` 从 instructor 异常的 `last_completion` 取出**原始响应**（`finish_reason` + 输出 token 数 + 输出片段）；
+3. `run_evaluation` 把每题的 `trace_id` 写进行 ⇒ 报告那列 `trace_id` 直达裁判调用。
+
+**结论**：同一指标上**两种独立失败模式并存**——「空结构」（`finish_reason=stop`、输出极短）与
+「截断」（撞 `max_tokens`）。**只记异常类名会把两者混成一个 `InstructorRetryException`**，
+这就是此前数日无法定案的原因。
+
+**怎么查**：
+
+```bash
+TID=$(python -c "import csv,glob,os;print(next(csv.DictReader(open(sorted(glob.glob('data/ragas/reports/*.csv'))[-1],encoding='utf-8-sig')))['trace_id'])")
+python -m src.cli.trace_logs "$TID" --grep "judge call"   # 该题每次裁判尝试 + 失败时的原始响应
+python -m src.cli.trace_logs "$TID" --grep "metric retry" # 重试原因（异常链摘要）
+```
+
+**可迁移的教训**：包装层的异常类名（`XxxRetryException` / `RuntimeError`）几乎总是**丢根因**的；
+排障时优先把**被调用方（模型 / 下游）的原始返回**落到日志，再用 `trace_id` 把链路串起来 —— 这比
+反复调整参数"试试看"快一个量级。
+
+## 11. 相关文档
 
 - 日志格式 / 前缀主表 / 事件全集 / 值类型 / 级别 / 指标口径 → `docs/agents/logging-rules.md`
 - 操作配方（SSE 帧回放、取证不截断等） → `docs/agents/cookbook.md`

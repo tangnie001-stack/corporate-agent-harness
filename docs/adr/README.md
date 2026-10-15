@@ -158,6 +158,7 @@ R3 的精神是 `CLAUDE.md`「选型纪律」的延伸：**凡有意偏离基线
 | [0021](0021-provider-compat-layer.md) | 引入应用内 provider 兼容层（registry 数据面 + 思考形状归一化 + 角色解析），拒绝网关 | Accepted | 在 0020 之上构建，非网关；不取代任何在先 ADR |
 | [0022](0022-ragas-testset-input-scope.md) | RAGAS 出题的输入边界由使用方负责（白名单保留）；评估检索与出题同范围 | Accepted | 不取代任何在先 ADR；证据见 `docs/research/2026-10-13-ragas-testset-generation.md`；**其决策 C 已被 0023 局部取代** |
 | [0023](0023-ragas-whitelist-bounds-generation-only.md) | RAGAS 白名单只约束出题；评估检索镜像生产（整库），不按白名单收窄 | Accepted | 局部取代 0022 的决策 C |
+| [0024](0024-ragas-judge-client-policy.md) | RAGAS 裁判客户端策略：细粒度超时 / 关 SDK 重试 / 本层有界重试（含超时）/ max_tokens=4096 / 关思考 / 失败必留原始响应并挂 trace_id | Accepted | 落实 change `ragas-modern-stack` 的 design D6；不取代任何在先 ADR；**记明并推翻该 design 早期的「输入撑爆」「生成失控」两条判断** |
 
 ## 模板
 
