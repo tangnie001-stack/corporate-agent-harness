@@ -1127,3 +1127,31 @@ git commit -m "docs(openspec): ragas-modern-stack 活体验收记录"
 - [x] Run: `POSTGRES_HOST=localhost python -m src.cli.eval_ragas --kb-id 4a1dcb… --generate --size 20` → 21m14s，产出 **v4 / 21 条**。
 - [x] **判据**（对应 spec scenario）：① 无 `Skipping multi_hop_abstract_query_synthesizer` ✅；② `multi_hop_abstract` = 7 ✅；③ 题面 **21/21 命中** ✅；④ `reference_contexts` **21/21** 含【公司·报告期】✅。
 - [x] 结果写入本文件「验收记录」（见上）。
+
+---
+
+## 追加修复波 2（2026-10-15）：裁判截断与结构失败（D6 修订）
+
+**现象**：v5 首次活体评测（21 题全量被中断前，只跑 1 题 / 5 题）暴露裁判大面积失败。
+
+**排查链**：
+
+| 阶段 | 配置 | 5 题结果 |
+|---|---|---|
+| 初始 | 思考 ON + `max_tokens` **1024**（RAGAS 默认） | 2/5 行失败，`IncompleteOutputException`（**截断**）；13m33s |
+| 试修 | 思考 **OFF** + 4096 | 2/5 行失败，转为 `InstructorRetryException`（**schema 形状错误**）；3m37s |
+| 定稿 | **思考 ON + 8192** | **0/5 行失败** ✅；12m01s |
+
+**关键证据**：
+- `qwen3.8-flash` **默认开思考**（探测：一句「只回复 OK」→ `reasoning_tokens=51` + `reasoning_content`）；显式 `extra_body={"enable_thinking": False}` 可关。
+- RAGAS 内建 `max_tokens=1024`（`ragas/llms/base.py:726`）→ 长上下文截断。
+- 关思考后截断消失但**形状错误**出现（`statements.0` 非对象 / 缺 `statement`）；RAGAS 对 openai 兼容端**硬编码 instructor `Mode.JSON`**，而 `Mode.TOOLS` 在思考 ON 下被百炼 **400 拒**（`tool_choice` 不支持 thinking mode）⇒ 换模式此路不通。
+- 合成 schema 对照（20 条陈述）复现不出失败 ⇒ 失败源于**特定真实输入**，非通用模式问题。
+
+**改动**：
+- `src/config/settings.py`：新增 `RAGAS_JUDGE_MAX_TOKENS`（默认 **8192**）。
+- `src/infra/llm/provider/factory.py`：`build_ragas_judge` 传 `max_tokens` + `extra_body=thinking_extra_body(provider, True)`（保留思考）。
+- `src/cli/eval_ragas.py`：`error` 字段补短消息（`metric:ExcType:msg`），提升可诊断性（D2）。
+- 测试：`test_ragas_modern_factories.py` 增断言（`max_tokens>=8192`、`enable_thinking is True`）。
+
+**已知取舍**：思考 ON 使 21 题全量预计 **~25–50 分钟**（离线评测可接受）。若要压成本，正路是调**思考预算**（`thinking_budget`）而非直接关思考。

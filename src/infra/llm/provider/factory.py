@@ -115,10 +115,18 @@ def build_native_client(role: str, *, timeout: float | None = None) -> AsyncOpen
 def build_ragas_judge():
     """构造现代 RAGAS 裁判 LLM（`llm_factory`）。
 
-    采样策略（design D6）：`temperature=0` 且**不传 `top_p`** —— RAGAS 内建默认
-    `temperature=0.01` / `top_p=0.1` 会被部分模型以 400 拒绝（实测百炼 kimi-k3）；
-    `top_p=None` 会被 instructor 从请求里摘掉。client 另设**显式超时**（思考模型慢，
-    超时不足会把分数变成失败）。
+    采样/预算策略（design D6，2026-10-15 修订）：
+    - `temperature=0` 且**不传 `top_p`** —— RAGAS 内建默认 `temperature=0.01` /
+      `top_p=0.1` 会被部分模型以 400 拒绝（实测百炼 kimi-k3）；`top_p=None` 会被
+      instructor 从请求里摘掉。
+    - `max_tokens=RAGAS_JUDGE_MAX_TOKENS`（默认 8192）—— RAGAS 内建默认仅 **1024**，
+      遇长上下文（年报表格 + 多 statements / TP-FP-FN 拆解）会被截断成
+      `IncompleteOutputException`（实测 5 题中 2 题命中）。
+    - **保留思考**（`enable_thinking=True`）—— 同题 A/B 实测：思考 OFF 时截断消失但
+      转为 **schema 校验失败**（`InstructorRetryException`：`statements.0` 非对象 /
+      缺 `statement`，RAGAS 硬编码 instructor `Mode.JSON`，长 schema 下结构遵循度下降）；
+      思考 ON + 8192 预算同时覆盖「截断」与「形状」两因。
+    - client 另设**显式超时**（思考模型慢，超时不足会把分数变成失败）。
 
     Returns:
         InstructorBaseRagasLLM：供 `ragas.metrics.collections` 指标使用。
@@ -127,7 +135,15 @@ def build_ragas_judge():
 
     resolved = _resolve_model("judge")
     client = build_native_client("judge", timeout=settings.RAGAS_JUDGE_TIMEOUT)
-    return llm_factory(resolved.model, client=client, temperature=0, top_p=None)
+    return llm_factory(
+        resolved.model,
+        client=client,
+        temperature=0,
+        top_p=None,
+        max_tokens=settings.RAGAS_JUDGE_MAX_TOKENS,
+        # 经 provider 层唯一产地构造思考参数（完整 dict），与 build_chat 同源
+        extra_body=thinking_extra_body(resolved.provider, True),
+    )
 
 
 def build_ragas_embeddings():

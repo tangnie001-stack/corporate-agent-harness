@@ -1,4 +1,4 @@
-"""现代 RAGAS 工厂：temperature=0、不发 top_p、显式超时（design D6）。"""
+"""现代 RAGAS 工厂：temperature=0、不发 top_p、显式超时 + 输出预算/思考（design D6）。"""
 
 from typing import cast
 
@@ -19,6 +19,17 @@ def test_ragas_judge_sampling_and_timeout(monkeypatch):
     assert llm.model_args.get("top_p") is None
     # client 须带显式超时（思考模型偶尔 >30s）
     assert llm.client.timeout is not None
+
+
+def test_ragas_judge_output_budget_and_thinking(monkeypatch):
+    """RAGAS 默认 max_tokens=1024 会截断长上下文；裁判保留思考但给足预算。"""
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "k")
+    monkeypatch.setattr(factory, "_REGISTRY", None)
+
+    llm = cast(InstructorLLM, factory.build_ragas_judge())
+
+    assert llm.model_args["max_tokens"] >= 8192
+    assert llm.model_args["extra_body"]["enable_thinking"] is True
 
 
 def test_ragas_embeddings_has_modern_interface(monkeypatch):

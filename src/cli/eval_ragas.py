@@ -421,7 +421,9 @@ def run_evaluation(
                     out[name] = float(res.value)
                 except Exception as exc:  # noqa: BLE001  # 失败可见，不吞
                     out[name] = float("nan")
-                    errors.append(f"{name}:{type(exc).__name__}")
+                    # 记异常类名 + 压缩后的短消息（便于定位截断/解析类失败；换行折成空格）
+                    msg = " ".join(str(exc).split())[:140]
+                    errors.append(f"{name}:{type(exc).__name__}:{msg}")
         out["error"] = ";".join(errors)
         return out
 

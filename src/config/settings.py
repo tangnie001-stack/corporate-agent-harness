@@ -159,6 +159,10 @@ ASK_USER_MODE_DSH: bool = os.getenv("ASK_USER_MODE_DSH", "true").lower() in (
 RAGAS_LLM_MODEL: str = os.getenv("RAGAS_LLM_MODEL", "")
 # RAGAS 裁判/embedding 客户端请求超时秒数（思考模型偶尔 >30s，超时不足会把分数变成失败）
 RAGAS_JUDGE_TIMEOUT: float = float(os.getenv("RAGAS_JUDGE_TIMEOUT", "300"))
+# 裁判单次生成的最大输出 token。RAGAS 内建默认仅 1024，遇到长上下文（年报表格 +
+# 多 statements/TP-FP-FN 拆解）会被截断 → `IncompleteOutputException`。思考 ON 时
+# 思考 token 另占预算，故取 8192（实测：1024 截断 / 4096 仍偏紧）。
+RAGAS_JUDGE_MAX_TOKENS: int = int(os.getenv("RAGAS_JUDGE_MAX_TOKENS", "8192"))
 # RAGAS 测试集生成条数
 RAGAS_TEST_SIZE: int = int(os.getenv("RAGAS_TEST_SIZE", "20"))
 # RAGAS 测试集存储目录

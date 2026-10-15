@@ -82,6 +82,8 @@
 2. **采样** = `temperature=0` 且**不发 `top_p`**。
 3. **超时** = 思考模型须显式给足；失败按 D2 可见。
 4. legacy 路径（迁移完成前）关闭 RAGAS 对裁判温度的**静默覆盖**（`bypass_temperature=True`）。
+5. **输出预算** = `max_tokens=8192`（`RAGAS_JUDGE_MAX_TOKENS`）。RAGAS 内建 `InstructorModelArgs.max_tokens=1024`，长上下文（年报表格 + 多 statements / TP-FP-FN 拆解）会被截断 → `IncompleteOutputException`（实测 v5 5 题中 2 题命中）。
+6. **思考档位 = 开**（保留）。同题 A/B：关思考快 8×（1 题 ~1.4min vs ~11min），但截断问题**转为 schema 校验失败**（`statements.0` 非对象 / 缺 `statement`）；且 RAGAS 对 openai 兼容端硬编码 instructor `Mode.JSON`，改 `Mode.TOOLS` 在思考 ON 下被百炼 400 拒（`tool_choice` 不支持 thinking）。⇒ **思考 ON + 8192 是唯一实测可靠组合**（硬题 2/2 失败 → 0/2），代价是慢。
 
 **Why（证据见下节）**：
 - 采样：RAGAS 内建默认 `temperature=0.01, top_p=0.1`（legacy `langchain_llm.py:73` / 现代 `InstructorModelArgs`），而百炼部分模型**直接 400 拒绝**；`temperature=0` 也**本来就是裁判正解**（评测要可复现）。
@@ -180,6 +182,8 @@
 | `kimi-k3` 温度/`top_p` 接受度 | 仅接受 {0,1} 或省略；`0.01` / 任意 `top_p` → 400 |
 | 排除假设（空分类成因） | 与 `max_tokens`（1024/4096/8192）、instructor mode（JSON/MD_JSON/TOOLS）**无关**；**裸调真实 prompt 亦 3/3 返回 `{"classifications": []}`** ⇒ 模型行为 |
 | 现代 `llm_factory` 配置 | 默认（0.01/0.1）失败；`temperature=0` 失败（top_p 仍在）；**`temperature=0, top_p=None` 成功** |
+| 裁判思考档位 A/B + 输出预算（2026-10-15，v5 硬题 q2/q3） | 思考 ON+1024：`IncompleteOutputException`（截断）；思考 OFF+4096：`InstructorRetryException` **2/2**（schema 形状错误）；**思考 ON+8192：0/2 失败** ✅（但 ~11min/题）。`Mode.TOOLS` 在思考 ON 下被百炼 400 拒（`tool_choice` 不支持 thinking mode）。 |
+| 裁判是否默认开思考（探测） | `qwen3.8-flash` **默认开**：一句「只回复 OK」产生 `reasoning_tokens=51` 且带 `reasoning_content`；显式 `extra_body={"enable_thinking": False}` 可关（`completion_tokens=1`、无 `reasoning_content`）。 |
 | 出题自足性（`--generate --size 20`，v3 / 21 条） | **12/21 题面不含公司名；这 12 条的 `reference_contexts` 全无公司名**；「上下文含公司名 ⇒ 题面必含」4/4 ⇒ 自足性由**上下文是否带实体**决定，与 `llm_context` 无关（D8） |
 
 ## Risks / Trade-offs
@@ -203,7 +207,7 @@
 
 1. **裁判模型**：定为 **`qwen3.8-flash`**。实测其结构化输出可靠（`context_recall` 空返回 0/10、`faithfulness` statements 空 0/5），而 `kimi-k3` 在 `context_recall` 上 9/10 返回空被否。主模型切 `qwen3.7-flash` **纳入本变更**（见 D10）⇒ **裁判 ≠ 选手，无自评偏置**。
 2. **`Dataset` 落盘**：定为 **`backend="inmemory"`**（不落任何目录），产物只走既有 `data/ragas/reports/`——见 **D4**。实测 `ragas.backends` 提供 `inmemory` / `local/csv` / `local/jsonl` / `gdrive` 四种。
-3. **裁判思考档位**：**默认开**。评测离线、调用量可控（20 题 × 5 指标），裁判质量是评测根基。实施时做一次同题 A/B（thinking on/off）确认分数稳定性/一致性是否有明显差异——有明显提升则保持开（若成本敏感再议）。
+3. **裁判思考档位**：定为**开**（2026-10-15 经 A/B 定稿）。实施时的同题 A/B 见「证据」：关思考快 8× 但改为 schema 校验失败，且 TOOLS 模式与思考不兼容 ⇒ **开思考 + `max_tokens=8192`** 为唯一实测可靠组合。评测离线、调用量可控（20 题 × 5 指标），裁判质量是评测根基。若后续要对齐成本，可评估思考预算（`thinking_budget`）而非直接关思考。
 4. **rubric 类指标**：本次不做（见 D3），留待「可解释性」另案。
 
 ## Original Open Questions（存档）
