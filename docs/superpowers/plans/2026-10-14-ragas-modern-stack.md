@@ -1118,6 +1118,7 @@ git commit -m "docs(openspec): ragas-modern-stack 活体验收记录"
 - [x] **实现**：新增纯函数模块 `src/cli/eval_self_contained.py`（`header_entities` / `doc_exclusive_aliases` / `enforce_self_contained`），**无额外 LLM 调用**；`eval_ragas_generate.py` 接线（`_build_company_aliases(kg)`）+ 事件 `testset self-contained dropped`。
 - [x] **测试**：`tests/cli/test_self_contained_gate.py` 9 条（命名/跨语言别名→保留；多公司无命名→丢弃；单公司无命名→改写后保留；无锚点→丢弃；KG 适配层）。
 - [x] **v4 回放**：`kept=21 dropped=0`（零误伤）。
+- [x] **端到端实跑（v5）**：11m42s（KG 缓存命中、跳过 transforms）→ v5 / 21 条；P2 在真实 `run_generate` 中执行**无异常**，丢弃 **0** 条（与回放一致）；题面自足 21/21、锚点头 21/21、分布 7/7/7。
 - [x] 提交：`feat(eval): 出题后自足性门（P2）`
 
 ### Task 12: 出题验收（须重出）
