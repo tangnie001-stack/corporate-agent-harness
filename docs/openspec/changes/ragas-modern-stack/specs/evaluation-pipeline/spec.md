@@ -95,12 +95,22 @@
 
 出题 SHALL 使用官方 `default_transforms` 全量转换链（含 `ThemesExtractor` 与 `CosineSimilarityBuilder`），使 `MultiHopAbstractQuerySynthesizer` 可正常运行，而 SHALL NOT 因缺件被静默丢弃。
 
-出题 SHALL 通过 `llm_context` 向出题 prompt 传达约束：问题须**自足**——明确指出公司名称与报告期，SHALL NOT 使用「本报告期」「该公司」等依赖原文的指代。
+出题 SHALL 通过两条**可核验**机制保证题面自足——明确指出公司名称与报告期，SHALL NOT 使用「本报告期」「该公司」等依赖原文的指代：
+
+1. **源头锚定**：送入出题 prompt 的每段上下文 SHALL 携带其所属文档的公司名与报告期（取自分块元数据，如 `company` / `report_period` 及 `year`/`quarter`/`source` 兜底）。**可核验方式**：读测试集样本的 `reference_contexts`，其首行 SHALL 含公司名与报告期。
+2. **出题后自足性门**：生成的每条题面 SHALL 经自足性校验；不自足者 SHALL 被改写成自足题或被丢弃，SHALL NOT 原样进入测试集。**可核验方式**：统计测试集全部题面命中 KB 内公司名的比例，SHALL 为 100%。
+
+理由（记明，避免后人"修回"）：`llm_context` 只是官方 prompt 的**题型建议槽位**（软引导）。实测证据：21 条生成题中 12 条题面不含公司名，且这 12 条的 `reference_contexts` **一个公司名都没有**——上下文自称「本公司」，模型无从消解。故单靠 `llm_context`（原方案）不可达成；**不**复活官方 v0.2.0 已移除的旧 `QuestionFilter`。
 
 #### Scenario: Abstract synthesizer is no longer silently dropped
 
 - **WHEN** 运行测试集生成
 - **THEN** SHALL NOT 出现 `Skipping multi_hop_abstract_query_synthesizer … Cannot form clusters`，且生成的测试集 SHALL 含 abstract 出题器产出的题
+
+#### Scenario: Generation context carries the entity anchor
+
+- **WHEN** 分块元数据含公司名与报告期（或多公司语料的任意一块）
+- **THEN** 送入出题 prompt 的上下文 SHALL 携带该公司的名称与报告期
 
 #### Scenario: Generated questions are self-contained
 

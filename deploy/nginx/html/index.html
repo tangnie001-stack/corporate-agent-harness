@@ -1096,7 +1096,8 @@ async function loadRagasEval(kbId) {
         if (data.faithfulness == null && data.context_recall == null) { wrap.style.display = 'none'; return; }
         faithEl.textContent = data.faithfulness != null ? data.faithfulness.toFixed(2) : '—';
         recallEl.textContent = data.context_recall != null ? data.context_recall.toFixed(2) : '—';
-        const passed = (data.faithfulness ?? 0) >= 0.7 && (data.context_recall ?? 0) >= 0.7;
+        // 通过口径唯一来源：后端权威 data.passed（overall_score >= EVAL_PASS_THRESHOLD），前端不重算
+        const passed = data.passed;
         iconEl.className = passed ? 'ragas-pass' : 'ragas-fail';
         iconEl.textContent = passed ? '✓' : '✗';
         wrap.style.display = '';

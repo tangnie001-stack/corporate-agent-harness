@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -31,6 +32,7 @@ from langfuse.decorators import langfuse_context, observe
 
 from src.cli.eval_scoring import (
     apply_sample_masks,
+    build_metrics,
     classify_sample,
     main_score_means,
     retrieval_coverage,
@@ -39,7 +41,9 @@ from src.cli.eval_scoring import (
 )
 from src.config import settings
 from src.config.const import (
+    EVAL_PASS_THRESHOLD,
     EVAL_RETRIEVAL_COVERAGE_MIN,
+    RAGAS_EVAL_CONCURRENCY,
     RAGAS_METRIC_COLUMNS,
     SAMPLE_CLASS_EMPTY,
     SAMPLE_CLASS_PURE_KB,
@@ -311,109 +315,243 @@ async def generate_answers_and_contexts(
     )
 
 
+class _EvalResult:
+    """`Experiment` 的行序适配 + `.to_pandas()` 契约（产出层零改动）。
+
+    `Experiment.to_pandas()` 的行序是 `arun` 的**完成序**，不保证与输入下标对齐
+    （实测 `experiment.py:188` 用 `as_completed`）；本类持一个已按 `q_index` 排好
+    的 DataFrame，并保留既有 `.to_pandas()` 调用面。
+    """
+
+    def __init__(self, df: pd.DataFrame) -> None:
+        """保存已排序的结果表。
+
+        Args:
+            df: 已按 q_index 排序并重置索引的结果表
+        """
+        self._df = df
+
+    def to_pandas(self) -> pd.DataFrame:
+        """返回已排序的结果表（与旧 `EvaluationResult.to_pandas()` 同形）。"""
+        return self._df
+
+
+async def _score_metrics(metric_name: str, metric, row: dict):
+    """按指标名调 `ascore`（各指标入参各不相同，在此集中映射）。"""
+    if metric_name == "faithfulness":
+        return await metric.ascore(
+            user_input=row["question"],
+            response=row["answer"],
+            retrieved_contexts=row["contexts"],
+        )
+    if metric_name == "context_precision":
+        return await metric.ascore(
+            user_input=row["question"],
+            reference=row["ground_truth"],
+            retrieved_contexts=row["contexts"],
+        )
+    if metric_name == "context_recall":
+        return await metric.ascore(
+            user_input=row["question"],
+            retrieved_contexts=row["contexts"],
+            reference=row["ground_truth"],
+        )
+    if metric_name == "answer_correctness":
+        return await metric.ascore(
+            user_input=row["question"],
+            response=row["answer"],
+            reference=row["ground_truth"],
+        )
+    # answer_relevancy
+    return await metric.ascore(user_input=row["question"], response=row["answer"])
+
+
+def _exc_chain_summary(exc: BaseException, limit: int = 140) -> str:
+    """把异常链压成单行摘要：`外层类<-根因类: 根因消息`。
+
+    只记异常类名会丢掉根因（实测一次 150s 超时被包装成无消息的 `RuntimeError`，
+    报告里只剩 `RuntimeError`，无法定位）。故把 `__cause__`/`__context__` 链一并带上，
+    消息取**最内层**（根因）的、压成单行并截断。
+    """
+    names: list[str] = []
+    root = exc
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        names.append(type(cur).__name__)
+        root = cur
+        cur = cur.__cause__ or cur.__context__
+    msg = " ".join(str(root).split())[:limit]
+    chain = "<-".join(names)
+    return f"{chain}: {msg}" if msg else chain
+
+
+def _judge_failure_note(exc: BaseException, limit: int = 200) -> str:
+    """失败备注：异常链 + **原始响应特征**（诊断为"空结构/截断"提供因果证据）。
+
+    instructor 的 `IncompleteOutputException` 等携带 `last_completion`＝原始响应；
+    只记异常类名会丢掉"模型到底回了什么"。这里把 `finish_reason` / 输出 token 数 /
+    原始输出片段一并带上（实测正是靠它区分出「空结构」与「截断」两种失败模式）。
+    """
+    note = _exc_chain_summary(exc)
+    completion = None
+    cur: BaseException | None = exc
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        completion = getattr(cur, "last_completion", None) or completion
+        if completion is not None:
+            break
+        cur = cur.__cause__ or cur.__context__
+    if completion is None:
+        return note
+    try:
+        choice = completion.choices[0]
+        usage = getattr(completion, "usage", None)
+        out_tokens = getattr(usage, "completion_tokens", None)
+        raw = getattr(getattr(choice, "message", None), "content", "") or ""
+        snippet = " ".join(raw.split())[:limit]
+        return (
+            f"{note} | finish_reason={getattr(choice, 'finish_reason', None)}"
+            f" out_tokens={out_tokens} raw={snippet!r}"
+        )
+    except Exception:  # noqa: BLE001  # 诊断信息尽力而为，绝不影响评测
+        return note
+
+
+async def _score_metric_with_retry(
+    metric_name: str, metric, row: dict
+) -> tuple[float, str]:
+    """打分；失败（**含超时**）重试至多 `settings.RAGAS_METRIC_MAX_ATTEMPTS` 次。
+
+    为何在**本层**重试而非 SDK 层：SDK 重试是静默的乘法放大；这里的重试可见（记
+    `metric retry` 事件）、有界、且逐指标独立。
+
+    **超时也重试**（2026-10-15 实测修订）：曾按"超时重试大概率再挂"的推测排除超时，
+    但实测抓到反例——一次 150s（read 上限）超时，重试后**成功恢复**，该指标拿到真值。
+    故改为任何失败都重试，最坏 2×read 上限/指标，换取不丢指标、均值偏差最小。
+
+    `error` 语义不变：**只在最终失败时非空**（重试成功不写 error，值即为真值）。
+
+    Returns:
+        `(值, 错误说明)`；成功时错误说明为 ""，最终失败时为 `"指标:异常类:消息"`。
+    """
+    attempts = max(1, settings.RAGAS_METRIC_MAX_ATTEMPTS)
+    last_exc: Exception = RuntimeError("unreachable")
+    for attempt in range(1, attempts + 1):
+        started = time.monotonic()
+        try:
+            res = await _score_metrics(metric_name, metric, row)
+        except Exception as exc:  # noqa: BLE001  # 失败可见，不吞
+            last_exc = exc
+            # 每次**尝试**都留痕（含 q_index + 耗时 + 原始响应特征），
+            # 使「哪题/哪个指标/第几次/耗时/原因」可在日志里串成链
+            core_logging.log_event(
+                Event.JUDGE_CALL,
+                metric=metric_name,
+                q_index=row.get("q_index"),
+                trace_id=row.get("trace_id"),
+                attempt=attempt,
+                seconds=round(time.monotonic() - started, 1),
+                ok=False,
+                note=_judge_failure_note(exc),
+            )
+            if attempt >= attempts:
+                break
+            core_logging.log_event(
+                Event.METRIC_RETRY,
+                metric=metric_name,
+                q_index=row.get("q_index"),
+                trace_id=row.get("trace_id"),
+                reason=_exc_chain_summary(exc, 120),
+            )
+            await asyncio.sleep(0.5 * attempt)  # 轻量线性退避
+            continue
+        core_logging.log_event(
+            Event.JUDGE_CALL,
+            metric=metric_name,
+            q_index=row.get("q_index"),
+            trace_id=row.get("trace_id"),
+            attempt=attempt,
+            seconds=round(time.monotonic() - started, 1),
+            ok=True,
+            note="",
+        )
+        return float(res.value), ""
+    # 记**异常链 + 根因消息**（单行、截断），便于从报告/CSV 直接定位根因
+    return float("nan"), f"{metric_name}:{_exc_chain_summary(last_exc)}"
+
+
 def run_evaluation(
     questions: list[str],
     ground_truth: list[str],
     answers: list[str],
     contexts: list[list[str]],
-    llm_wrapper: Any,
-    embeddings_wrapper: Any,
+    metrics: dict,
+    trace_ids: list[str],
 ) -> Any:
-    """运行 RAGAS 五指标评估.
+    """用现代 RAGAS 栈评五项指标，返回 `Experiment`（`.to_pandas()` 供产出层）。
 
-    每个指标内部会多次调用 LLM（非简单的一次一问一答），
-    因此评估耗时明显长于回答生成：
-      - faithfulness: 将回答拆成陈述句后逐句判断，N+1 次 LLM
-      - answer_relevancy: 从回答反向生成候选项问题，M 次 LLM
-      - context_recall: 逐条判断上下文是否覆盖参考答案，P 次 LLM
-      - context_precision: 逐条判断上下文是否与问题相关，Q 次 LLM
-      - answer_correctness: 比对回答与参考答案的事实/语义一致性，R 次 LLM
-    综上，评估阶段 LLM 调用次数 = 指标内调用次数 × 指标数 × QA 对数。
+    逐行独立打分：任一指标失败在该行记 `error`（design D2）——**不丢行、不写 NaN
+    冒充分数**。行级并发受 `RAGAS_EVAL_CONCURRENCY` 限制（design D5）。`arun` 按
+    **完成序** append，故每行带 `q_index` 并在返回前按它回排，保证与
+    questions/trace_ids 的下标对齐契约（写错 trace 是静默事故）。
 
     Args:
         questions: 问题列表
         ground_truth: 参考答案列表
         answers: 系统生成的回答列表
         contexts: 检索到的上下文列表
-        llm_wrapper: RAGAS 用 LLM 封装器（LangchainLLMWrapper 实例）
-        embeddings_wrapper: RAGAS 用 Embeddings 封装器（LangchainEmbeddingsWrapper 实例）
+        metrics: `eval_scoring.build_metrics` 产物的指标实例表
+        trace_ids: 每题 trace id（与 questions 同序）。写入行并透传到 `judge call`
+            等事件，使「报告 trace_id → 日志 → 底层模型原始响应」可串起来查。
 
     Returns:
-        包含评估结果的 EvaluationResult 对象（可调用 .to_pandas() 转为 DataFrame）
+        Experiment：行含五项指标 + `q_index` + `error`
     """
-    from datasets import Dataset
-    from ragas import evaluate
-    from ragas.metrics import (
-        AnswerCorrectness,
-        answer_relevancy,
-        context_precision,
-        context_recall,
-        faithfulness,
-    )
-    from ragas.run_config import RunConfig
+    from ragas import Dataset, experiment
 
-    data = {
-        "question": questions,
-        "answer": answers,
-        "contexts": contexts,
-        "ground_truth": ground_truth,
-    }
-    dataset = Dataset.from_dict(data)
-
-    core_logging.log_event(Event.EVALUATION_START, samples=len(questions))
-    # ragas.evaluate 无类型标注（推断为 Executor），实际返回 EvaluationResult，显式标注 Any
-    # 默认 RunConfig.timeout=180s，长答案的 faithfulness/answer_relevancy 会超时
-    # 返回 nan（raise_exceptions=False 吞掉 TimeoutError），故放宽到 10 分钟
-    result: Any = evaluate(
-        dataset=dataset,
-        llm=llm_wrapper,
-        embeddings=embeddings_wrapper,
-        metrics=[
-            context_precision,
-            context_recall,
-            faithfulness,
-            answer_relevancy,
-            AnswerCorrectness(),  # 实例化；类会 TypeError。列映射 ground_truth→reference
-        ],
-        raise_exceptions=False,
-        run_config=RunConfig(timeout=600),
-    )
-
-    df = result.to_pandas()
-    core_logging.log_event(Event.EVALUATION_DONE)
-    for col in df.columns:
-        if col in [
-            "faithfulness",
-            "answer_relevancy",
-            "context_recall",
-            "context_precision",
-            "answer_correctness",
-        ]:
-            core_logging.log_event(
-                Event.METRIC_MEAN,
-                metric=col,
-                mean=round(float(df[col].mean()), 4),
-            )
-
-    # 显式暴露被吞掉的指标失败：ragas executor 在 raise_exceptions=False 时
-    # 会把异常（如 API 额度耗尽 403 / 超时）转成 nan，并记入 "Exception raised
-    # in Job[...]" 日志。这里汇总提示，避免 nan 被静默带进报告。
-    metric_cols = [
-        "faithfulness",
-        "answer_relevancy",
-        "context_recall",
-        "context_precision",
-        "answer_correctness",
+    rows = [
+        {
+            "q_index": i,
+            "trace_id": t,
+            "question": q,
+            "answer": a,
+            "ground_truth": g,
+            "contexts": c,
+        }
+        for i, (q, a, g, c, t) in enumerate(
+            zip(questions, answers, ground_truth, contexts, trace_ids, strict=True)
+        )
     ]
-    nan_counts = {
-        col: int(df[col].isna().sum())
-        for col in metric_cols
-        if col in df.columns and df[col].isna().any()
-    }
-    if nan_counts:
-        core_logging.log_event(Event.METRICS_NAN, counts=nan_counts)
 
-    return result
+    dataset = Dataset(name="ragas_eval", backend="inmemory")
+    for r in rows:
+        dataset.append(r)
+
+    sem = asyncio.Semaphore(max(1, RAGAS_EVAL_CONCURRENCY))
+
+    @experiment()
+    async def _score_row(row: dict) -> dict:
+        out: dict = {"q_index": row["q_index"], "error": ""}
+        errors: list[str] = []
+        async with sem:
+            for name, metric in metrics.items():
+                value, err = await _score_metric_with_retry(name, metric, row)
+                out[name] = value
+                if err:
+                    errors.append(err)
+        out["error"] = ";".join(errors)
+        return out
+
+    core_logging.log_event(Event.EVALUATION_START, samples=len(rows))
+    view = asyncio.run(_score_row.arun(dataset))
+    core_logging.log_event(Event.EVALUATION_DONE)
+    # arun 按【完成序】append；按 q_index 回排后再交产出层，保证下标对齐契约
+    # （不对齐会把分数静默写到别的 trace 上）。
+    df = view.to_pandas().sort_values("q_index").reset_index(drop=True)
+    return _EvalResult(df)
 
 
 def save_results_csv(
@@ -523,8 +661,7 @@ def save_markdown_report(
     """将评估结果保存为 Markdown 摘要报告，与 CSV 同路径（.md 后缀）.
 
     均值行统一写「主分」（仅纯 KB 样本的指标均值），与 CSV / stdout / 门禁
-    口径一致；先按样本类别掩码，报告携带 sample_class / skipped 列。均值行下
-    附一行 Note，注明 DB（`eval_report`）为全量口径、与主分不是同一个数。
+    口径一致；先按样本类别掩码，报告携带 sample_class / skipped 列。
 
     Args:
         result: RAGAS evaluate() 返回的结果对象
@@ -567,13 +704,6 @@ def save_markdown_report(
     means = main_score_means(df)
     avg_parts = ", ".join(f"{m}={means[m]:.4f}" for m in actual_metrics if m in means)
     lines.append(f"**Main scores (pure-KB):** {avg_parts}")
-    lines.append("")
-    # 口径分叉提示：同一次运行的 DB 落库走全量口径（见 _save_eval_report），
-    # 与上方主分不是同一个数；此处显式标注，避免读者误以为二者应一致。
-    lines.append(
-        "**Note:** `eval_report` DB row stores full-sample (unmasked) `detail_json` /"
-        " `avg` / `overall_score`; they may differ from the pure-KB main scores above."
-    )
     lines.append("")
 
     os.makedirs(os.path.dirname(md_path) or ".", exist_ok=True)
@@ -688,22 +818,13 @@ def main() -> None:
         from src.cli.eval_ragas_generate import _ensure_vertexai_stub
 
         _ensure_vertexai_stub()
-        from datasets import Dataset  # noqa: F401
-        from ragas import evaluate  # noqa: F401
-        from ragas.embeddings import LangchainEmbeddingsWrapper
-        from ragas.llms import LangchainLLMWrapper
-        from ragas.metrics import (  # noqa: F401
-            answer_relevancy,
-            context_precision,
-            context_recall,
-            faithfulness,
-        )
 
         from src.agents.graph.workflow import build_graph
         from src.infra.db.engine import run_and_dispose
         from src.infra.db.vector_store import VectorStore
         from src.infra.llm.prompt_manager import PromptManager
-        from src.models import get_embeddings, get_judge_llm, get_llm, get_rerank
+        from src.infra.llm.provider import factory as _llm_factory
+        from src.models import get_judge_llm, get_llm, get_rerank
 
         core_logging.log_event(Event.RAG_COMPONENT_INIT)
         vector_store = VectorStore()
@@ -714,20 +835,18 @@ def main() -> None:
         #   评分，避免自我评价偏置；模型名空/None 时由 registry 兜底。
         llm = get_llm()  # 选手：生产模型（含生产 temperature）
         reranker = get_rerank()
-        embeddings = get_embeddings()
         judge_llm = get_judge_llm()
         core_logging.log_event(
             Event.EVAL_MODEL_INIT,
             sut=settings.LLM_MODEL,
             judge=judge_llm.model_name,
         )
-        # bypass_temperature：RAGAS 默认把裁判温度覆盖为 0.01，而部分推理模型
-        # （如百炼 kimi-k3）只接受 {0,1} 或省略，0.01 直接 400。置 True 后 RAGAS
-        # 不再改写，裁判才真正跑在 get_judge_llm 设定的 temperature=0。
-        llm_wrapper = LangchainLLMWrapper(
-            judge_llm, bypass_n=True, bypass_temperature=True
+        # 裁判与 embeddings 走现代 RAGAS 工厂：采样策略（temperature=0、不发
+        # top_p）与显式超时已在 build_ragas_judge / build_ragas_embeddings 内落定。
+        metrics = build_metrics(
+            _llm_factory.build_ragas_judge(),
+            _llm_factory.build_ragas_embeddings(),
         )
-        embeddings_wrapper = LangchainEmbeddingsWrapper(embeddings)
 
         # 构建 LangGraph
         prompt_manager = PromptManager()
@@ -772,8 +891,8 @@ def main() -> None:
             ground_truth,
             answers,
             contexts,
-            llm_wrapper,
-            embeddings_wrapper,
+            metrics,
+            trace_ids,
         )
 
         # 统一「主分」口径：报告 / stdout / 门禁都读同一张已掩码表（纯 KB 样本）。
@@ -815,7 +934,14 @@ def main() -> None:
 
         # 先落库：DB 写入不受第三方观测系统（Langfuse）影响，故排在回写之前
         # _save_eval_report 需要 questions 长度
-        _save_eval_report(kb_id, result, len(questions), output_path, retrieval_details)
+        _save_eval_report(
+            kb_id,
+            result.to_pandas(),
+            len(questions),
+            output_path,
+            retrieval_details,
+            sample_classes,
+        )
 
         # 观测旁路回写：排在落库之后、门禁之前（失败只记 warning，见 write_scores）
         _write_langfuse_scores(masked_df, trace_ids)
@@ -919,66 +1045,63 @@ def _build_eval_detail(
     return detail, avg
 
 
+def _eval_report_deps() -> tuple[Any, Any]:
+    """DB 落库依赖（独立函数便于测试替身注入）。"""
+    from src.infra.db.models.eval_report import EvalReportModel as EvalReportEntity
+    from src.services.app_service import AppService
+
+    return AppService(), EvalReportEntity
+
+
 def _save_eval_report(
     kb_id: str,
-    result,
+    df: pd.DataFrame,
     qa_count: int,
     output_path: str,
     retrieval_details: list[list[dict]] | None = None,
+    sample_classes: list[str] | None = None,
 ) -> None:
-    """将 RAGAS 评估结果持久化到 eval_report 表.
+    """把评估结果持久化到 eval_report 表。
+
+    `overall_score` 统一到**主分口径**（纯 KB 五项均值，design D11），替换原先
+    「四项加权、未掩码」的旧口径；`passed` 取常量 `EVAL_PASS_THRESHOLD`。
+    传入 `sample_classes` 时先按样本类别掩码，使落库的逐题明细与各指标均值
+    同为主分口径。
 
     Args:
         kb_id: 知识库 UUID
-        result: RAGAS evaluate() 返回的结果对象
+        df: RAGAS 结果表（行序与 sample_classes 对齐）
         qa_count: QA 对数
         output_path: CSV 报告文件路径
         retrieval_details: 每 query 的检索明细（与 detail 数组按 q_index 对齐），
             传入后并入对应 detail_json 条目，供低分 query 下钻检索环节
+        sample_classes: 每题的样本类别；传入后先掩码再算主分与明细
     """
     try:
+        from src.cli import eval_scoring
         from src.infra.db.engine import run_and_dispose
-        from src.infra.db.models.eval_report import EvalReportModel as EvalReportEntity
-        from src.services.app_service import AppService
 
-        svc = AppService()
+        svc, eval_report_entity = _eval_report_deps()
+        if sample_classes is not None:
+            df = eval_scoring.apply_sample_masks(df, sample_classes)
+        detail, _avg = _build_eval_detail(df, qa_count, retrieval_details)
 
-        detail, avg = _build_eval_detail(
-            result.to_pandas(), qa_count, retrieval_details
-        )
-
-        faith = avg.get("faithfulness")
-        recall = avg.get("context_recall")
-        precision = avg.get("context_precision")
-        relevancy = avg.get("answer_relevancy")
-
-        weights = {
-            "faithfulness": 0.3,
-            "context_recall": 0.3,
-            "context_precision": 0.2,
-            "answer_relevancy": 0.2,
-        }
-        weighted_sum = 0.0
-        total_w = 0.0
-        for k, w in weights.items():
-            v = avg.get(k)
-            if v is not None:
-                weighted_sum += v * w
-                total_w += w
-        overall = weighted_sum / total_w if total_w > 0 else None
+        means = eval_scoring.main_score_means(df)
+        present = [v for v in means.values() if pd.notna(v)]
+        overall = float(sum(present) / len(present)) if present else None
 
         async def _do_insert():
-            entity = EvalReportEntity(
+            entity = eval_report_entity(
                 id=str(uuid.uuid4()),
                 kb_id=kb_id,
                 run_type="manual",
                 qa_count=qa_count,
-                faithfulness=faith,
-                answer_relevancy=relevancy,
-                context_precision=precision,
-                context_recall=recall,
+                faithfulness=means.get("faithfulness"),
+                answer_relevancy=means.get("answer_relevancy"),
+                context_precision=means.get("context_precision"),
+                context_recall=means.get("context_recall"),
                 overall_score=overall,
-                passed=overall >= 0.70 if overall is not None else False,
+                passed=overall is not None and overall >= EVAL_PASS_THRESHOLD,
                 report_path=output_path,
                 triggered_by=None,
                 detail_json=detail,

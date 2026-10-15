@@ -730,14 +730,18 @@ Success:
   "answer_relevancy": 0.88,
   "context_precision": 0.85,
   "context_recall": 0.87,
-  "overall_score": 0.89,
+  "answer_correctness": 0.83,
+  "overall_score": 0.87,
   "passed": true,
   "qa_count": 22,
-  "run_type": "manual"
+  "run_type": "manual",
+  "pass_threshold": 0.7
 }}
 ```
 
 无评估记录时返回 `{"code": "SUCCESS", "data": null}`。
+
+`answer_correctness` 在 `eval_report` 表无独立列，由 `detail_json` 逐题 `answer_correctness` 求均值（跳过缺键 / `NaN`），无可取值时为 `null`。`pass_threshold` 下发常量 `EVAL_PASS_THRESHOLD`（见 §3.6），前端据此判定通过，**不得硬编码 `0.7`**。
 
 ### 2.6 健康检查
 
@@ -902,17 +906,17 @@ CASCADE 级联删除：知识库 → 文档 → 对话历史。
 | `report.answer_relevancy` | float | 答案相关性 |
 | `report.context_precision` | float | 上下文精确率 |
 | `report.context_recall` | float | 上下文召回率 |
-| `report.overall_score` | float | 加权综合分（0.3×faith + 0.3×recall + 0.2×precision + 0.2×relevancy）；口径为**全量（未按样本分流）**，见下注 |
-| `report.passed` | bool | 是否达标（≥ 0.70） |
+| `report.overall_score` | float | **纯 KB 掩码后的五项指标均值**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`），与报告**主分**同口径 |
+| `report.passed` | bool | 是否达标（`overall_score >= EVAL_PASS_THRESHOLD`，`src/config/const.py`） |
 | `report.report_path` | str\|null | CSV 报告路径 |
-| `report.detail_json` | list\|null | 逐条 QA 得分；每条含 `q_index`、**全部 `RAGAS_METRIC_COLUMNS`**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`）与可选 `retrieval_details`（该 query 精排后 `[{source, score, kind}, ...]`）；**全量（未掩码）口径**，见下注。`NaN` **仅在 ragas 自身对该题该指标产出 NaN 时出现**（本路径不主动置 NaN）。注意 `NaN` 是 Python `json.dumps` 的非标准扩展，**严格 JSON 解析器（如浏览器 `JSON.parse`）会拒绝**；见 §8.4 |
+| `report.detail_json` | list\|null | 逐条 QA 得分；每条含 `q_index`、**全部 `RAGAS_METRIC_COLUMNS`**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`）与可选 `retrieval_details`（该 query 精排后 `[{source, score, kind}, ...]`）。明细保留**全部样本行**：`empty` 样本的三项 context 指标被掩码为 `NaN`，非 context 指标不按样本类别置空，故 `answer_correctness` 逐题值覆盖全部样本。`NaN` 亦在 ragas 自身对该题该指标产出 `NaN`（如超时/额度耗尽）时出现。注意 `NaN` 是 Python `json.dumps` 的非标准扩展，**严格 JSON 解析器（如浏览器 `JSON.parse`）会拒绝**；见 §8.4 |
 
-> **口径注（全量 vs 主分）**：本表落库路径读的是**未掩码**的 `result.to_pandas()`
-> 全样本，故 `detail_json` / `faithfulness` 等四列 / `overall_score` 均为
-> **全量（未按样本分流）**口径——`web`、`empty` 样本也计入。这与 CLI
-> 报告 / stdout / 门禁的「**主分**」（仅 `pure_kb` 样本，见 §8.4）**不是同一个数**。
-> 前端按 `overall_score` 解读时须知道二者存在口径差异。原「跳过值一律 `NaN`」的
-> 表述不准确：只有 ragas 自身返回 `NaN`（如指标超时/额度耗尽）时该键才为 `NaN`。
+> **口径注（主分）**：落库路径先按样本类别掩码（`apply_sample_masks`），
+> `overall_score` 取**仅 `pure_kb` 样本**的五项指标均值（`main_score_means` 后求均），
+> 与 CLI 报告 / stdout / 门禁的「**主分**」同口径（见 §8.4）；`passed` 取常量
+> `EVAL_PASS_THRESHOLD`（当前 0.70）。`detail_json` 保留全样本行、仅 `empty` 样本的
+> 三项 context 指标为 `NaN`，故按明细自行复算的均值口径可能与列字段略有出入——
+> 口径以列字段为准。
 
 ### 3.7 `EvalRepo.get_latest_report(kb_id) → EvalReportModel | None`
 
@@ -1346,8 +1350,8 @@ python -m src.cli.eval_ragas --list-kbs
 | context_precision | 0.80 |
 | context_recall | 0.70 |
 
-综合加权分 = 0.3×faithfulness + 0.3×context_recall + 0.2×context_precision + 0.2×answer_relevancy
-综合分 ≥ 0.70 视为通过。
+综合分 = 纯 KB 掩码后的五项指标均值（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`），与主分同口径（见 §8.4）。
+综合分 ≥ `EVAL_PASS_THRESHOLD`（当前 0.70）视为通过。
 
 门禁（`--gate`）判据在阈值之外还有两条前置：**纯 KB 样本数为 0** 或
 **检索覆盖率 < `EVAL_RETRIEVAL_COVERAGE_MIN`（0.5）** 直接判失败（杜绝"不检索
@@ -1393,16 +1397,15 @@ python -m src.cli.eval_ragas --list-kbs
 是跨进程契约，改动会静默改变 A/B 结论**。
 
 **落库（`eval_report` 表）**：`_build_eval_detail` 产出的逐题 `detail` 与各指标
-`avg` 均含**全部** `RAGAS_METRIC_COLUMNS`（含新增 `answer_correctness`）；表内
-四列指标、`overall_score` 加权公式与 `passed` 阈值沿用 §3.6 不变 ——
-`answer_correctness` **不进加权综合分**（表结构未扩展）。
+`avg` 均含**全部** `RAGAS_METRIC_COLUMNS`（含 `answer_correctness`）；落库前先按
+样本类别掩码（`apply_sample_masks`），表内四列指标与 `overall_score` 均为**仅
+`pure_kb` 样本**的指标均值（`main_score_means`），`passed` 取 `EVAL_PASS_THRESHOLD`
+—— 与 §3.6 一致。
 
-**注意 DB 与 stdout 口径分叉**：落库读的是**未掩码**的 `result.to_pandas()` 全
-样本，故 DB 的 `detail_json` / 四列指标 / `overall_score` 为**全量（未按样本分流）**
-口径（`web` / `empty` 样本也计入），**与 CSV / MD / stdout / 门禁的「主分」（仅
-`pure_kb`）不是同一个数**。二者同源于一次运行但分母不同；MD 报告在均值行下会
-输出一行 Note 标注此分叉。属已知取舍（Non-Goal：本次不改 `eval_report` 表语义），
-消费方勿把 `overall_score` 与 stdout 主分直接对比。
+**DB 与 stdout 同为「主分」口径**：落库读的是**已掩码**的表，DB 的四列指标与
+`overall_score` 同为**仅 `pure_kb` 样本**的指标均值，与 CSV / MD / stdout / 门禁的
+「主分」同口径，消费方可直接对比。`detail_json` 保留全样本行（仅 `empty` 样本的
+三项 context 指标为 `NaN`），按明细自行复算均值时口径可能与列字段略有出入。
 
 ### 8.5 宿主侧运行前提
 

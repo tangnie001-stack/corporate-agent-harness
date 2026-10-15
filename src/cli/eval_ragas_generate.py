@@ -22,6 +22,7 @@ from typing import cast
 
 from loguru import logger
 
+from src.cli.eval_self_contained import doc_exclusive_aliases, enforce_self_contained
 from src.config import RAGAS_DATA_DIR, RAGAS_DOC_WHITELIST, RAGAS_TESTSET_DIR
 from src.config.const import RAGAS_TEST_PERSONAS
 from src.core import logging as core_logging
@@ -215,6 +216,109 @@ def _load_latest_testset(
     return questions, ground_truth
 
 
+def _context_header(meta: dict) -> str:
+    """从分块元数据构造【公司名 · 报告期】锚点前缀（design D8 的 P1）。
+
+    RAGAS 出题 prompt 只收到 `page_content` + `themes`，而中文年报正文常自称
+    「本公司」、正文不出现公司全名 ⇒ 模型无实体可消解，产出「本报告期…」
+    这类题面不自足的题。故在送入出题前，把分块元数据里的公司名与报告期
+    前置进正文，给出题模型一个明确的实体锚点。（只影响出题用的 KG，
+    不动生产索引与评估检索栈。）
+
+    取值优先级：`company` → `source`（文件名兜底）；`report_period` →
+    `year` + `quarter`。两者皆无可用值时返回空串（不产生半截锚点）。
+
+    Args:
+        meta: 分块元数据字典（`document_metadata`）
+
+    Returns:
+        形如 `"【东软集团股份有限公司 · 2025年第一季度】\\n"` 的前缀；无可用字段时 ""
+    """
+    company = str(meta.get("company") or "").strip()
+    period = str(meta.get("report_period") or "").strip()
+    if not period:
+        year = str(meta.get("year") or "").strip()
+        quarter = str(meta.get("quarter") or "").strip()
+        period = f"{year}{quarter}"
+    if not company:
+        company = str(meta.get("source") or "").strip()
+
+    fields = [f for f in (company, period) if f]
+    if not fields:
+        return ""
+    return "【" + " · ".join(fields) + "】\n"
+
+
+def _build_company_aliases(kg) -> dict[str, set[str]]:
+    """从出题 KG 汇总「公司 → 别名集合」，供自足性门识别跨语言/简写公司名。
+
+    别名取自各节点的 `entities` / `themes`；跨文档通用词（如「人民币」「2024」）
+    由 `doc_exclusive_aliases` 的「只出现在单一文档」规则自动排除。
+
+    Args:
+        kg: 已应用 transforms 的 ragas `KnowledgeGraph`
+
+    Returns:
+        `{company: {alias, ...}}`，至少含 company 自身
+    """
+    by_company: dict[str, list[str]] = {}
+    for node in kg.nodes:
+        props = node.properties
+        meta = props.get("document_metadata") or {}
+        company = (meta.get("company") or "").strip()
+        if not company:
+            continue
+        tokens = by_company.setdefault(company, [])
+        tokens.extend(props.get("entities") or [])
+        tokens.extend(props.get("themes") or [])
+    return doc_exclusive_aliases(list(by_company.items()))
+
+
+def _make_generator(llm, embeddings):
+    """构造 TestsetGenerator，并带上自足性约束（design D8）。"""
+    from ragas.testset.synthesizers.generate import TestsetGenerator
+
+    from src.config.const import RAGAS_SELF_CONTAINED_HINT
+
+    return TestsetGenerator(
+        llm=llm, embedding_model=embeddings, llm_context=RAGAS_SELF_CONTAINED_HINT
+    )
+
+
+def _build_transforms(generator, use_filter: bool) -> list | None:
+    """出题 transforms：默认走官方全量转换链（已分块版）。
+
+    原实现手搓 5 个 transforms，**缺 `ThemesExtractor` 与
+    `CosineSimilarityBuilder`**，导致 `MultiHopAbstractQuerySynthesizer` 取不到
+    `summary_similarity` 聚类而被静默丢弃（design D8）。官方
+    `default_transforms_for_prechunked()` 含全部 7 步，且按 CHUNK 节点过滤，
+    契合本仓由分块构建的知识图谱（节点全为 `NodeType.CHUNK`）。
+
+    Args:
+        generator: TestsetGenerator 实例（提供 llm / embedding_model）
+        use_filter: True 时不设 transforms（交回 ragas 默认）
+
+    Returns:
+        transforms 列表；use_filter 为真时返回 None
+    """
+    if use_filter:
+        return None
+
+    from ragas.testset.transforms.default import default_transforms_for_prechunked
+
+    # ragas 的返回注解是 `Transforms`（含 `Parallel` 的联合类型），运行时确为列表
+    transforms = cast(
+        list,
+        default_transforms_for_prechunked(
+            llm=generator.llm, embedding_model=generator.embedding_model
+        ),
+    )
+    core_logging.log_event(
+        Event.TRANSFORMS_SETUP, steps=[type(t).__name__ for t in transforms]
+    )
+    return transforms
+
+
 def run_generate(
     kb_id: str,
     size: int,
@@ -283,7 +387,6 @@ def run_generate(
 
     import ragas
     from langchain_core.documents import Document as LCDocument
-    from ragas.testset.synthesizers.generate import TestsetGenerator
 
     from src.config import settings
     from src.models import get_embeddings
@@ -309,7 +412,8 @@ def run_generate(
             meta["parent_content"] = ""  # 清空原文，避免敏感信息泄漏
             langchain_chunks.append(
                 LCDocument(
-                    page_content=safe_content,
+                    # 前置【公司·报告期】实体锚点，使出题模型点名公司（design D8 的 P1）
+                    page_content=_context_header(meta) + safe_content,
                     metadata=meta,
                 )
             )
@@ -358,7 +462,7 @@ def run_generate(
     ragas_llm = _LLMWrapper(_langchain_llm, cache=_cache, bypass_n=True)
     embeddings_wrapper = _EmbeddingsWrapper(get_embeddings())
 
-    generator = TestsetGenerator(llm=ragas_llm, embedding_model=embeddings_wrapper)
+    generator = _make_generator(llm=ragas_llm, embeddings=embeddings_wrapper)
     # 固定人设：persona_list 非空时 ragas 会跳过其内置的随机 persona 生成步
     # （见 const.RAGAS_TEST_PERSONAS 注释说明的 KeyError 成因）。
     generator.persona_list = [
@@ -366,38 +470,9 @@ def run_generate(
     ]
 
     # ---- 4. 构建 transforms ----
-    # LLM 步骤: SummaryExtractor + NERExtractor = 2 次/节点
-    # 非 LLM 步骤: CustomNodeFilter + EmbeddingExtractor + OverlapScoreBuilder
-    transforms: list | None = None
-    if not use_filter:
-        from ragas.testset.graph import NodeType
-        from ragas.testset.transforms.extractors import (
-            EmbeddingExtractor,
-            SummaryExtractor,
-        )
-        from ragas.testset.transforms.extractors.llm_based import NERExtractor
-        from ragas.testset.transforms.filters import CustomNodeFilter
-        from ragas.testset.transforms.relationship_builders import OverlapScoreBuilder
-
-        def _filter_chunks(node):
-            return node.type == NodeType.CHUNK
-
-        transforms = [
-            CustomNodeFilter(llm=generator.llm, filter_nodes=_filter_chunks),
-            SummaryExtractor(llm=generator.llm, filter_nodes=_filter_chunks),
-            EmbeddingExtractor(
-                embedding_model=generator.embedding_model,
-                property_name="summary_embedding",
-                embed_property_name="summary",
-                filter_nodes=_filter_chunks,
-            ),
-            NERExtractor(llm=generator.llm, filter_nodes=_filter_chunks),
-            OverlapScoreBuilder(threshold=0.01),
-        ]
-        core_logging.log_event(
-            Event.TRANSFORMS_SETUP,
-            steps=[type(t).__name__ for t in transforms],
-        )
+    # 默认走官方全量链（7 步，含 ThemesExtractor / CosineSimilarityBuilder）；
+    # use_filter 时交回 ragas 默认（不设 transforms）。
+    transforms: list | None = _build_transforms(generator, use_filter)
 
     # ---- 5. 构建知识图谱（支持中断恢复） ----
     from ragas.run_config import RunConfig
@@ -469,6 +544,23 @@ def run_generate(
     samples_list = testset.to_list()
     # 校对乱码/错别字问题（同音字导致检索命中率下降）
     samples_list = _clean_garbled_questions(samples_list, _langchain_llm)
+
+    # 自足性门（design D8 的 P2）：题面须点名其上下文里的公司；
+    # 未点名但上下文只涉及一家公司 → 保义改写；多公司无唯一实体 → 丢弃。
+    total_samples = len(samples_list)
+    samples_list, dropped_samples = enforce_self_contained(
+        samples_list, _build_company_aliases(kg)
+    )
+    if dropped_samples:
+        for sample, reason in dropped_samples:
+            print(f"  ⚠ 自足性门丢弃：{reason}｜{sample.get('user_input', '')[:40]}")
+        core_logging.log_event(
+            Event.TESTSET_SELF_CONTAINED_DROPPED,
+            kept=len(samples_list),
+            dropped=len(dropped_samples),
+            total=total_samples,
+        )
+
     version = _find_next_version(kb_id)
 
     output = {

@@ -361,86 +361,82 @@ class TestGenerateAnswers:
         assert trajectories[0]["iterations"] == 2
 
 
+class _FakeMetric:
+    """伪造的现代指标实例：`ascore` 返回固定 value，供 `run_evaluation` 单测。"""
+
+    def __init__(self, value: float = 1.0) -> None:
+        """保存固定返回值。
+
+        Args:
+            value: `ascore` 结果携带的分数。
+        """
+        self._value = value
+
+    async def ascore(self, **kwargs):
+        """返回带 `value` 属性的结果对象（不发起真实网络调用）。"""
+        metric = self
+
+        class _Result:
+            value = metric._value
+
+        return _Result()
+
+
+def _fake_metrics() -> dict:
+    """构造五指标假实例表（顺序与 `eval_scoring.build_metrics` 一致）。"""
+    return {
+        "faithfulness": _FakeMetric(),
+        "answer_relevancy": _FakeMetric(),
+        "context_precision": _FakeMetric(),
+        "context_recall": _FakeMetric(),
+        "answer_correctness": _FakeMetric(),
+    }
+
+
 class TestRunEvaluation:
-    """RAGAS 评估流程测试（全 mock）。"""
+    """RAGAS 评估流程测试（现代栈，传假 metrics）。"""
 
-    @patch("datasets.Dataset.from_dict")
-    @patch("ragas.evaluate")
-    def test_evaluation_runs(
-        self,
-        mock_evaluate: MagicMock,
-        mock_from_dict: MagicMock,
-    ) -> None:
-        """评估流程应正确调用 ragas.evaluate。"""
-        from ragas.metrics import (
-            AnswerCorrectness,
-            answer_relevancy,
-            context_precision,
-            context_recall,
-            faithfulness,
-        )
-
+    def test_evaluation_runs(self) -> None:
+        """评估流程应逐行产出五项指标分数。"""
         from src.cli.eval_ragas import run_evaluation
-
-        mock_result = MagicMock()
-        mock_result.to_pandas.return_value = MagicMock()
-        mock_evaluate.return_value = mock_result
-
-        llm_wrapper = MagicMock()
-        emb_wrapper = MagicMock()
 
         result = run_evaluation(
             ["Q1"],
             ["GT1"],
             ["A1"],
             [["ctx1"]],
-            llm_wrapper,
-            emb_wrapper,
+            _fake_metrics(),
+            ["trace_1"],
         )
 
-        mock_evaluate.assert_called_once()
-        # 验证 evaluate 传入了正确的参数（按 metric name 比较）
-        _, kwargs = mock_evaluate.call_args
-        assert kwargs["llm"] is llm_wrapper
-        assert kwargs["embeddings"] is emb_wrapper
-        actual_metric_names = {m.name for m in kwargs["metrics"]}
-        expected_metric_names = {
-            context_precision.name,
-            context_recall.name,
-            faithfulness.name,
-            answer_relevancy.name,
-            AnswerCorrectness().name,
-        }
-        assert actual_metric_names == expected_metric_names
-        # 形态断言：AnswerCorrectness.name 类/实例同为 "answer_correctness"，
-        # name 集合无法区分二者，故额外锁死必须传入实例（D3"必须实例化"）。
-        assert isinstance(kwargs["metrics"][-1], AnswerCorrectness)
-        assert result is mock_result
+        df = result.to_pandas()
+        assert len(df) == 1
+        assert list(df["q_index"]) == [0]
+        for col in (
+            "faithfulness",
+            "answer_relevancy",
+            "context_precision",
+            "context_recall",
+            "answer_correctness",
+        ):
+            assert df.loc[0, col] == 1.0
+        assert df.loc[0, "error"] == ""
 
-    @patch("datasets.Dataset.from_dict")
-    @patch("ragas.evaluate")
-    def test_evaluation_empty_contexts(
-        self,
-        mock_evaluate: MagicMock,
-        mock_from_dict: MagicMock,
-    ) -> None:
+    def test_evaluation_empty_contexts(self) -> None:
         """空上下文列表不应导致崩溃。"""
         from src.cli.eval_ragas import run_evaluation
-
-        mock_result = MagicMock()
-        mock_result.to_pandas.return_value = MagicMock()
-        mock_evaluate.return_value = mock_result
 
         result = run_evaluation(
             ["Q1"],
             ["GT1"],
             ["A1"],
             [[]],
-            MagicMock(),
-            MagicMock(),
+            _fake_metrics(),
+            ["trace_1"],
         )
-        assert result is mock_result
-        mock_evaluate.assert_called_once()
+        df = result.to_pandas()
+        assert len(df) == 1
+        assert df.loc[0, "context_recall"] == 1.0
 
 
 class TestSaveResults:
@@ -773,7 +769,7 @@ def test_save_eval_report_tolerates_nan_metric() -> None:
     ``except`` 吞掉、``eval_report`` 表静默无记录。修复后改走 ``pd.isna`` 守卫，
     ``insert_eval_report`` 必被调用，且该指标在 ``detail_json`` 中保留 NaN。
     """
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     import pandas as pd
 
@@ -788,8 +784,6 @@ def test_save_eval_report_tolerates_nan_metric() -> None:
             "answer_correctness": pd.Series([0.5, 0.4], dtype="object"),
         }
     )
-    mock_result = MagicMock()
-    mock_result.to_pandas.return_value = mock_df
 
     captured: dict = {}
 
@@ -819,7 +813,9 @@ def test_save_eval_report_tolerates_nan_metric() -> None:
         patch("src.services.app_service.AppService", return_value=_FakeSvc()),
         patch("src.infra.db.engine.run_and_dispose", side_effect=_fake_run_and_dispose),
     ):
-        _save_eval_report("kb1", mock_result, 2, "/tmp/unused.csv")
+        _save_eval_report(
+            "kb1", mock_df, 2, "/tmp/unused.csv", None, sample_classes=["pure_kb"] * 2
+        )
 
     assert "entity" in captured
     entity = captured["entity"]

@@ -9,7 +9,18 @@ def test_get_judge_llm_uses_judge_role(monkeypatch):
 
     monkeypatch.setattr(factory, "_REGISTRY", None)
     llm = get_judge_llm()
-    assert llm.model_name == "kimi-k3"  # registry.models[judge]
+    assert llm.model_name == "qwen3.8-flash"  # registry.models[judge]
+
+
+def test_get_judge_llm_carries_request_timeout(monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "k")
+    from src.config import settings
+    from src.infra.llm.provider import factory
+
+    monkeypatch.setattr(factory, "_REGISTRY", None)
+    llm = get_judge_llm()
+    # judge 客户端须带显式请求超时（思考模型无默认超时，缺省会无限挂起）
+    assert llm.request_timeout == settings.RAGAS_JUDGE_TIMEOUT
 
 
 def test_get_llm_defaults_to_registry(monkeypatch):
@@ -17,4 +28,4 @@ def test_get_llm_defaults_to_registry(monkeypatch):
     from src.infra.llm.provider import factory
 
     monkeypatch.setattr(factory, "_REGISTRY", None)
-    assert get_llm().model_name == "qwen3.8-flash"  # registry.models[main]
+    assert get_llm().model_name == "qwen3.7-flash"  # registry.models[main]

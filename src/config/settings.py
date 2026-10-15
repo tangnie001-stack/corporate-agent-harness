@@ -157,6 +157,43 @@ ASK_USER_MODE_DSH: bool = os.getenv("ASK_USER_MODE_DSH", "true").lower() in (
 # 与 RAGAS 评估模型无关。RAGAS_LLM_MODEL 经 LangchainLLMWrapper(bypass_n=True)
 # 包装后强制 n=1，推理模型（如 qwen3.7-max）可正常使用（已实测）。
 RAGAS_LLM_MODEL: str = os.getenv("RAGAS_LLM_MODEL", "")
+# RAGAS 裁判/embedding 客户端请求超时秒数（思考模型偶尔 >30s，超时不足会把分数变成失败）
+RAGAS_JUDGE_TIMEOUT: float = float(os.getenv("RAGAS_JUDGE_TIMEOUT", "300"))
+# ── RAGAS native 客户端（裁判 / embedding）的细粒度 HTTP 超时（秒）──
+# 依据（实测 5 题 69 次裁判调用）：p50=7.6s · p95=66s · p99=111s（111s ≈ 跑满 8192 输出上限）。
+# 原先平铺 300s：一次挂死调用白等 300s，再叠加 openai SDK 默认 2 次重试 = 900s 空转
+# （全量 21 题 91 分钟里约 80 分钟是这种空转）。细粒度后把死等压到 read 上限。
+# 参考：OpenAI SDK 默认 Timeout(connect=5, read=600, write=600, pool=600)；业界常见
+# 细粒度写法 connect=10 / read=60 / write=20 / pool=10。
+RAGAS_HTTP_TIMEOUT_CONNECT: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_CONNECT", "10"))
+# 正常调用 p99=111s ⇒ 取 150s（高于 p99 约 35%，误杀少；死等上限仅 150s）
+RAGAS_HTTP_TIMEOUT_READ: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_READ", "150"))
+RAGAS_HTTP_TIMEOUT_WRITE: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_WRITE", "30"))
+RAGAS_HTTP_TIMEOUT_POOL: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_POOL", "10"))
+# SDK 自身重试次数：**实测唯一的重试放大层**。默认 2 且会重试 APITimeoutError
+# （⊂ APIConnectionError）⇒ 一个逻辑调用实际发出 1+2=3 次 HTTP 请求。
+# 设 0：整条链路只发 1 次、不重试（实测 mock transport：max_retries=2 → 3 次；=0 → 1 次）。
+# 注：instructor.from_openai 无 max_retries 参数，其自身只做 1 次尝试、不叠加。
+RAGAS_HTTP_MAX_RETRIES: int = int(os.getenv("RAGAS_HTTP_MAX_RETRIES", "0"))
+# 单指标最大尝试次数（我们自己这层的有界重试，替代被关掉的 SDK 重试）。
+# 依据：失败主因是模型偶发「吐空结构」（`finish_reason=stop`、输出仅 148–215 token、
+# raw=`{"classifications":[{},{},{}]}`）——**快（7–16s）且随机**，重试成功率高；
+# 而不重试会把失败行踢出均值，造成乐观偏差 + 分母不齐。取 3（两次重试）。
+# 超时也重试（实测抓到一次 150s 超时重试后成功恢复）。代价上界 = attempts × read 上限。
+RAGAS_METRIC_MAX_ATTEMPTS: int = int(os.getenv("RAGAS_METRIC_MAX_ATTEMPTS", "3"))
+# 裁判单次生成的最大输出 token。RAGAS 内建默认仅 **1024**，会截断正常输出 → 必须上调。
+# 取 **8192** 而非 4096：两处独立观测都显示 8192 的失败**不多于** 4096
+# （A/B 探针 15 次/档：4096 失败 1、8192 失败 0；真实 21 题全量：4096 → 5/21、8192 → 3/21），
+# 且**均耗时无差异**（35s vs 33s；跑飞的调用本就稀有）⇒ 大 cap 不付时间代价。
+# 注意：cap 只是"缓解"——失败根因是模型偶发退化成吐空对象，与 cap 无关（详见 ADR-0024）。
+RAGAS_JUDGE_MAX_TOKENS: int = int(os.getenv("RAGAS_JUDGE_MAX_TOKENS", "8192"))
+# 裁判是否开思考。定稿 = **关**（2026-10-15 A/B：关思考显著更快；开思考在 21 题全量下
+# 出现 5/21 行 `Request timed out`、耗时 1h31m）。
+RAGAS_JUDGE_THINKING: bool = os.getenv("RAGAS_JUDGE_THINKING", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 # RAGAS 测试集生成条数
 RAGAS_TEST_SIZE: int = int(os.getenv("RAGAS_TEST_SIZE", "20"))
 # RAGAS 测试集存储目录

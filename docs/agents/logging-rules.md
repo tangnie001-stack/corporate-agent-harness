@@ -120,6 +120,19 @@ channel），业务不手写。channel 取值见 `src/config/const.py` 的 `Chan
 `iteration limit`（`AgentTurnBudget` 的 `after_model`）。**事件名与字段集不变**；
 `prompt messages` 仍由 `agent_node` 的首轮组装点发出（见上）。
 
+## 评测（RAGAS）观测事件
+
+裁判调用与出题的事件。字段明细同样以 `EVENT_SPECS` 为准，这里只登记**非代码可读的口径**：
+
+- `judge call`（cli / info）——裁判**每次尝试**记一条。`ok=false` 表示**该次尝试失败**，
+  不等于该指标最终失败（`error` 列只在最终失败时非空）；`note` 在失败时带**异常链 + 原始响应**
+  （`finish_reason` / 输出 token 数 / 输出片段），成功时为空串；`trace_id` 与报告同名，
+  用于把「报告行 → 该题日志 → 裁判调用 → 模型原始返回」串起来（排障见 `troubleshooting.md` §10）。
+- `metric retry`（cli / info）——单指标**重试**发生时记一条；`reason` 为异常链摘要
+  （`外层类<-根因类: 根因消息`），口径与 `judge call` 的 `note` 同源。
+- `testset self-contained dropped`（cli / warning）——出题后自足性门**丢弃**样本时记一条；
+  `kept` / `dropped` / `total` 为计数。仅在确有丢弃时出现（无丢弃不记）。
+
 ## 症状指标口径（度量层，非日志事件）
 
 以下三个指标由 `src/cli/symptom_metrics.py` 从**既有事件**聚合，**不新增事件、不改格式**；
