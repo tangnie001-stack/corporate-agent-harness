@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import httpx
 from langchain_community.document_compressors.dashscope_rerank import DashScopeRerank
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from openai import AsyncOpenAI
@@ -87,28 +88,43 @@ def build_embeddings() -> OpenAIEmbeddings:
     )
 
 
-def build_native_client(role: str, *, timeout: float | None = None) -> AsyncOpenAI:
+def build_native_client(role: str, *, read_timeout: float | None = None) -> AsyncOpenAI:
     """按角色构造 native `AsyncOpenAI` 客户端（供现代 RAGAS 工厂使用）。
 
     现代 `llm_factory` / `embedding_factory` 的 `client` 必填且须 native 客户端；
     端点/密钥取自既有 `resolve_role`（与 `build_chat` 同源），避免 CLI 重复解析。
 
+    **超时按细粒度区分**（design D6，2026-10-15）：`connect/read/write/pool` 各自取值，
+    并经自定义 `http_client` 交给 SDK（SDK 会采用该 timeout）。此前用平铺 300s，导致
+    一次挂死调用白等 300s，再叠加 SDK 默认 2 次重试 = 900s 空转。
+    `max_retries=0`：不让 SDK 与 instructor 的重试**乘法叠加**。
+
     Args:
         role: 角色名（main/classify/summary/judge/embedding）。
-        timeout: 请求超时秒数；None 时沿用客户端默认。
+        read_timeout: 覆盖 read 超时秒数；None 时取 `RAGAS_HTTP_TIMEOUT_READ`。
 
     Returns:
-        AsyncOpenAI：指向该角色最终生效端点的异步客户端。
+        AsyncOpenAI：指向该角色最终生效端点、带细粒度超时的异步客户端。
 
     Raises:
         KeyError: 角色未知或无可用模型（沿用 resolve_role 的 fail-fast）。
     """
     resolved = _resolve_model(role)
-    extra_kwargs = {}
-    if timeout is not None:
-        extra_kwargs["timeout"] = timeout
+    http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(
+            connect=settings.RAGAS_HTTP_TIMEOUT_CONNECT,
+            read=read_timeout
+            if read_timeout is not None
+            else settings.RAGAS_HTTP_TIMEOUT_READ,
+            write=settings.RAGAS_HTTP_TIMEOUT_WRITE,
+            pool=settings.RAGAS_HTTP_TIMEOUT_POOL,
+        )
+    )
     return AsyncOpenAI(
-        api_key=resolved.api_key, base_url=resolved.base_url, **extra_kwargs
+        api_key=resolved.api_key,
+        base_url=resolved.base_url,
+        http_client=http_client,
+        max_retries=settings.RAGAS_HTTP_MAX_RETRIES,
     )
 
 
@@ -122,10 +138,10 @@ def build_ragas_judge():
     - `max_tokens=RAGAS_JUDGE_MAX_TOKENS`（默认 8192）—— RAGAS 内建默认仅 **1024**，
       遇长上下文（年报表格 + 多 statements / TP-FP-FN 拆解）会被截断成
       `IncompleteOutputException`（实测 5 题中 2 题命中）。
-    - **保留思考**（`enable_thinking=True`）—— 同题 A/B 实测：思考 OFF 时截断消失但
-      转为 **schema 校验失败**（`InstructorRetryException`：`statements.0` 非对象 /
-      缺 `statement`，RAGAS 硬编码 instructor `Mode.JSON`，长 schema 下结构遵循度下降）；
-      思考 ON + 8192 预算同时覆盖「截断」与「形状」两因。
+    - **关闭思考**（`RAGAS_JUDGE_THINKING=false`，默认）—— 同题 A/B（2026-10-15）：
+      开思考 + 8192 无结构失败但 21 题全量 5/21 行 `Request timed out`、耗时 1h31m；
+      **关思考 + 8192 → 0 失败且快 9×**。结构化判定在 `temperature=0` 下不依赖 CoT。
+      （踩坑：一度把「关思考」误判为引发 schema 形状错误，实为 4096 截断，8192 可救。）
     - client 另设**显式超时**（思考模型慢，超时不足会把分数变成失败）。
 
     Returns:
@@ -134,7 +150,7 @@ def build_ragas_judge():
     from ragas.llms import llm_factory
 
     resolved = _resolve_model("judge")
-    client = build_native_client("judge", timeout=settings.RAGAS_JUDGE_TIMEOUT)
+    client = build_native_client("judge")
     return llm_factory(
         resolved.model,
         client=client,
@@ -142,7 +158,9 @@ def build_ragas_judge():
         top_p=None,
         max_tokens=settings.RAGAS_JUDGE_MAX_TOKENS,
         # 经 provider 层唯一产地构造思考参数（完整 dict），与 build_chat 同源
-        extra_body=thinking_extra_body(resolved.provider, True),
+        extra_body=thinking_extra_body(
+            resolved.provider, settings.RAGAS_JUDGE_THINKING
+        ),
     )
 
 
@@ -157,7 +175,7 @@ def build_ragas_embeddings():
     from ragas.embeddings.base import embedding_factory
 
     resolved = _resolve_model("embedding")
-    client = build_native_client("embedding", timeout=settings.RAGAS_JUDGE_TIMEOUT)
+    client = build_native_client("embedding")
     return embedding_factory("openai", model=resolved.model, client=client)
 
 

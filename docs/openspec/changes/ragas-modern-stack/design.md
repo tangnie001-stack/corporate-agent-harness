@@ -80,10 +80,16 @@
 0. **裁判模型 = `qwen3.8-flash`**（实测可靠，见「Resolved」）。主模型侧拟切 `qwen3.7-flash` ⇒ 裁判 ≠ 选手，无自评偏置。
 1. **选型判据 = 结构化输出可靠性**（活体抽样验证，不看「能不能调通」）。
 2. **采样** = `temperature=0` 且**不发 `top_p`**。
-3. **超时** = 思考模型须显式给足；失败按 D2 可见。
+3. **超时** = **细粒度分层 + 关闭 SDK 重试**（2026-10-15 定稿）。`httpx.Timeout(connect=10, read=150, write=30, pool=10)`，并把 SDK `max_retries=0`。失败按 D2 可见。
+   - **依据（实测 5 题 69 次裁判调用）**：p50=7.6s · p95=66s · p99=111s。`read=150s` 高于 p99 约 35%（误杀少），同时把单次死等上限从 300s 压到 150s。
+   - **为何必须细粒度**：原先是平铺 `timeout=300`。openai SDK 默认 `DEFAULT_TIMEOUT=Timeout(connect=5, read=600, write=600, pool=600)`、`DEFAULT_MAX_RETRIES=2`，且 **`APITimeoutError` ⊂ `APIConnectionError` 会被 SDK 重试** ⇒ 一次挂死调用 = 300s × (1+2) = **900s** 空转，再叠加 instructor 自身重试。实测 21 题 91 分钟里约 80 分钟是这种空转。
+   - **长尾的成因（非网关故障）**：全量 21 题的 16 次 `Request timed out` 全部发生在**思考 ON**；关思考后同一批调用 max=111s。`111s ≈ 跑满 max_tokens=8192`（≈74 tok/s）⇒ 长尾被**输出上限**顶住。⇒ 关思考 + 细粒度超时后：5 题 **0 失败**、max=60.9s、0 次 ≥150s。
+   - **排查记录（否定项，避免后人重走）**：① 今天 `429` **0 条**、40 并发全成功 ⇒ 非限流；② `build_ragas_judge()` 全程只构造一次 ⇒ 非连接池抖动；③ 最小复现同步 `embed_text` 在运行循环中正常（3.0s）⇒ RAGAS 的跨线程/跨循环桥接**未证实**为本次元凶（保留观察）。
 4. legacy 路径（迁移完成前）关闭 RAGAS 对裁判温度的**静默覆盖**（`bypass_temperature=True`）。
 5. **输出预算** = `max_tokens=8192`（`RAGAS_JUDGE_MAX_TOKENS`）。RAGAS 内建 `InstructorModelArgs.max_tokens=1024`，长上下文（年报表格 + 多 statements / TP-FP-FN 拆解）会被截断 → `IncompleteOutputException`（实测 v5 5 题中 2 题命中）。
-6. **思考档位 = 开**（保留）。同题 A/B：关思考快 8×（1 题 ~1.4min vs ~11min），但截断问题**转为 schema 校验失败**（`statements.0` 非对象 / 缺 `statement`）；且 RAGAS 对 openai 兼容端硬编码 instructor `Mode.JSON`，改 `Mode.TOOLS` 在思考 ON 下被百炼 400 拒（`tool_choice` 不支持 thinking）。⇒ **思考 ON + 8192 是唯一实测可靠组合**（硬题 2/2 失败 → 0/2），代价是慢。
+6. **思考档位 = 关**（`RAGAS_JUDGE_THINKING=false`）。同题 A/B 定稿（2026-10-15）：关思考 + `max_tokens=8192` → **0 失败**且快 9×（2 硬题 2m24s vs 开思考 22m16s）；开思考 + 8192 虽无结构失败，但 21 题全量 **5/21 行 `InstructorRetryException: Request timed out`**、耗时 1h31m。
+   - **踩坑记录（避免后人复踩）**：初测把「关思考」判为会引发 schema 形状错误，实为 **`max_tokens=4096` 截断**（JSON 被切半 → instructor 报成校验错误）——变量是预算不是思考。补 8192 后关闭思考 0 失败。
+   - **边界**：RAGAS 对 openai 兼容端硬编码 instructor `Mode.JSON`；`Mode.TOOLS` 在思考 ON 下被百炼 400 拒（`tool_choice` 不支持 thinking mode），故不换模式。
 
 **Why（证据见下节）**：
 - 采样：RAGAS 内建默认 `temperature=0.01, top_p=0.1`（legacy `langchain_llm.py:73` / 现代 `InstructorModelArgs`），而百炼部分模型**直接 400 拒绝**；`temperature=0` 也**本来就是裁判正解**（评测要可复现）。
@@ -182,8 +188,10 @@
 | `kimi-k3` 温度/`top_p` 接受度 | 仅接受 {0,1} 或省略；`0.01` / 任意 `top_p` → 400 |
 | 排除假设（空分类成因） | 与 `max_tokens`（1024/4096/8192）、instructor mode（JSON/MD_JSON/TOOLS）**无关**；**裸调真实 prompt 亦 3/3 返回 `{"classifications": []}`** ⇒ 模型行为 |
 | 现代 `llm_factory` 配置 | 默认（0.01/0.1）失败；`temperature=0` 失败（top_p 仍在）；**`temperature=0, top_p=None` 成功** |
-| 裁判思考档位 A/B + 输出预算（2026-10-15，v5 硬题 q2/q3） | 思考 ON+1024：`IncompleteOutputException`（截断）；思考 OFF+4096：`InstructorRetryException` **2/2**（schema 形状错误）；**思考 ON+8192：0/2 失败** ✅（但 ~11min/题）。`Mode.TOOLS` 在思考 ON 下被百炼 400 拒（`tool_choice` 不支持 thinking mode）。 |
+| 裁判思考档位 × 输出预算（2026-10-15，v5 硬题 q2/q3 + 21 题全量） | **思考 OFF + 8192 → 0 失败、2 硬题 2m24s** ✅（定稿）；思考 ON + 8192 → 硬题 0 失败但 21 题全量 **5/21 行 `Request timed out`**、1h31m；思考 OFF + 4096 → `InstructorRetryException` 2/2（实为**截断**，8192 可救）。`Mode.TOOLS` 在思考 ON 下被百炼 400 拒（`tool_choice` 不支持 thinking mode）。 |
 | 裁判是否默认开思考（探测） | `qwen3.8-flash` **默认开**：一句「只回复 OK」产生 `reasoning_tokens=51` 且带 `reasoning_content`；显式 `extra_body={"enable_thinking": False}` 可关（`completion_tokens=1`、无 `reasoning_content`）。 |
+| 裁判调用耗时分布（5 题 69 次，思考 OFF） | p50=7.6s · p90=29.4s · p95=66.2s · p99=110.9s · max=110.9s；2 次失败为 `IncompleteOutputException` 且耗时 102.8s/110.9s（**撞满 max_tokens=8192**，同款正常仅 5.8s/454 字符）。 |
+| 细粒度超时前后（5 题） | 旧（平铺 300s + SDK 重试 2）：失败 **3/69**、max 110.9s、墙钟 5m32s；新（connect10/read150/write30/pool10 + `max_retries=0`）：失败 **0/70**、max 60.9s、0 次 ≥150s、墙钟 4m59s。 |
 | 出题自足性（`--generate --size 20`，v3 / 21 条） | **12/21 题面不含公司名；这 12 条的 `reference_contexts` 全无公司名**；「上下文含公司名 ⇒ 题面必含」4/4 ⇒ 自足性由**上下文是否带实体**决定，与 `llm_context` 无关（D8） |
 
 ## Risks / Trade-offs
@@ -207,7 +215,7 @@
 
 1. **裁判模型**：定为 **`qwen3.8-flash`**。实测其结构化输出可靠（`context_recall` 空返回 0/10、`faithfulness` statements 空 0/5），而 `kimi-k3` 在 `context_recall` 上 9/10 返回空被否。主模型切 `qwen3.7-flash` **纳入本变更**（见 D10）⇒ **裁判 ≠ 选手，无自评偏置**。
 2. **`Dataset` 落盘**：定为 **`backend="inmemory"`**（不落任何目录），产物只走既有 `data/ragas/reports/`——见 **D4**。实测 `ragas.backends` 提供 `inmemory` / `local/csv` / `local/jsonl` / `gdrive` 四种。
-3. **裁判思考档位**：定为**开**（2026-10-15 经 A/B 定稿）。实施时的同题 A/B 见「证据」：关思考快 8× 但改为 schema 校验失败，且 TOOLS 模式与思考不兼容 ⇒ **开思考 + `max_tokens=8192`** 为唯一实测可靠组合。评测离线、调用量可控（20 题 × 5 指标），裁判质量是评测根基。若后续要对齐成本，可评估思考预算（`thinking_budget`）而非直接关思考。
+3. **裁判思考档位**：定为**关**（2026-10-15 经 A/B 定稿）。见「证据」：关思考 + `max_tokens=8192` → 0 失败且快 9×；开思考 + 8192 在 21 题全量下 5/21 行超时。评测离线、调用量可控，但思考带来的只是延迟与超时，结构化判定在 `temperature=0` 下不依赖 CoT。如需更高质量再评估思考预算（`thinking_budget`）。
 4. **rubric 类指标**：本次不做（见 D3），留待「可解释性」另案。
 
 ## Original Open Questions（存档）

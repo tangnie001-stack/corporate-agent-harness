@@ -159,10 +159,31 @@ ASK_USER_MODE_DSH: bool = os.getenv("ASK_USER_MODE_DSH", "true").lower() in (
 RAGAS_LLM_MODEL: str = os.getenv("RAGAS_LLM_MODEL", "")
 # RAGAS 裁判/embedding 客户端请求超时秒数（思考模型偶尔 >30s，超时不足会把分数变成失败）
 RAGAS_JUDGE_TIMEOUT: float = float(os.getenv("RAGAS_JUDGE_TIMEOUT", "300"))
+# ── RAGAS native 客户端（裁判 / embedding）的细粒度 HTTP 超时（秒）──
+# 依据（实测 5 题 69 次裁判调用）：p50=7.6s · p95=66s · p99=111s（111s ≈ 跑满 8192 输出上限）。
+# 原先平铺 300s：一次挂死调用白等 300s，再叠加 openai SDK 默认 2 次重试 = 900s 空转
+# （全量 21 题 91 分钟里约 80 分钟是这种空转）。细粒度后把死等压到 read 上限。
+# 参考：OpenAI SDK 默认 Timeout(connect=5, read=600, write=600, pool=600)；业界常见
+# 细粒度写法 connect=10 / read=60 / write=20 / pool=10。
+RAGAS_HTTP_TIMEOUT_CONNECT: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_CONNECT", "10"))
+# 正常调用 p99=111s ⇒ 取 150s（高于 p99 约 35%，误杀少；死等上限仅 150s）
+RAGAS_HTTP_TIMEOUT_READ: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_READ", "150"))
+RAGAS_HTTP_TIMEOUT_WRITE: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_WRITE", "30"))
+RAGAS_HTTP_TIMEOUT_POOL: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_POOL", "10"))
+# SDK 自身重试次数：默认 2 且会重试 APITimeoutError（⊂ APIConnectionError），与 instructor
+# 自身的重试叠加成**乘法**放大。设为 0，把重试收敛到 instructor 单层。
+RAGAS_HTTP_MAX_RETRIES: int = int(os.getenv("RAGAS_HTTP_MAX_RETRIES", "0"))
 # 裁判单次生成的最大输出 token。RAGAS 内建默认仅 1024，遇到长上下文（年报表格 +
 # 多 statements/TP-FP-FN 拆解）会被截断 → `IncompleteOutputException`。思考 ON 时
 # 思考 token 另占预算，故取 8192（实测：1024 截断 / 4096 仍偏紧）。
 RAGAS_JUDGE_MAX_TOKENS: int = int(os.getenv("RAGAS_JUDGE_MAX_TOKENS", "8192"))
+# 裁判是否开思考。定稿 = **关**（2026-10-15 A/B：关思考 + 8192 → 0 失败且快 9×；
+# 开思考 + 8192 无结构失败但会**超时**：21 题全量 5/21 行 `Request timed out`、耗时 1h31m）。
+RAGAS_JUDGE_THINKING: bool = os.getenv("RAGAS_JUDGE_THINKING", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 # RAGAS 测试集生成条数
 RAGAS_TEST_SIZE: int = int(os.getenv("RAGAS_TEST_SIZE", "20"))
 # RAGAS 测试集存储目录
