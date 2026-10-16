@@ -18,7 +18,7 @@
 - 检索：`TOP_K_RETRIEVAL=30` · `TOP_K_RERANK=5`
 - 评测并发：`RAGAS_EVAL_CONCURRENCY=5`（行级）
 - 测试集：`data/ragas/testset/testset_4a1dcb8bb340473c8149ead5b7f75873_v5.json`（21 条；四轮全量的题面集合已核对一致）
-- 主分口径：仅 `pure_kb` 样本的五项均值（`src/cli/eval_scoring.py`）
+- 主分口径：仅 `pure_kb` 样本的四项均值（`src/cli/eval_scoring.py`）
 - 门禁阈值：`faithfulness≥0.85` · `context_precision≥0.80` · `context_recall≥0.70` · `answer_relevancy≥0.85`
 
 ## 运行台账（全量 21 题）

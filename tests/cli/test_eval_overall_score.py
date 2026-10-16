@@ -1,4 +1,4 @@
-"""overall_score = 纯 KB 五项均值；passed 取单一常量。"""
+"""overall_score = 纯 KB 四项均值；passed 取单一常量。"""
 
 import pandas as pd
 
@@ -6,8 +6,8 @@ from src.cli import eval_ragas
 from src.config.const import EVAL_PASS_THRESHOLD
 
 
-def test_overall_score_is_pure_kb_five_metric_mean(monkeypatch):
-    """落库 overall_score 须为纯 KB 掩码后的五项均值，passed 由常量阈值派生。"""
+def test_overall_score_is_pure_kb_four_metric_mean(monkeypatch):
+    """落库 overall_score 须为纯 KB 掩码后的四项均值，passed 由常量阈值派生。"""
     captured = {}
 
     class _Svc:
@@ -29,11 +29,10 @@ def test_overall_score_is_pure_kb_five_metric_mean(monkeypatch):
             "answer_relevancy": [1.0, 0.0],
             "context_precision": [1.0, 0.0],
             "context_recall": [1.0, 0.0],
-            "answer_correctness": [1.0, 0.0],
             "error": ["", ""],
         }
     )
-    # 仅 pure_kb 行参与主分 → 五项均 1.0 → overall=1.0
+    # 仅 pure_kb 行参与主分 → 四项均 1.0 → overall=1.0
     eval_ragas._save_eval_report(
         "kb", df, 2, "r.csv", None, sample_classes=["pure_kb", "web"]
     )
