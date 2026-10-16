@@ -134,6 +134,8 @@ async def _answer_one_question(
     session_id: str,
     query: str,
     trace_id: str,
+    *,
+    callbacks: list | None = None,
 ) -> tuple[str, list[str], list[dict], list]:
     """对单个问题跑一次图，返回 (answer, contexts, retrieval_details, messages)。
 
@@ -151,6 +153,10 @@ async def _answer_one_question(
         (回答文本, 渲染后的上下文列表, 结构化检索明细, 状态中的消息列表)
     """
     langfuse_context.update_current_trace(input={"query": query}, session_id=session_id)
+    # 仅在显式传入 callbacks 时附加 config；否则不传（保持既有路径行为不变）
+    invoke_kwargs: dict[str, Any] = {}
+    if callbacks:
+        invoke_kwargs["config"] = {"callbacks": callbacks}
     final_state = await graph.ainvoke(
         {
             "kb_id": kb_id,
@@ -158,7 +164,8 @@ async def _answer_one_question(
             "query": query,
             "trace_id": trace_id,
             "_history": [],
-        }
+        },
+        **invoke_kwargs,
     )
     answer = final_state.get("answer", "")
     # 与生产 prompt（RAGContext.to_prompt_text）保持同一渲染格式，
@@ -187,6 +194,8 @@ async def _collect_one_question(
     query: str,
     trace_id: str,
     index: int,
+    *,
+    callbacks: list | None = None,
 ) -> tuple[str, list[str], list[dict], str, dict]:
     """对单个问题跑图，返回 (answer, contexts, details, sample_class, trajectory)。
 
@@ -221,6 +230,7 @@ async def _collect_one_question(
             # @observe 包装器在调用前取走 langfuse_observation_id（静态签名看不到），
             # 类型检查无法感知该 kwarg
             langfuse_observation_id=trace_id,  # type: ignore[reportCallIssue]
+            callbacks=callbacks,
         )
         sample_class = classify_sample(req_ctx.tool_contexts)
         trajectory = summarize_trajectory(messages)
@@ -314,6 +324,99 @@ async def generate_answers_and_contexts(
         retrieval_details,
         sample_classes,
         trajectories,
+    )
+
+
+def _build_behaviour_dataset(questions: list[str], ground_truth: list[str]):
+    """构造 DeepEval 数据集：Golden(input=题面, expected_output=参考答案)。
+
+    `expected_output` 供 `TaskCompletion` 判定任务是否完成；缺它会让该指标失真。
+    """
+    from deepeval.dataset import EvaluationDataset, Golden
+
+    return EvaluationDataset(
+        goldens=[
+            # pyright 误报 multimodal 缺失：deepeval 用位置参数 `Field(False)`，
+            # 插件不认位置默认值（运行时确有 default=False）
+            Golden(input=q, expected_output=g)  # type: ignore[reportCallIssue]
+            for q, g in zip(questions, ground_truth, strict=True)
+        ]
+    )
+
+
+async def generate_answers_and_contexts_with_behaviour(
+    graph: Any,
+    kb_id: str,
+    session_id: str,
+    questions: list[str],
+    ground_truth: list[str],
+    behaviour_metrics: list,
+    results_folder: str,
+) -> tuple:
+    """跑图循环由 `evals_iterator` 驱动（design D6 定案的唯一可用形态）。
+
+    两半缺一不可：① 循环体在 iterator 内（否则不评分）；② 分数事后从
+    `test_run_*.json` 回读（eval loop 用副本，`metric.score` 恒 None）。
+    **每题新建独立 `CallbackHandler`**（复用会串 trace）；**循环不得 break**
+    （generator 只有耗尽才落盘 JSON）。
+    """
+    from deepeval.evaluate.configs import DisplayConfig
+    from deepeval.integrations.langchain import CallbackHandler
+
+    ds = _build_behaviour_dataset(questions, ground_truth)
+    answers: list[str] = []
+    contexts: list[list[str]] = []
+    trace_ids: list[str] = []
+    retrieval_details: list[list[dict]] = []
+    sample_classes: list[str] = []
+    trajectories: list[dict] = []
+    handlers: list = []
+
+    for i, _golden in enumerate(
+        ds.evals_iterator(
+            metrics=behaviour_metrics,
+            display_config=DisplayConfig(
+                results_folder=results_folder, inspect_after_run=False
+            ),
+        )
+    ):
+        trace_id = f"eval_{uuid.uuid4().hex[:12]}"
+        trace_ids.append(trace_id)
+        handler = CallbackHandler()  # 每题独立实例
+        handlers.append(handler)
+        trace_token = current_trace_id.set(trace_id)
+        try:
+            (
+                answer,
+                ctx_list,
+                details,
+                sample_class,
+                trajectory,
+            ) = await _collect_one_question(
+                graph,
+                kb_id,
+                session_id,
+                questions[i],
+                trace_id,
+                i + 1,
+                callbacks=[handler],
+            )
+        finally:
+            current_trace_id.reset(trace_token)
+        answers.append(answer)
+        contexts.append(ctx_list)
+        retrieval_details.append(details)
+        sample_classes.append(sample_class)
+        trajectories.append(trajectory)
+
+    return (
+        answers,
+        contexts,
+        trace_ids,
+        retrieval_details,
+        sample_classes,
+        trajectories,
+        handlers,
     )
 
 
