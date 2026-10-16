@@ -230,10 +230,11 @@ LEXICAL_MIN_TOKEN_LEN = 2
 
 
 # ── 检索精排超时 ──
-# Reranker 精排总超时秒数：rerank 为同步 HTTP 调用（dashscope 无默认超时），
-# 在事件循环内直连会永久挂起阻塞整个 worker，故经 to_thread + wait_for 兜底；
-# 超时后降级为检索原始顺序（raw-order fallback），避免空结果触发 abstain
-RERANK_TIMEOUT = 5
+# 已迁至 `settings`（change timeout-and-degradation-hardening 的 P1）：
+#   内层 read 预算 `RERANK_TIMEOUT_READ`（5s，唯一预算，attempts=1 见 `RERANK_MAX_ATTEMPTS`）、
+#   外层 `wait_for` 兜底 `RERANK_OUTER_TIMEOUT`（6s，必须 > 内层）。
+# 原 `RERANK_TIMEOUT = 5` 已随该变更退役（P1 收口时清理）。
+# ⚠ 勿与事件枚举 `Event.RERANK_TIMEOUT`（"rerank timeout"）混淆 —— 那个仍在使用。
 
 
 # ── SSE 交互事件文案与 stage 标识 ──
