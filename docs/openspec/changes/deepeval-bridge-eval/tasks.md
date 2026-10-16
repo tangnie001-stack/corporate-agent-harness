@@ -27,6 +27,7 @@
 - [ ] 3.1 写失败测试：报告元数据含 `ragas` 版本、`deepeval` 版本、judge 模型、**温度档位说明（0.01 / 0.3，本项目不可控）**、`model=` 已显式传入的标记。
 - [ ] 3.2 实现：报告头与台账条目补齐上述字段；断言报告中 SHALL NOT 出现"裁判 temperature=0"表述。
 - [ ] 3.3 **框架内部调用的可观测性（D13）**：给裁判的 **`http_async_client`**（`httpx.AsyncClient`）挂 httpx **event hooks**，记录请求级日志（模型 / 耗时 / 状态码 / 请求体摘要 / **响应体摘要 + `finish_reason`**——主因失败是 HTTP 200 + 畸形响应体，只记请求与状态码会看不到）。**挂错字段 = 零触发**：`http_client` 只喂同步 client（langchain `chat_models/base.py:806`），ragas 走异步。**hook SHALL 为 `async def` 且用 `await response.aread()`**（异步 client 调 `await hook(response)`，`httpx/_client.py:1697`；同步 hook 会 `TypeError`；同步 `read()` 在异步流上抛 `RuntimeError`，`_models.py:944`）。**`trace_id` 以显式闭包绑定进 hook**（async def 内可闭包），SHALL NOT 依赖 contextvar（ragas `evaluate` 内部用自己的 `Executor` 线程池，不保证携带）；client 跨样本复用 ⇒ 绑到**可变证据桶**而非固定 `trace_id`（评分串行，安全）。**该日志只做留证**，SHALL NOT 用于 NaN 子分类。验收范围限「**经我们 `http_async_client` 发出的请求**」。
+- [ ] 3.3a **hook 冒烟断言（必做；方向相反的两条）**：跑 1 题桥度量（如 `RAGASFaithfulnessMetric`，真调裁判）断言 ① 响应 hook 触发 **> 0** 次、② hook 内 `await response.aread()` + `json.loads(body)` 成功且能取到 `finish_reason`、③ 指标有分；**并加负向用例**：只传 `http_client`（同步字段）时响应 hook 触发 **== 0**——把"挂错字段就零触发"钉成回归防线（实证见 `docs/tmp/deepeval-poc/RESULTS.md`「Hook 冒烟」：A 臂 4 事件 / B 臂 0 事件，2026-10-16）。
 - [ ] 3.4 跑通并提交。
 
 ## 4. 失败语义与主分口径（D4 / D7）

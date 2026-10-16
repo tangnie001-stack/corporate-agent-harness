@@ -601,6 +601,11 @@ NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提�
 - **WHEN** 审阅裁判客户端构造处
 - **THEN** 请求级日志 SHALL 挂在用于细粒度超时的**同一个 `http_async_client`**（`httpx.AsyncClient`）上，且 hook SHALL 为 `async def`；SHALL NOT 只挂在 `http_client`（同步路径，ragas 走异步、hooks 不会触发）
 
+#### Scenario: Hook wiring is proven by a smoke assertion (both directions)
+
+- **WHEN** 实施期跑 1 题真调裁判的桥度量（`RAGASFaithfulnessMetric` 等）
+- **THEN** SHALL 断言 ① 响应 hook 触发 **> 0** 次、且 hook 内 `await response.aread()` + `json.loads` 成功并能取到 `finish_reason`；**且** SHALL 有一条**负向**断言——只传 `http_client`（同步字段）时响应 hook 触发 **== 0**，把"挂错字段就零触发"钉成回归防线。**实测基线（2026-10-16，真 judge）**：A 臂（`http_async_client`）**4** 事件（2 请求 + 2 响应，均 `200` / `json_ok` / `finish_reason=['stop']`），B 臂（仅 `http_client`）**0** 事件，两臂指标分均 1.0 —— 即错误接线**不报错、只是静默失去全部可观测性与细粒度超时**。证据见 `docs/tmp/deepeval-poc/RESULTS.md`「Hook 冒烟」节。
+
 #### Scenario: A malformed 200 response is diagnosable from the logs
 
 - **WHEN** 裁判返回 HTTP 200 但响应体畸形（空结构 / 截断）
