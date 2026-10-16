@@ -180,6 +180,25 @@ class TestRerank:
         assert len(contexts) == 2
         assert [c.score for c in contexts] == pytest.approx([0.5, 0.1])
 
+    def test_rerank_single_attempt_budget(self, monkeypatch):
+        """rerank 只做 1 次尝试（D13）：内层 5s 才是真实上界，不会被退避叠加撞穿外层。
+
+        既有 `test_rerank_outer_budget_exceeds_inner` 只比较两个 settings 数值、测不到
+        attempts；本用例截获真实传给 `retry_policy.call_with_retry` 的关键字参数做行为级断言。
+        若 attempts>1，每次尝试 5s 再叠加 1s/2s 退避，内层最坏 ≈18s 远超外层 6s ⇒
+        外层先放弃、`to_thread` 线程仍跑到底（D13 点名要避免的形态）。
+        """
+        seen: dict = {}
+
+        def _fake_call(fn, *args, **kwargs):
+            seen.update(kwargs)
+            return fn(*args)
+
+        monkeypatch.setattr(retrieval.retry_policy, "call_with_retry", _fake_call)
+        results = [_cr("a", cid="c1", doc_id="d1")]
+        rerank_results("q", results, _mock_reranker([0.9]))
+        assert seen["attempts"] == 1
+
     def test_kb_construction_assigns_tier_zero(self):
         """KB 构造点（rerank_results）显式产出 T0（内部文档）。"""
         reranker = MagicMock()

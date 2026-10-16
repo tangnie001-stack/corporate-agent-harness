@@ -5,9 +5,9 @@ import hashlib
 
 from src.config import (
     HYBRID_SEARCH_ENABLED,
+    RERANK_MAX_ATTEMPTS,
     RETRY_BACKOFF_FACTOR,
     RETRY_INITIAL_INTERVAL,
-    RETRY_MAX_ATTEMPTS,
     RRF_K,
     RRF_TOP_N,
     TOP_K_RERANK,
@@ -172,14 +172,14 @@ def rerank_results(
             reranker.rerank,
             docs,
             query,
-            attempts=RETRY_MAX_ATTEMPTS,
+            attempts=RERANK_MAX_ATTEMPTS,
             initial_interval=RETRY_INITIAL_INTERVAL,
             backoff=RETRY_BACKOFF_FACTOR,
         )
     except Exception as e:  # noqa: BLE001
         log_event(
             Event.RERANK_FAILED,
-            attempts=RETRY_MAX_ATTEMPTS,
+            attempts=RERANK_MAX_ATTEMPTS,
             query=query,
             err=str(e),
         )

@@ -382,6 +382,9 @@ EMBEDDING_TIMEOUT_READ_INGEST: float = float(
 # rerank：内层唯一预算（外层 wait_for 见 RERANK_OUTER_TIMEOUT，必须 > 内层，D13）
 RERANK_TIMEOUT_READ: float = float(os.getenv("RERANK_TIMEOUT_READ", "5"))
 RERANK_OUTER_TIMEOUT: float = float(os.getenv("RERANK_OUTER_TIMEOUT", "6"))
+# rerank 只做 1 次尝试：它是每轮检索都调的高频路径，重试一次 5s 同步调用收益很小；
+# 且必须让「内层唯一预算（5s）」成为真实上界，否则外层 6s 会先放弃、线程跑到底（D13）。
+RERANK_MAX_ATTEMPTS: int = int(os.getenv("RERANK_MAX_ATTEMPTS", "1"))
 # 按角色查表；judge **不在表内**（其真源归评测链，D17）
 ROLE_TIMEOUT_READ: dict[str, float] = {
     "main": MAIN_TIMEOUT_READ,
