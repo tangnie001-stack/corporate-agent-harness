@@ -268,3 +268,5 @@ The n parameter must be 1 when enable_thinking is true
 **局限**：仍基于单题（1 个 toy 题）；`answer_relevancy` 在真实 21 题上的分布未测。若要据此改设计，建议在真实集上抽样复核。
 
 **脚本**：`/tmp/deepeval-poc-scripts/{answer_relevancy_rootcause.py,answer_relevancy_selfcontained.py}`（不入库）。
+
+**影响范围（已核源码）**：四项里**只有 `answer_relevancy` 会请求 `n>1`**（`strictness=3`，`_answer_relevance.py:142`）。`faithfulness`、`context_precision`、`context_recall` 的 `generate_multiple()`/`generate()` **均不传 `n`（默认 1）**（`_faithfulness.py:158/174`、`_context_precision.py:151`、`_context_recall.py:137`）⇒ **`enable_thinking=True` 恰好只打断 `answer_relevancy` 一个指标**。若将来确要开思考，最小代价路径是给该指标单独配 thinking 关的 judge（或把 `strictness` 降到 1，属改口径）。
