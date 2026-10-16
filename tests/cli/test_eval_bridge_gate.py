@@ -33,6 +33,16 @@ def test_nan_rate_at_or_below_threshold_does_not_fail(capsys):
     assert "NaN" in capsys.readouterr().out
 
 
+def test_nan_rate_exactly_at_threshold_passes(capsys):
+    df = _df(n_pure=20, n_nan=8)  # 8/80 = 10.0% == 阈值 ⇒ 不判失败
+
+    with pytest.raises(SystemExit) as e:
+        check_gate(df, questions=["q"] * 20)
+
+    assert e.value.code == 0, "NaN 率恰等于阈值时不得判失败（> 才失败，== 通过）"
+    assert "NaN" in capsys.readouterr().out
+
+
 def test_nan_rate_above_threshold_fails_and_hints_escape_hatch(capsys):
     df = _df(n_pure=20, n_nan=9)  # 9/80 = 11.25% > 10%
 
