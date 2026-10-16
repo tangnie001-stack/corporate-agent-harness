@@ -66,7 +66,7 @@
 **桥特有条款（`NaN` 只分「掩码」与「非掩码」；**SHALL NOT 设计可归因的子分类**）**：
 
 - **(a) 掩码跳过型**：`empty` 样本的 context 指标被项目主动掩码为 `NaN`（`src/cli/eval_scoring.py:86-89`）。**天然不在纯 KB 分母里**（`empty` 不属于纯 KB 样本）⇒ 无需任何归因即被排除。
-- **(b) 指标产出型（合法缺值 **与** 裁判失败混在一起，出口不可区分）**：一方面 ragas 会**合法**返回 `NaN`（`faithfulness` 在答案无可校验陈述时，`ragas/metrics/_faithfulness.py:186-192/211`；`answer_relevancy` 在"生成问题全空"时，`_answer_relevance.py:118-127`）；另一方面桥调 `ragas.evaluate(...)` 时**未传 `raise_exceptions`**、ragas 该参数**默认 `False`**（`ragas/evaluation.py:68/344`），`ragas/executor.py:64-84` 对**任何** `Exception` 都 `return np.nan` ⇒ **超时 / 429 / 403 / 连接失败 / 输出不可解析**等失败也被吞成 `NaN`，且**桥不向上抛异常**。
+- **(b) 非掩码型（=「指标产出型」：合法缺值 **与** 裁判失败混在一起，出口不可区分）**：一方面 ragas 会**合法**返回 `NaN`（`faithfulness` 在答案无可校验陈述时，`ragas/metrics/_faithfulness.py:186-192/211`；`answer_relevancy` 在"生成问题全空"时，`_answer_relevance.py:118-127`）；另一方面桥调 `ragas.evaluate(...)` 时**未传 `raise_exceptions`**、ragas 该参数**默认 `False`**（`ragas/evaluation.py:68/344`），`ragas/executor.py:64-84` 对**任何** `Exception` 都 `return np.nan` ⇒ **超时 / 429 / 403 / 连接失败 / 输出不可解析**等失败也被吞成 `NaN`，且**桥不向上抛异常**。
 
 **SHALL NOT 依据请求级日志把 (b) 再切成"合法缺值"与"裁判失败"（前稿方案已否决）**：桥把每个指标压成**一个 `float`**（`deepeval/metrics/ragas.py:92-97` 的 `scores[name][0]`），返回值不可判别；而唯一的旁证——HTTP 200 的 OpenAI envelope——**永远是合法 JSON**，主因失败（截断 / 垃圾内容）与"生成问题全空"在 HTTP 层与正常完成**同形**（2xx + `finish_reason=stop`）⇒ 该分类**不可实现**，做了只会把主因失败误判为"合法缺值"而放过（正是本次整改要根除的错）。
 
