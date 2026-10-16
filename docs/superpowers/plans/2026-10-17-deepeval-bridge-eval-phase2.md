@@ -499,16 +499,16 @@ async def test_each_question_gets_its_own_handler(monkeypatch):
     # 模块属性会 AttributeError（那里没有这个名字）。
     monkeypatch.setattr("deepeval.integrations.langchain.CallbackHandler", _H)
 
-    # 用假 dataset 替换 evals_iterator 的来源（只验驱动形态，不出分）
-    class _FakeIterator:
-        def __iter__(self):
+    # 假 dataset **必须实现 `evals_iterator`**（实现驱动的是它，不是 `__iter__`）
+    class _FakeDataset:
+        def evals_iterator(self, *, metrics, display_config):  # noqa: ANN001, ANN003
             from deepeval.dataset import Golden
 
             for q in ("Q0", "Q1"):
                 yield Golden(input=q)
 
     monkeypatch.setattr(
-        eval_ragas, "_build_behaviour_dataset", lambda *a, **k: _FakeIterator()
+        eval_ragas, "_build_behaviour_dataset", lambda *a, **k: _FakeDataset()
     )
 
     await eval_ragas.generate_answers_and_contexts_with_behaviour(
@@ -547,9 +547,12 @@ async def _answer_one_question(
     callbacks: list | None = None,
 ) -> tuple[str, list[str], list[dict], list]:
 ```
-把 `graph.ainvoke(...)` 改为：
+把 `graph.ainvoke(...)` 改为（**只在有 callbacks 时才传 `config`**）：
 
 ```python
+    invoke_kwargs: dict = {}
+    if callbacks:
+        invoke_kwargs["config"] = {"callbacks": callbacks}
     final_state = await graph.ainvoke(
         {
             "kb_id": kb_id,
@@ -558,9 +561,13 @@ async def _answer_one_question(
             "trace_id": trace_id,
             "_history": [],
         },
-        config={"callbacks": callbacks} if callbacks else None,
+        **invoke_kwargs,
     )
 ```
+
+> ⚠️ **不要**写成 `config={"callbacks": callbacks} if callbacks else None`：那会变成
+> `ainvoke(state, config=None)`，而 `tests/cli/test_eval_ragas.py` 的既有 mock 是
+> `mock_ainvoke(state: dict)`（单参）⇒ `TypeError`。省略 `config` 才是"逐字保持改前行为"。
 
 3b. `_collect_one_question` 同样加 `*, callbacks: list | None = None` 并透传给 `_answer_one_question`。
 
