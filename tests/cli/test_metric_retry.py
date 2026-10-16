@@ -1,75 +1,23 @@
-"""单指标有界重试：可重试失败重试 1 次；超时类不重试（design D2 / D6）。"""
+"""`_exc_chain_summary` 与重试边界（attempts=1 退化为不重试）的收口测试。
+
+重试主语义（NaN 触发有界重试、成功不重试、耗尽记 error、429 跳过外层重试）
+已由 `tests/cli/test_eval_bridge_retry.py` 覆盖，此处不重复。
+"""
 
 import math
-
-import pytest
 
 from src.cli import eval_ragas
 
 
-class _Res:
-    def __init__(self, value: float) -> None:
-        self.value = value
+class _Nan:
+    """恒返回 NaN 的假指标，并计数 `measure` 调用次数。"""
 
+    def __init__(self) -> None:
+        self.calls = 0
 
-async def _run(monkeypatch, fail_times: int, exc: Exception):
-    """构造「前 fail_times 次抛 exc、之后成功」的假打分函数并调用被测函数。"""
-    calls = {"n": 0}
-
-    async def fake_score(name, metric, row):
-        calls["n"] += 1
-        if calls["n"] <= fail_times:
-            raise exc
-        return _Res(0.75)
-
-    monkeypatch.setattr(eval_ragas, "_score_metrics", fake_score)
-    value, err = await eval_ragas._score_metric_with_retry(
-        "faithfulness", object(), {"q_index": 1}
-    )
-    return value, err, calls["n"]
-
-
-@pytest.mark.asyncio
-async def test_retries_once_then_succeeds(monkeypatch):
-    """可重试失败 → 重试 1 次成功后返回真值，且 error 为空。"""
-    value, err, n = await _run(monkeypatch, fail_times=1, exc=ValueError("boom"))
-
-    assert value == 0.75
-    assert err == ""
-    assert n == 2
-
-
-@pytest.mark.asyncio
-async def test_timeout_is_also_retried(monkeypatch):
-    """超时也重试（实测 150s 超时重试后恢复，故不排除超时）。"""
-    value, err, n = await _run(
-        monkeypatch, fail_times=1, exc=TimeoutError("Request timed out.")
-    )
-
-    assert n == 2
-    assert value == 0.75
-    assert err == ""
-
-
-@pytest.mark.asyncio
-async def test_retry_exhausted_reports_failure(monkeypatch):
-    """非超时失败重试到上限仍失败 → 记 error（attempts=2 ⇒ 共 2 次）。"""
-    value, err, n = await _run(monkeypatch, fail_times=99, exc=ValueError("bad shape"))
-
-    assert n == eval_ragas.settings.RAGAS_METRIC_MAX_ATTEMPTS
-    assert math.isnan(value)
-    assert err.startswith("faithfulness:ValueError:")
-
-
-@pytest.mark.asyncio
-async def test_no_retry_when_attempts_is_one(monkeypatch):
-    """attempts=1 时退化为「不重试」，只尝试 1 次。"""
-    monkeypatch.setattr(eval_ragas.settings, "RAGAS_METRIC_MAX_ATTEMPTS", 1)
-    value, err, n = await _run(monkeypatch, fail_times=99, exc=ValueError("boom"))
-
-    assert n == 1
-    assert math.isnan(value)
-    assert err.startswith("faithfulness:ValueError:")
+    def measure(self, test_case):
+        self.calls += 1
+        return math.nan
 
 
 def test_exc_chain_summary_keeps_root_cause():
@@ -90,47 +38,15 @@ def test_exc_chain_summary_keeps_root_cause():
     )
 
 
-class _Msg:
-    def __init__(self, content: str) -> None:
-        self.content = content
+def test_no_retry_when_attempts_is_one(monkeypatch):
+    """attempts=1 时退化为「不重试」，只 measure 一次并记 error。"""
+    monkeypatch.setattr(eval_ragas.settings, "RAGAS_METRIC_MAX_ATTEMPTS", 1)
+    metric = _Nan()
 
+    value, err = eval_ragas._score_metric_with_retry(
+        "faithfulness", metric, object(), {"q_index": 0, "trace_id": "t0"}
+    )
 
-class _Choice:
-    def __init__(self, content: str, finish_reason: str) -> None:
-        self.message = _Msg(content)
-        self.finish_reason = finish_reason
-
-
-class _Usage:
-    completion_tokens = 148
-
-
-class _Completion:
-    def __init__(self, content: str, finish_reason: str = "stop") -> None:
-        self.choices = [_Choice(content, finish_reason)]
-        self.usage = _Usage()
-
-
-class _Incomplete(RuntimeError):
-    """模拟 instructor 的 IncompleteOutputException：带 last_completion 原始响应。"""
-
-    last_completion: object = None
-
-
-def test_judge_failure_note_carries_raw_response():
-    """诊断要点：必须带出**原始响应**，才能区分「空结构」与「截断」。"""
-    exc = _Incomplete("boom")
-    exc.last_completion = _Completion('{ "classifications": [ { }, { } ] }')
-
-    note = eval_ragas._judge_failure_note(exc)
-
-    assert "_Incomplete" in note
-    assert "finish_reason=stop" in note
-    assert "out_tokens=148" in note
-    assert "classifications" in note
-
-
-def test_judge_failure_note_without_completion_is_exc_chain_only():
-    """无原始响应时退化为异常链摘要，且不得抛错。"""
-    note = eval_ragas._judge_failure_note(ValueError("bad shape"))
-    assert note == "ValueError: bad shape"
+    assert metric.calls == 1
+    assert math.isnan(value)
+    assert err.startswith("faithfulness:")
