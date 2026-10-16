@@ -147,6 +147,8 @@
 - **用户文案** → `src/config/const.py`（`SSEInteractionTexts` 等已在用，`src/rag/retrieval.py` 即引用）。
 - **取值集合**：`reason` 取值与用户文案**不得由实现自造** —— 清单已落进规格 `specs/degradation-policy/spec.md` 的「降级原因与用户文案的取值集合」表（架构评审 Q3：不允许实现层发明用户可见行为）。
 
+**原因与文案解耦**：`reason` 表达**原因**（日志判据用），文案表达**交付产物**；只要本轮**已取得检索结果**，无论 `reason` 是可用性类还是 `llm_unavailable_no_context`，用户文案一律取 `llm_unavailable_with_context` 并附检索原文（唯一例外：流已开始输出 ⇒ 不重放原文）。
+
 **⚠️ 不得复用 `CAPABILITY_DEGRADED`**：它的现有语义是"`/skills`、`/agents` 清单读失败"（`src/api/capabilities.py`，字段 `resource`/`reason`）。复用到"依赖降级"会污染能力面板的语义。要么新开事件（如 `dependency degraded`），要么在 spec 里显式扩展语义并区分 resource 取值域。
 
 **先产出的中间物**：一张「降级清单」（依赖 → reason 枚举 → 是否用户可见 → 文案键）。没有它，D6 的动作与 D3 的 idle 文案都无处挂。

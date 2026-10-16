@@ -58,6 +58,8 @@ SHALL NOT 复用 `CAPABILITY_DEGRADED`（其语义为 `/skills`、`/agents` 能�
 
 **通道（评审 I2 + 第三轮 B1 —— 通道**在本规格内点名**，不留待实施自由发挥）**：本表「用户可见 = 是」的取值 SHALL 经**既有 `status` 事件 + 专用 `stage` 常量**送达（**SHALL NOT** 复用 `retrieve` / `web_search` 的 stage —— 会让前端触发正文/旁白重分类；与 `turn-provenance-observability` 的 `STAGE_*` 同构）。文案落 `src/config/const.py`，前端按 `stage` 分支呈现；前端 `error` 分支现**硬编码**文案、**不消费** `data.error`，须同步改造。
 
+**「有检索结果」优先于「按 `reason` 取文案」**：LLM 在首个 chunk 之前失败且本轮**已取得检索结果**时，无论 `reason` 是 `provider_unavailable` / `upstream_exhausted` / `vector_store_failed` / `llm_unavailable_no_context` 中的哪一个，用户可见文案 SHALL 取 `llm_unavailable_with_context` 一行，且 SHALL 附上检索原文；`reason` 字段 SHALL 仍记录**归类结果**（原因与文案在此**解耦**：`reason` 表达原因、文案表达交付产物）。**例外**：流已开始输出（`reason = llm_stream_interrupted`）时 SHALL NOT 附检索原文，文案取该行。
+
 #### Scenario: 取值不得自造
 - **WHEN** 任一降级发生
 - **THEN** 事件 `reason` 与用户可见文案均取自上表取值，不存在表外自造
@@ -73,6 +75,10 @@ SHALL NOT 复用 `CAPABILITY_DEGRADED`（其语义为 `/skills`、`/agents` 能�
 #### Scenario: 无"有文案无通道"的项
 - **WHEN** 检查本表「用户可见 = 是」的取值
 - **THEN** 每行都能指出其 SSE 通道与前端消费点，不存在"文案已定义但送不到用户"的项
+
+#### Scenario: 已归类的失败但已有检索结果
+- **WHEN** LLM 在首个 chunk 之前因上游可用性类错误（如 403）失败，且本轮已取得检索结果
+- **THEN** 用户 SHALL 收到检索原文与该行文案；`degraded` 事件的 `reason` SHALL 仍为该可用性类取值（不被文案改写）
 
 ### Requirement: 降级对用户可见，且不诱导无效重试
 

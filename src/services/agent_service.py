@@ -418,11 +418,15 @@ def _emit_degradation(
 ) -> None:
     """失败时的降级发射（P2 / D6 / D9）：判定 → 留痕 → 经 status + 专用 stage 送达。
 
-    动作在**本调用点**完成（D1 ③：不抽统一降级管理器）。三个分支见
-    `_degradation_reason`；其中"有检索原文"这一支额外做两件事：
-    先补发 citation（引用横条），再把原文作为 token 送进回答气泡 —— 并把
-    `partial_holder["text"]` 设为该原文，使异常收尾落 `interrupted` 且**有内容**
-    （spec 要求：不得落一条空内容却标记为正常完成的消息）。
+    动作在**本调用点**完成（D1 ③：不抽统一降级管理器）。`_degradation_reason` 判出
+    **原因**（`reason`，供日志判据）；**交付产物**由文案表达 —— 两者在此**解耦**：
+    「有检索结果」优先于「按 `reason` 取文案」，即只要本轮已取得检索结果，无论
+    `reason` 是可用性类还是 `llm_unavailable_no_context`，用户文案一律取
+    `llm_unavailable_with_context` 并附检索原文；唯一例外是流已开始输出
+    （`reason = llm_stream_interrupted`，此时 SHALL NOT 重放原文）。
+    「有检索原文」这一支额外做两件事：先补发 citation（引用横条），再把原文作为
+    token 送进回答气泡 —— 并把 `partial_holder["text"]` 设为该原文，使异常收尾落
+    `interrupted` 且**有内容**（spec 要求：不得落一条空内容却标记为正常完成的消息）。
 
     Args:
         manager: 事件缓冲（实时 SSE）
@@ -436,14 +440,25 @@ def _emit_degradation(
     reason = _degradation_reason(exc, ctx, produced)
     core_logging.log_event(Event.DEGRADED, reason=reason, err=str(exc))
 
+    # 「有检索结果」优先于「按原因取文案」（spec：已有检索结果 ⇒ 用户 SHALL 收到检索原文）：
+    # reason 记录**原因**（供日志判据），文案表达**交付产物** —— 两者在此解耦。
+    # 例外：流已开始输出（llm_stream_interrupted）不得重放原文。
+    deliver_original = reason != "llm_stream_interrupted" and bool(ctx.tool_contexts)
+    if deliver_original:
+        notice_text = SSEInteractionTexts.DEGRADATION_TEXTS[
+            "llm_unavailable_with_context"
+        ]
+    else:
+        notice_text = SSEInteractionTexts.DEGRADATION_TEXTS[reason]
+
     notice = SSEStatusEvent(
         stage=SSEInteractionTexts.STAGE_DEGRADED,
-        message=SSEInteractionTexts.DEGRADATION_TEXTS[reason],
+        message=notice_text,
     )
     _record_event(capture, notice)
     manager.add_event(session_id, notice.type, notice.payload_for_buffer())
 
-    if reason != "llm_unavailable_with_context":
+    if not deliver_original:
         return
 
     for index, context in enumerate(ctx.tool_contexts, start=1):
