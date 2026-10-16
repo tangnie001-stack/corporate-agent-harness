@@ -164,10 +164,10 @@
 | 每层都有超时 | Embedding / 向量库 / Rerank / LLM 均设显式超时（超时是熔断的前置） | 偏离：精排有工具层超时兜底（`RERANK_TIMEOUT=5s`，`src/agents/tools/rag_tools.py`），但 provider 层 `build_chat` / `build_embeddings` / `build_rerank` 超时**零配置**、吃 SDK 默认 ⇒ read 600s 平铺、最坏 1800s（`A-05` 2026-10-15 核实） | ❌（`A-05`） |
 | 限流（API 入口 + LLM 调用） | 入口限流防滥用、LLM 调用限流控成本 | 无 | ❌（`A-01`） |
 | 熔断（外部依赖） | Embedding / Rerank / LLM 各自熔断；连续失败 3~5 次打开、5 分钟后半开 | 无 | ❌（`A-02`） |
-| 分层降级 | Embedding 不可用→退关键词路；Rerank 不可用→用原始检索结果；主 LLM 不可用→切备用模型或返回原文 | 部分：**精排失败 / 超时已降级**为向量距离排序并记事件（`rerank_results` / `RERANK_TIMEOUT`）；LLM 无备用模型；Embedding 无降级 | ⚠️ 部分（`A-03`） |
+| 分层降级 | Embedding 不可用→退关键词路；Rerank 不可用→用原始检索结果；主 LLM 不可用→切备用模型或返回原文 | 部分：**精排失败 / 超时已降级**为向量距离排序并记事件（`rerank_results` / `RERANK_TIMEOUT`）；**LLM 失败 → 返回检索原文 + 告知**（**有意不做模型 fallback**，= ADR-0020 的直接应用，见 change `timeout-and-degradation-hardening` D9）；Embedding 失败退词法**待做** | ⚠️ 部分（`A-03`） |
 | 不重试所有错误 | 401 / 403 / 400 与输入校验类不重试；rate limit 等待后重试；timeout 有限重试后走降级 | 部分：有界重试已实现（`with_retry`，`RETRY_MAX_ATTEMPTS=3` + 指数退避），但**未按异常类型分流**——输入校验类仍重试（`A-03` 2026-10-15 实测）；RAGAS 侧已按此修（ADR-0024） | ⚠️ 部分（`A-03`） |
 | 重试用指数退避 + jitter | 初始 100ms、倍数 2、最大 5s，加随机 jitter 防惊群 | 偏离：`RETRY_INITIAL_INTERVAL=1.0s` / `RETRY_BACKOFF_FACTOR=2.0`，**无 jitter** | ⚠️ 偏离（`A-03`） |
-| 降级后告知用户 | 返回"服务降级中、结果可能不完整"，不返回通用 500 或空结果 | 部分：检索空由 abstain 文案承接；降级路径无统一的"降级中"提示 | ⚠️ 部分（`A-03`） |
+| 降级后告知用户 | 返回"服务降级中、结果可能不完整"，不返回通用 500 或空结果 | 部分：检索空由 abstain 文案承接；上游**可用性错误**（额度耗尽等）只给**通用**的"连接异常，请重试" —— 对"重试必然再失败"的错误属**误导向**，需按类别给可区分文案 | ⚠️ 部分（`A-03`） |
 | Chaos Engineering | 测试环境主动注入故障（停 Embedding、让 LLM 超时），验证降级路径生效 | 无 | ❌ |
 
 ## 12. 知识图谱
