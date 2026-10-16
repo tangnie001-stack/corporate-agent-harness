@@ -204,3 +204,31 @@ def test_model_price_is_env_driven(monkeypatch):
         monkeypatch.delenv("MODEL_INPUT_PRICE_PER_TOKEN")
         monkeypatch.delenv("MODEL_OUTPUT_PRICE_PER_TOKEN")
         importlib.reload(settings_module)
+
+
+def test_idle_threshold_defaults_are_below_transport_read():
+    """四档 idle 阈值默认值：两档都 < 传输层 read，且首事件前档不窄于事件后档。"""
+    import src.config.settings as _s
+
+    assert _s.MAIN_IDLE_FIRST_S == 60.0
+    assert _s.MAIN_IDLE_FIRST_THINKING_S == 150.0
+    assert _s.MAIN_IDLE_GAP_S == 30.0
+    assert _s.MAIN_IDLE_GAP_THINKING_S == 60.0
+    # 两档必须 < 传输层 read（否则传输层先触发、该档永不负责，D15）
+    assert _s.MAIN_IDLE_FIRST_S < _s.MAIN_TIMEOUT_READ
+    assert _s.MAIN_IDLE_FIRST_THINKING_S < _s.MAIN_TIMEOUT_READ
+    assert _s.MAIN_IDLE_GAP_S < _s.MAIN_TIMEOUT_READ
+    assert _s.MAIN_IDLE_GAP_THINKING_S < _s.MAIN_TIMEOUT_READ
+    # 首事件前含排队 + prefill（开思考时更久）⇒ 不窄于事件后的间隔档
+    assert _s.MAIN_IDLE_GAP_S < _s.MAIN_IDLE_FIRST_S
+    assert _s.MAIN_IDLE_GAP_THINKING_S < _s.MAIN_IDLE_FIRST_THINKING_S
+    _s.validate_timeout_nesting()  # 不抛即通过
+
+
+def test_idle_threshold_above_transport_read_raises(monkeypatch):
+    """env 把某档 idle 调到 ≥ 传输层 read ⇒ 启动期 fail-fast（该档否则永不负责）。"""
+    import src.config.settings as _s
+
+    monkeypatch.setattr(_s, "MAIN_IDLE_FIRST_S", 999.0)
+    with pytest.raises(RuntimeError, match="MAIN_IDLE_FIRST_S"):
+        _s.validate_timeout_nesting()

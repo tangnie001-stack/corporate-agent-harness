@@ -385,6 +385,19 @@ RERANK_OUTER_TIMEOUT: float = float(os.getenv("RERANK_OUTER_TIMEOUT", "6"))
 # rerank 只做 1 次尝试：它是每轮检索都调的高频路径，重试一次 5s 同步调用收益很小；
 # 且必须让「内层唯一预算（5s）」成为真实上界，否则外层 6s 会先放弃、线程跑到底（D13）。
 RERANK_MAX_ATTEMPTS: int = int(os.getenv("RERANK_MAX_ATTEMPTS", "1"))
+# ── 业务层「生成任务静默」兜底（P3 / D15；与传输层 read 是**两个层次**）──
+# 判据不同：read 看「字节间隔」，本组看「事件条数是否增长」（模型只吐 tool_call
+# 而不吐 token 时字节在动、用户无感）。四档 = {首事件前 / 首事件后} × {非思考 / 思考}；
+# 开思考时首个 chunk 显著更晚 ⇒ 思考档更宽（与 DELEGATE_MAX_IDLE_S 的既有做法同构）。
+# ⚠ 两档都必须 **小于** MAIN_TIMEOUT_READ，否则传输层先触发、该档永不负责（启动期断言）。
+MAIN_IDLE_FIRST_S: float = float(os.getenv("MAIN_IDLE_FIRST_S", "60"))
+MAIN_IDLE_FIRST_THINKING_S: float = float(
+    os.getenv("MAIN_IDLE_FIRST_THINKING_S", "150")
+)
+MAIN_IDLE_GAP_S: float = float(os.getenv("MAIN_IDLE_GAP_S", "30"))
+MAIN_IDLE_GAP_THINKING_S: float = float(os.getenv("MAIN_IDLE_GAP_THINKING_S", "60"))
+# 轮询间隔：最小档位是 30s，5s 轮询把"发现延迟"控制在阈值 +5s 内
+MAIN_IDLE_POLL_INTERVAL_S: float = float(os.getenv("MAIN_IDLE_POLL_INTERVAL_S", "5"))
 # 按角色查表；judge **不在表内**（其真源归评测链，D17）
 ROLE_TIMEOUT_READ: dict[str, float] = {
     "main": MAIN_TIMEOUT_READ,
@@ -396,7 +409,7 @@ ROLE_TIMEOUT_READ: dict[str, float] = {
 
 
 def validate_timeout_nesting() -> None:
-    """启动期 fail-fast：rerank 内层总预算必须**小于**外层 `wait_for`。
+    """启动期 fail-fast：① rerank 内层总预算必须**小于**外层；② 四档 idle 阈值必须小于传输层 read。
 
     三层超时必须**嵌套**（D13）：内层是客户端 `request_timeout`，外层是
     `asyncio.wait_for`。若内层总预算 ≥ 外层，外层会先放弃等待，而底层
@@ -405,8 +418,11 @@ def validate_timeout_nesting() -> None:
     `RERANK_MAX_ATTEMPTS` 调大（如 3 ⇒ ≈18s），该复合超时会原样回归，故在此
     启动期拦截（不随 `PROVIDER_VALIDATE` 开关跳过）。
 
+    业务层四档 idle 阈值（D15）与传输层 read 是**两个层次**：两档都必须
+    < `MAIN_TIMEOUT_READ`，否则传输层先触发、业务层该档永不负责。
+
     Raises:
-        RuntimeError: 内层总预算 ≥ 外层超时。
+        RuntimeError: 内层总预算 ≥ 外层超时；或某档 idle ≥ 传输层 read。
     """
     budget = RERANK_MAX_ATTEMPTS * RERANK_TIMEOUT_READ
     if budget >= RERANK_OUTER_TIMEOUT:
@@ -418,6 +434,19 @@ def validate_timeout_nesting() -> None:
             "否则外层 wait_for 先放弃等待、底层线程仍跑到底（看似降级成功、"
             "实则线程堆积）。请调小 RERANK_MAX_ATTEMPTS 或调大 RERANK_OUTER_TIMEOUT。"
         )
+    for label, value in (
+        ("MAIN_IDLE_FIRST_S", MAIN_IDLE_FIRST_S),
+        ("MAIN_IDLE_FIRST_THINKING_S", MAIN_IDLE_FIRST_THINKING_S),
+        ("MAIN_IDLE_GAP_S", MAIN_IDLE_GAP_S),
+        ("MAIN_IDLE_GAP_THINKING_S", MAIN_IDLE_GAP_THINKING_S),
+    ):
+        if value >= MAIN_TIMEOUT_READ:
+            raise RuntimeError(
+                f"idle 档位 {label}({value}s) 必须小于传输层 "
+                f"MAIN_TIMEOUT_READ({MAIN_TIMEOUT_READ}s)：否则传输层 read 会先触发，"
+                "该档永不负责（业务层本应是对用户负责的那一层，D15）。"
+                "请调小该档或调大 MAIN_TIMEOUT_READ。"
+            )
 
 
 # ====== 重试策略 ======
