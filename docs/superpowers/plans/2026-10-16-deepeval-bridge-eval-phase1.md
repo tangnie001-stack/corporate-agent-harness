@@ -1344,9 +1344,11 @@ git commit -m "feat(eval): 报告元数据（口径版本/温度档/NaN 计数/�
 ### Task 11: 现代栈测试的下线与替换（把阶段末的树刷绿）
 
 **Files:**
-- Delete: `tests/cli/test_eval_modern_stack.py`、`tests/cli/test_metric_retry.py`、`tests/infra/llm/provider/test_ragas_modern_factories.py`
+- Delete: `tests/cli/test_eval_modern_stack.py`、`tests/infra/llm/provider/test_ragas_modern_factories.py`
 - Modify: `tests/cli/test_eval_ragas.py`（若其断言依赖 `run_evaluation` 的 `@experiment` 形态则同步）
 - Test: 上述删除后的整批
+
+> **计划修订（T6 修一轮时已提前收口）**：`tests/cli/test_metric_retry.py` **不再属于本任务** —— T6 删除 `_judge_failure_note` 时按 spec「删除动作 SHALL 与受影响测试同一提交」一并清理了该文件（删 2 个引用已删 helper 的死测试、把其余用例改写成同步 NaN 判据）。
 
 **Interfaces:**
 - Consumes: Task 5 的 `score_rows` / `run_evaluation` 新签名
