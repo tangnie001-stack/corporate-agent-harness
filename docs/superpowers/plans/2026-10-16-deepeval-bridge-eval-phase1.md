@@ -91,14 +91,24 @@ def test_deepeval_env_defaults_are_set_on_settings_import():
     assert os.environ["DEEPEVAL_TELEMETRY_OPT_OUT"] == "1"
 
 
-def test_deepeval_import_does_not_load_project_dotenv():
-    """仓库根有 .env；DEEPEVAL_DISABLE_DOTENV=1 时 deepeval 不得把它注入 process env。"""
-    import src.config.settings  # noqa: F401
-    os.environ.pop("SENTINEL_FROM_DOTENV", None)
+def test_autoload_dotenv_is_disabled(tmp_path, monkeypatch):
+    """flag 为真时，`deepeval` 的 autoload 不得把 cwd 的 .env 注入 process env。
 
-    import deepeval  # noqa: F401
+    直接调 `deepeval.config.settings.autoload_dotenv()`（`deepeval/__init__.py:12`
+    在 import 时调的就是它），并在临时目录放一个真 .env + `chdir` 过去——
+    否则断言会变成"恒真"的空测试（仓库里没有 `SENTINEL_FROM_DOTENV` 这种键）。
+    """
+    import src.config.settings  # noqa: F401  （先设好 DEEPEVAL_DISABLE_DOTENV=1）
 
-    assert "SENTINEL_FROM_DOTENV" not in os.environ
+    (tmp_path / ".env").write_text("SDD_DOTENV_SENTINEL=1\n")
+    monkeypatch.chdir(tmp_path)
+    os.environ.pop("SDD_DOTENV_SENTINEL", None)
+
+    from deepeval.config.settings import autoload_dotenv
+
+    autoload_dotenv()
+
+    assert "SDD_DOTENV_SENTINEL" not in os.environ, "flag 为真时 autoload 必须早退"
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -168,8 +178,9 @@ git commit -m "feat(eval): ragas 下移 0.3.9 + 引入 deepeval 4.2.9，并兜�
 - Consumes: 无
 - Produces:
   - `class HookEvidence`：`events: list[dict]`、`reset()`、`mark(trace_id)`、`append(rec)`、属性 `status_codes: list[int]`、`non_2xx: bool`、`abnormal: bool`
-  - `def make_logging_client(*, timeout: httpx.Timeout, evidence: HookEvidence) -> httpx.AsyncClient`
+  - `def make_logging_client(*, timeout: httpx.Timeout, evidence: HookEvidence, transport: httpx.AsyncBaseTransport | None = None) -> httpx.AsyncClient`
   - ⚠️ **httpx 的 `AsyncClient` 没有 `max_retries` 参数**（实测 httpx 0.28.1 只有 `transport`）——SDK 侧重试由 Task 3 的 `build_chat(max_retries=…)` 单独控制，本模块不碰。
+  - `transport` 是**测试注入点**（`httpx.MockTransport`），生产路径传 `None`。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -183,21 +194,22 @@ from src.infra.llm.provider.http_observability import HookEvidence, make_logging
 TIMEOUT = httpx.Timeout(connect=1, read=1, write=1, pool=1)
 
 
-def _client_with(evidence: HookEvidence) -> httpx.AsyncClient:
+def _client_with(evidence: HookEvidence, handler) -> httpx.AsyncClient:
     """把被测 hooks 装到一个带 MockTransport 的 client 上（避免真出网）。"""
-    src = make_logging_client(timeout=TIMEOUT, evidence=evidence)
-    return httpx.AsyncClient(timeout=TIMEOUT, event_hooks=src.event_hooks)
+    return make_logging_client(
+        timeout=TIMEOUT, evidence=evidence, transport=httpx.MockTransport(handler)
+    )
 
 
 @pytest.mark.asyncio
 async def test_response_hook_reads_body_and_records_status():
     ev = HookEvidence()
     ev.mark("eval_deadbeef")
-    async with _client_with(ev) as c:
-        c._transport = httpx.MockTransport(
-            lambda req: httpx.Response(200, json={"choices": [{"finish_reason": "stop"}]})
-        )
-        await c.post("https://example.invalid/v1/chat/completions")
+    client = _client_with(
+        ev, lambda req: httpx.Response(200, json={"choices": [{"finish_reason": "stop"}]})
+    )
+    async with client:
+        await client.post("https://example.invalid/v1/chat/completions")
 
     assert ev.status_codes == [200]
     assert ev.non_2xx is False
@@ -214,9 +226,9 @@ async def test_non_2xx_and_malformed_body_are_abnormal():
         httpx.Response(429, json={"error": {"code": "Throttling"}}),
         httpx.Response(200, content=b"not-json"),
     ):
-        async with _client_with(ev) as c:
-            c._transport = httpx.MockTransport(lambda req, r=resp: r)
-            await c.post("https://example.invalid/v1/chat/completions")
+        client = _client_with(ev, lambda req, r=resp: r)
+        async with client:
+            await client.post("https://example.invalid/v1/chat/completions")
 
     assert ev.status_codes == [429, 200]
     assert ev.non_2xx is True
@@ -298,12 +310,18 @@ class HookEvidence:
         return False
 
 
-def make_logging_client(*, timeout: httpx.Timeout, evidence: HookEvidence) -> httpx.AsyncClient:
+def make_logging_client(
+    *,
+    timeout: httpx.Timeout,
+    evidence: HookEvidence,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> httpx.AsyncClient:
     """构造带请求级日志的异步 client（同时承载细粒度超时）。
 
     Args:
         timeout: 细粒度超时（connect/read/write/pool 四段）。
         evidence: 证据桶（每次请求/响应写入；失败只记 warning，绝不阻断评测）。
+        transport: 测试注入点（生产传 None，用 httpx 默认 transport）。
     """
 
     async def on_request(request: httpx.Request) -> None:
@@ -326,6 +344,7 @@ def make_logging_client(*, timeout: httpx.Timeout, evidence: HookEvidence) -> ht
     logger.debug("[provider] bridge judge http logging hooks attached")
     return httpx.AsyncClient(
         timeout=timeout,
+        transport=transport,
         event_hooks={"request": [on_request], "response": [on_response]},
     )
 ```
