@@ -163,6 +163,26 @@ def test_model_price_defaults_to_zero_meaning_unconfigured():
         assert reloaded.MODEL_OUTPUT_PRICE_PER_TOKEN == 0.0
 
 
+def test_rerank_timeout_nesting_defaults_pass():
+    """默认取值（1 × 5s < 6s）满足嵌套约束，启动期断言放行。"""
+    import src.config.settings as _s
+
+    _s.validate_timeout_nesting()  # 不抛即通过
+
+
+def test_rerank_timeout_nesting_violation_raises(monkeypatch):
+    """env 把 attempts 调大 ⇒ 内层总预算 ≥ 外层 ⇒ 启动期 fail-fast（D13）。
+
+    默认 attempts=1 使内层总预算（5s）成为真实上界；一旦被 env 调成 3，
+    复合超时（≈18s）会原样回归，而外层 6s 会先放弃、底层线程仍跑到底。
+    """
+    import src.config.settings as _s
+
+    monkeypatch.setattr(_s, "RERANK_MAX_ATTEMPTS", 3)
+    with pytest.raises(RuntimeError, match="RERANK_OUTER_TIMEOUT"):
+        _s.validate_timeout_nesting()
+
+
 def test_model_price_is_env_driven(monkeypatch):
     """单价可由环境变量覆盖，且为浮点。
 

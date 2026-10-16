@@ -394,6 +394,32 @@ ROLE_TIMEOUT_READ: dict[str, float] = {
     "rerank": RERANK_TIMEOUT_READ,
 }
 
+
+def validate_timeout_nesting() -> None:
+    """启动期 fail-fast：rerank 内层总预算必须**小于**外层 `wait_for`。
+
+    三层超时必须**嵌套**（D13）：内层是客户端 `request_timeout`，外层是
+    `asyncio.wait_for`。若内层总预算 ≥ 外层，外层会先放弃等待，而底层
+    `to_thread` 线程**不随 wait_for 取消**、仍跑到底 —— 表现为"看似降级成功、
+    实则线程堆积"。默认取值（1 × 5s = 5s < 6s）满足约束；一旦被 env 把
+    `RERANK_MAX_ATTEMPTS` 调大（如 3 ⇒ ≈18s），该复合超时会原样回归，故在此
+    启动期拦截（不随 `PROVIDER_VALIDATE` 开关跳过）。
+
+    Raises:
+        RuntimeError: 内层总预算 ≥ 外层超时。
+    """
+    budget = RERANK_MAX_ATTEMPTS * RERANK_TIMEOUT_READ
+    if budget >= RERANK_OUTER_TIMEOUT:
+        raise RuntimeError(
+            "rerank 三层超时未嵌套：内层总预算 "
+            f"RERANK_MAX_ATTEMPTS({RERANK_MAX_ATTEMPTS}) × "
+            f"RERANK_TIMEOUT_READ({RERANK_TIMEOUT_READ}s) = {budget}s "
+            f"必须小于外层 RERANK_OUTER_TIMEOUT({RERANK_OUTER_TIMEOUT}s)；"
+            "否则外层 wait_for 先放弃等待、底层线程仍跑到底（看似降级成功、"
+            "实则线程堆积）。请调小 RERANK_MAX_ATTEMPTS 或调大 RERANK_OUTER_TIMEOUT。"
+        )
+
+
 # ====== 重试策略 ======
 # 外部调用（DashScope / PostgreSQL / Redis）失败时的指数退避参数
 # 重试 3 次，初始间隔 1s，每次翻倍：1s → 2s → 4s

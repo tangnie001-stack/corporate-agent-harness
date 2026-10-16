@@ -27,6 +27,7 @@ from src.api import wecom as wecom_routes
 from src.config.alert import load_alert_config
 from src.config.prompts import validation
 from src.config.response_codes import Code
+from src.config.settings import validate_timeout_nesting
 from src.core import logging as core_logging
 from src.core.log_events import Event
 from src.core.logging import setup_logging
@@ -53,6 +54,10 @@ async def lifespan(app: FastAPI):
     启动阶段校验 provider 配置（`validate_config`）：解析每个角色的 provider/
     模型/密钥，缺失或未知即抛 `RuntimeError`，进程启动失败（fail-fast）。
 
+    启动阶段校验 rerank 三层超时嵌套（`validate_timeout_nesting`）：内层总预算
+    （`RERANK_MAX_ATTEMPTS × RERANK_TIMEOUT_READ`）须小于外层 `RERANK_OUTER_TIMEOUT`，
+    否则抛 `RuntimeError`，进程启动失败（fail-fast，D13）。
+
     启动阶段校验告警接入配置（`load_alert_config`）：解析 ALERT_TARGET 等非法即抛
     `ValueError`，进程启动失败（fail-fast），不在请求期降级成 500。未配置 token 属
     合法状态（不阻断启动）。
@@ -77,6 +82,9 @@ async def lifespan(app: FastAPI):
     core_logging.log_event(Event.PROMPT_VALIDATED, section_chars=section_chars)
     await _clear_stale_chat_locks()
     validate_config(_registry())
+    # rerank 三层超时嵌套的一致性断言（fail-fast，D13）：内层总预算必须 < 外层，
+    # 否则外层 wait_for 先放弃、底层线程跑到底。不随 PROVIDER_VALIDATE 开关跳过。
+    validate_timeout_nesting()
     # 告警接入配置启动期校验（fail-fast）：非法即抛，不留请求期降级分支
     load_alert_config()
     configure_tracing()

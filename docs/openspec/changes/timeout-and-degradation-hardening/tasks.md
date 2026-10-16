@@ -22,7 +22,7 @@
 - [ ] 1.1 新增无状态重试原语模块（`src/infra/retry_policy.py`）：从 `src/models.py` 迁出 `with_retry` 并改造 —— 异常分类、有界、含 jitter、**sync/async 两版**；唯一调用点一次改到位，**不保留别名转发**（D1/D5）。
 - [ ] 1.2 三个 `build_*` 显式传入超时与重试，SDK `max_retries=0`；取值按**角色**住 `settings`，**不进 `registry.yaml`**（D2/D11）。**生产侧用自有键名、不复用 `RAGAS_*`** —— 否则评测链改那些键会**静默改生产**（D2「键名归属」，第三轮 I6）。
 - [ ] 1.3 rerank 超时下沉到客户端（经 `client` 注入点传 `request_timeout`）；**内层 attempts=1 作唯一预算**，外层 `wait_for` 提到 **6s** 仅作双保险（D13 修订：三层超时必须**嵌套**，否则外层 5s 先放弃、底层线程仍跑到约 18s）。
-- [ ] 1.4 首版取值表按 `design.md` D11 落地（含 `main` 的**传输层单一 read=180s** 与**业务层两档阈值**、embedding 的查询/入库两档）；全部 env 可覆盖。**业务层两档还须各自按思考档分档**（首事件前 非思考 60s / 思考 150s；首事件后 30s / 60s），两档都须 **< 传输层 read**（第三轮 I1）；评测侧**显式覆写**角色超时并写入报告（D14 落地）。
+- [ ] 1.4 首版取值表按 `design.md` D11 落地（含 `main` 的**传输层单一 read=180s** 与**业务层两档阈值**、embedding 的查询/入库两档）；全部 env 可覆盖。**业务层两档还须各自按思考档分档**（首事件前 非思考 60s / 思考 150s；首事件后 30s / 60s），两档都须 **< 传输层 read**（第三轮 I1）；评测侧**已可由 env 覆写**（如 `MAIN_TIMEOUT_READ=…`）以适配离线批量；「覆写值写入报告」归评测链（`deepeval-bridge-eval`），**本变更不实现**。
 - [ ] 1.5 **主链路 LLM 的本层有界重试（D16）**：**模型对象级包装**（包 `build_chat` 产物、**转发 `bind_tools`**、守卫落在 **`_astream`** 内），**仅在首个 chunk 之前**重试、**已产出 chunk 即不重试**、每次重试留痕。**必须与 1.2 的"关 SDK 重试"成对**（不得只关不加）。⚠ `Runnable.with_retry` **明确不重试 stream**（`langchain_core/runnables/retry.py:378`）、循环 middleware 拿不到 chunk ⇒ 这两条更省的路都不通（评审 I1）。
 
 **验收（可当场核对）**
