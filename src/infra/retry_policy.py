@@ -26,6 +26,8 @@ from typing import TypeVar
 import httpx
 from loguru import logger
 
+from src.rag.errors import RetrievalUnavailableError
+
 T = TypeVar("T")
 
 # ── 不可重试：显式列出（便于阅读与测试；未知异常默认也不重试） ──
@@ -186,3 +188,60 @@ async def acall_with_retry(  # noqa: UP047 - 泛型原语需在 3.11 兼容签�
             _log_retry(name, attempt, attempts, exc, wait)
             await asyncio.sleep(wait)
     raise RuntimeError(f"{name} failed after {attempts} attempts")  # pragma: no cover
+
+
+def _find_status_code(exc: BaseException, max_depth: int = 5) -> int | None:
+    """沿异常链找 HTTP 状态码（自身 → `__cause__` / `__context__`，去重、限深）。
+
+    上游框架（langgraph / langchain）会把 provider 异常包装后再抛，
+    直接看最外层拿不到 `status_code`，故必须上溯。
+
+    Args:
+        exc: 起始异常
+        max_depth: 最大上溯层数（防御异常链成环）
+
+    Returns:
+        找到的状态码；未找到返回 None
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    depth = 0
+    while cur is not None and depth < max_depth:
+        if id(cur) in seen:
+            return None
+        seen.add(id(cur))
+        code = getattr(cur, "status_code", None)
+        if isinstance(code, int):
+            return code
+        cur = cur.__cause__ or cur.__context__
+        depth += 1
+    return None
+
+
+def classify_failure(exc: BaseException) -> str | None:
+    """把失败归类为**降级原因**（取值取自 spec 的取值集合表，不新造取值）。
+
+    与 `is_retryable` 的分工：后者回答"要不要重试"，本函数回答"这是什么失败"。
+    本函数**不决定动作**（动作留各调用点，design D1 ③），只给一个取值。
+
+    判据（按 HTTP 状态码；额度耗尽与鉴权失败**合并**为单一取值，其细分判据
+    已移出本变更、归评测链 `deepeval-bridge-eval`，见 design D5）：
+    - 401 / 403 → `provider_unavailable`；
+    - 429 / 5xx → `upstream_exhausted`（重试穷尽后可达此判定）；
+    - `RetrievalUnavailableError` → `vector_store_failed`；
+    - 其它 → `None`（未归类，调用方按通用失败处置）。
+
+    Args:
+        exc: 待归类的异常
+
+    Returns:
+        取值字符串（见上），或 None
+    """
+    if isinstance(exc, RetrievalUnavailableError):
+        return "vector_store_failed"
+    status = _find_status_code(exc)
+    if status in (401, 403):
+        return "provider_unavailable"
+    if status == 429 or (status is not None and 500 <= status <= 599):
+        return "upstream_exhausted"
+    return None
