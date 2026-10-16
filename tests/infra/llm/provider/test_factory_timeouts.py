@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from src.infra.llm.provider import factory
+from src.infra.llm.retrying_chat import RetryingReasoningChat
 
 
 def _read_of(client) -> float:
@@ -37,6 +38,20 @@ def test_judge_role_is_not_touched_by_this_change(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test")
     model = factory.build_chat("judge")
     assert model.http_async_client is None
+
+
+def test_judge_role_does_not_inherit_model_layer_retry(monkeypatch):
+    """judge 不在 ROLE_TIMEOUT_READ 表内 ⇒ 不得被纳入本层重试。
+
+    背景：本层重试（RetryingReasoningChat）的阈值为 3，若 judge 也走该类，
+    则最坏 3（本层）× 3（SDK 1+2）次 HTTP；而 judge 的真源归评测链（D17），
+    本变更必须让它**逐字**恢复改前行为（原 ReasoningPreservingChat + SDK 默认重试）。
+    """
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test")
+    model = factory.build_chat("judge")
+    assert not isinstance(model, RetryingReasoningChat)
+    assert model.max_retries is None, "judge 不得被注入 max_retries=0"
+    assert not hasattr(model, "model_retry_attempts"), "judge 不得带本层重试阈值字段"
 
 
 def test_build_embeddings_explicit_and_query_override(monkeypatch):

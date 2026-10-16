@@ -11,6 +11,7 @@ from openai import AsyncOpenAI
 from pydantic import SecretStr
 
 from src.config import settings
+from src.infra.llm.provider.chat import ReasoningPreservingChat
 from src.infra.llm.provider.spec import ProviderSpec, load_registry, resolve_role
 from src.infra.llm.provider.thinking import thinking_extra_body
 from src.infra.llm.retrying_chat import RetryingReasoningChat
@@ -76,7 +77,8 @@ def build_chat(
     if thinking is not None:
         extra_kwargs["extra_body"] = thinking_extra_body(resolved.provider, thinking)
     extra_kwargs.update(overrides)
-    # judge 不在 ROLE_TIMEOUT_READ 表内 ⇒ 不注入默认超时/client（其真源归评测链，D17）；
+    # 生产链路角色（在 ROLE_TIMEOUT_READ 表内）才注入本阶段默认超时/client；
+    # judge 等不在表内的角色不注入（其真源归评测链，D17）；
     # 调用方显式传入的 http_client / http_async_client 用 setdefault 语义，不被覆盖。
     if role in settings.ROLE_TIMEOUT_READ:
         tout = _http_timeout(settings.ROLE_TIMEOUT_READ[role])
@@ -85,13 +87,20 @@ def build_chat(
         extra_kwargs.setdefault("http_async_client", httpx.AsyncClient(timeout=tout))
         # spec：SDK 自动重试必须关闭（不得被 env / 调用方打开）
         extra_kwargs["max_retries"] = 0
-    # 本层有界重试（D16）：只在首个 chunk 之前重试 ⇒ return 换成 RetryingReasoningChat；
-    # 阈值由本层从 settings 注入，子类不读环境
+    base_kwargs = {
+        "model": model or resolved.model,
+        "api_key": SecretStr(resolved.api_key),
+        "base_url": resolved.base_url,
+        "reasoning_field": resolved.provider.reasoning_field,
+    }
+    # 本层有界重试（D16）仅对生产链路角色启用：只有它们在返回类上收口为
+    # RetryingReasoningChat，并注入本层阈值（子类不读环境）。judge 等角色**返回原
+    # ReasoningPreservingChat**、不带任何 model_retry_*，逐字恢复改前行为 —— 否则
+    # judge 会在「本层 3 次 × SDK 1+2 次」下放大成 9 次 HTTP（跨任务集成缺陷，D17）。
+    if role not in settings.ROLE_TIMEOUT_READ:
+        return ReasoningPreservingChat(**base_kwargs, **extra_kwargs)
     return RetryingReasoningChat(
-        model=model or resolved.model,
-        api_key=SecretStr(resolved.api_key),
-        base_url=resolved.base_url,
-        reasoning_field=resolved.provider.reasoning_field,
+        **base_kwargs,
         model_retry_attempts=settings.RETRY_MAX_ATTEMPTS,
         model_retry_initial_interval=settings.RETRY_INITIAL_INTERVAL,
         model_retry_backoff=settings.RETRY_BACKOFF_FACTOR,
