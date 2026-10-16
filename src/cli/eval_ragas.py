@@ -356,16 +356,13 @@ async def generate_answers_and_contexts_with_behaviour(
     ground_truth: list[str],
     behaviour_metrics: list,
     results_folder: str,
-    *,
-    evidence=None,
 ) -> tuple:
     """跑图循环由 `evals_iterator` 驱动（design D6 定案的唯一可用形态）。
 
     两半缺一不可：① 循环体在 iterator 内（否则不评分）；② 分数事后从
     `test_run_*.json` 回读（eval loop 用副本，`metric.score` 恒 None）。
     **每题新建独立 `CallbackHandler`**（复用会串 trace）；**循环不得 break**
-    （generator 只有耗尽才落盘 JSON）。`evidence` 为可选证据桶：循环体在
-    每题跑图前 `mark(trace_id)`（D13 行为判官调用归因），`None` 时不操作。
+    （generator 只有耗尽才落盘 JSON）。
     """
     from deepeval.evaluate.configs import DisplayConfig
     from deepeval.integrations.langchain import CallbackHandler
@@ -392,10 +389,6 @@ async def generate_answers_and_contexts_with_behaviour(
         handler = CallbackHandler()  # 每题独立实例
         handlers.append(handler)
         trace_token = current_trace_id.set(trace_id)
-        # D13：行为判官调用按题归因 —— 在跑图（触发 judge HTTP）前把证据桶
-        # 切到本题 trace_id；`HookEvidence.append` 据此给每条请求盖 trace_id。
-        if evidence is not None:
-            evidence.mark(trace_id)
         try:
             (
                 answer,
@@ -1036,14 +1029,13 @@ def main() -> None:
                 ground_truth,
                 behaviour_metrics,
                 behaviour_out,
-                evidence=judge_evidence,
             )
 
         core_logging.log_event(Event.VECTOR_STORE_CHECK, kb_id=kb_id)
         core_logging.log_event(Event.ANSWERS_GENERATION, count=len(questions))
-        # 本项目的唯一 asyncio.run 内驱动 `evals_iterator`，依赖 nest_asyncio.apply()
-        # —— DeepEval 内层 run_until_complete 在同一 loop 重入。这是进程级
-        # monkeypatch（改全局 asyncio 行为），仅因 eval CLI 是短命进程可接受。
+        # 本文件仅生成段这处 asyncio.run 驱动 `evals_iterator`，依赖
+        # nest_asyncio.apply()——DeepEval 内层 run_until_complete 在同一 loop 重入。
+        # 这是进程级 monkeypatch（改全局 asyncio 行为），仅因 eval CLI 是短命进程可接受。
         generated = asyncio.run(run_and_dispose(_ensure_store_and_generate()))
         if generated is None:
             core_logging.log_event(Event.VECTOR_STORE_EMPTY, kb_id=kb_id)
