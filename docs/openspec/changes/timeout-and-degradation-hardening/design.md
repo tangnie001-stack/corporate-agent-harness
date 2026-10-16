@@ -116,6 +116,13 @@
 | **不可重试** | 立即失败 | 输入校验类（`ValueError` 等，且**失败耗时 ≈ 0s**）、鉴权/权限（401/403）、请求格式（400/422） |
 | **可重试** | 有界 + 退避 + jitter | 超时、连接错误、429、5xx |
 
+**适用范围（必须写明，否则与在途 change 的口径看起来互相矛盾 —— 拉 dev-wsl 时发现）**：本表只约束**生产链路**（`main` / `classify` / `summary` / `embedding` / `rerank`）。**评测链的 429 / 403 口径归 `deepeval-bridge-eval`，与生产相反且各自成立**（依据 D17 的真源声明）：
+
+- **429**：评测链**不重试** —— ragas 框架层已对 `openai.RateLimitError`（= HTTP 429）重试 ≤10 次（`ragas/llms/base.py:325-335` 设 `exception_types`、`ragas/run_config.py:52` `max_retries=10`），外层再叠是 **10×3 放大**；而**生产链路没有框架层重试** ⇒ 必须由本层重试。
+- **403 额度类**：评测链**由外层重试**（ragas 不重试它，外层是**唯一**一层）；生产链路**不重试**（重试必然再失败 ⇒ 转降级 + 告知）。
+
+⇒ 两处**是分工、不是矛盾**。**本表与 `timeout-policy` 规格的措辞均不得被读作覆盖评测链**。
+
 **判据细则（评审 I3 + 第三轮 I2）**：`401/403` 一律**不重试**（这点不变），但**要分文案就必须能区分二者** —— 403 既可能是鉴权失败、也可能是**额度耗尽**（历史冒烟实测即为 403 + `AllocationQuota.FreeTierOnly`）。⇒ 分类实现 SHALL 依据**响应体**，**SHALL NOT 只看状态码**。
 
 **但该判据须先取证（第三轮 I2）**：仓内证据只到"dashscope 的一个标识串"，**未记它落在哪一层**（HTTP body / 异常 message / `.json()`），亦无 deepseek 形状；加之异常经 `create_agent` / LangGraph 包装后**原始 `response` 未必存活** ⇒ **实测两 provider 的 403 响应体并落表**是本条的实施前置（见 tasks）。判据 SHOULD 按 provider 的 **code 字段**匹配而非全局关键词；**若实测证明不可区分 ⇒ 降为单一文案**（取值表已写退化条款）。
@@ -331,6 +338,7 @@ grep "\[agent\] model turn" app_*.log | grep -o "latency_ms=[0-9]*" | cut -d= -f
 - **生产链路**（`main` / `classify` / `summary` / `embedding` / `rerank`）的超时与重试，真源是**本变更**；
 - **评测链**（`RAGAS_*` 族、judge）的真源是**它**；它把 `RAGAS_HTTP_TIMEOUT_*` 改嫁到 `ChatOpenAI` 属**评测链内部的承载点换位**，不改生产语义；
 - 两侧**不得**互相覆盖对方的取值族。
+- **已实测撞到一例（2026-10-16 拉 dev-wsl 时）**：评测链定「**429 不重试**、**403 额度类由外层重试**」，与生产口径**相反但各自成立**（评测链有 ragas 框架层重试 ≤10 次，生产没有）⇒ 已在 D5 与 `timeout-policy` 规格写明**适用范围**，避免被读成矛盾。**这属于跨 change 口径边界，本变更的机检（`docs/tmp/check-change-consistency.py`）读不到**（它只读单个 change 目录）。
 
 **定序（推荐：它先、本变更后）**：① 它正在收口，且会删掉本变更**并不依赖**的 `build_native_client`；② 本变更要新建 ADR，编号须排在它的新 ADR 之后（D9）；③ 同文件串行可避免合并冲突里"谁是当前形态"的歧义。
 ⇒ **开工前必须先重读 `src/infra/llm/provider/factory.py` 的当前形态** —— 本 design 的证据 E1 可能已过时。
