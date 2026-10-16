@@ -507,6 +507,95 @@ def _record_event(capture: _StreamCapture | None, event: SSEEvent) -> None:
     )
 
 
+def _idle_thresholds(deep_thinking: bool) -> tuple[float, float]:
+    """按思考档位取业务层静默的**两档阈值**（D15；四值见 spec / settings）。
+
+    首事件前档更宽：该段含排队 + prefill，开思考时首个 chunk 可达数十秒，属正常。
+
+    Args:
+        deep_thinking: 本轮是否开启思考
+
+    Returns:
+        (首事件前阈值秒数, 首事件后阈值秒数)
+    """
+    if deep_thinking:
+        return settings.MAIN_IDLE_FIRST_THINKING_S, settings.MAIN_IDLE_GAP_THINKING_S
+    return settings.MAIN_IDLE_FIRST_S, settings.MAIN_IDLE_GAP_S
+
+
+async def _idle_guard(
+    manager: StreamingRunManager,
+    session_id: str,
+    capture: _StreamCapture | None,
+    deep_thinking: bool,
+) -> None:
+    """业务层「生成任务静默」守卫（P3 / D3 / D15；**档 1：只记录、不中止**）。
+
+    判据是**事件是否增长**（`seq` 推进），不是字节间隔 —— 模型只吐 tool_call
+    而不吐 token 时字节在动、用户无感，本判据正好覆盖该情形。
+
+    - **首事件前档**：自本守卫启动起**从未**有新事件（图事件 / 工具事件）；
+    - **首事件后档**：已有事件之后再次静默。
+    两档取 `_idle_thresholds()` 的对应值；两档都已由启动期断言保证 < 传输层 read。
+
+    **档 1 的动作**：记一条 `degraded`（`reason=generation_idle`，字段 `idle_s` / `tier`）
+    + 经 `status` + `STAGE_DEGRADED` 送达取值集合表里的**过程**文案；
+    **不动控制流**（不取消、不降级、不改 status）。**每个静默段最多一条**：
+    本层自己写入的通知不算"事件恢复"（其 `seq` 记入 `last_seq` 吸收），
+    只有外部新事件才清除已通知标记。
+
+    Args:
+        manager: StreamingRunManager（读该 session 的事件缓冲；`add_event` 返回新 seq）
+        session_id: 会话 ID
+        capture: 流捕获容器（通知同时进事件日志，随 process 持久化与历史回放）
+        deep_thinking: 本轮是否开启思考（决定取哪一档阈值）
+    """
+    first_threshold, gap_threshold = _idle_thresholds(deep_thinking)
+    existing = manager.get_events_since(session_id, 0)
+    if existing:
+        last_seq = existing[-1][0]
+    else:
+        last_seq = 0
+    last_change = time.monotonic()
+    first_event_seen = False
+    notified = False
+    interval = settings.MAIN_IDLE_POLL_INTERVAL_S
+    while True:
+        await asyncio.sleep(interval)
+        if not manager.buffer_exists(session_id):
+            # 缓冲已随终态 TTL 清理 ⇒ 无可守护，正常退出（防"永远静默 ⇒ 无限刷"）
+            return
+        pending = manager.get_events_since(session_id, last_seq)
+        if pending:
+            last_seq = pending[-1][0]
+            last_change = time.monotonic()
+            first_event_seen = True
+            notified = False
+            continue
+        idle = time.monotonic() - last_change
+        if first_event_seen:
+            threshold = gap_threshold
+            tier = "gap"
+        else:
+            threshold = first_threshold
+            tier = "first"
+        if notified or idle < threshold:
+            continue
+        core_logging.log_event(
+            Event.DEGRADED, reason="generation_idle", idle_s=int(idle), tier=tier
+        )
+        notice = SSEStatusEvent(
+            stage=SSEInteractionTexts.STAGE_DEGRADED,
+            message=SSEInteractionTexts.DEGRADATION_TEXTS["generation_idle"],
+        )
+        _record_event(capture, notice)
+        # add_event 返回新 seq：把自己的通知吸收掉，避免"自我唤醒"变成周期刷屏
+        last_seq = manager.add_event(
+            session_id, notice.type, notice.payload_for_buffer()
+        )
+        notified = True
+
+
 async def _dual_stream(
     event_source: AsyncIterator[StreamEvent | dict],
     queue: asyncio.Queue[_QueueItem],
