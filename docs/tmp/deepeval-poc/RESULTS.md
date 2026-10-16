@@ -350,3 +350,19 @@ NLI 理由: "上下文指出'归属于上市公司股东的净利润'，而陈�
 **附带**：会打印 `⚠ WARNING: No hyperparameters logged`（无害；传 `identifier`/`hyperparameters` 可消）。另 `AsyncConfig(run_async=True)` 在 `asyncio.run` 内嵌套可用 —— 与 Q1 探测一致（`nest_asyncio.apply()`）。
 
 **脚本**：`/tmp/deepeval-poc-scripts/phase2_behaviour_spike{,_async}.py`（不入库）。
+
+---
+
+## Phase 2 收口活体冒烟（2026-10-17）：`hook_events = 8` —— **但该数字是混合计数，须打折看**
+
+**做法**：`/tmp/deepeval-poc-scripts/phase2_closeout_smoke.py`（不入库）。**真裁判**（`build_bridge_judge(evidence=HookEvidence())` → `BridgeDeepEvalLLM` → `build_behaviour_metrics`）经 `generate_answers_and_contexts_with_behaviour` 跑 1 题；**玩具** SUT = 一个带 `lookup_revenue` 工具的 toy LangGraph（生产 SUT 是 `get_llm()`）。
+
+**结果**：`test_run_*.json` 已落盘；三指标各 **1.0**（Task Completion / Step Efficiency / Agent Loop Detection）；`hook_events = 8`，其中 4 个 `response` 事件、`status_codes=[200,200,200,200]`。
+
+**⚠️ 归因订正（T8 评审 Important）**：冒烟把**玩具 SUT 也建在了 `bridge_judge` 上**（`phase2_closeout_smoke.py:113` `_build_toy_graph(bridge_judge)`），故那 8 个事件里**混有玩具 SUT 自身的 agent-node LLM 调用**，**不是**纯判官调用。⇒ **`hook_events` 这个数字不能用来单独证明"判官走了异步"**。
+
+**真正的证据在哪**：`TaskCompletion` 与 `StepEfficiency` 两项均由**判官**驱动且都拿到了 1.0 分 —— 若判官的调用没有经 `http_async_client`，这两项不会产生分数。所以"判官走异步、hooks 生效"这条**成立**，只是**依据是"分数存在"，不是"事件计数"**。
+
+**生产路径不会混淆**（已核）：`src/cli/eval_ragas.py` 里 SUT = `get_llm()`、judge = `build_bridge_judge(evidence=…)` 是两个对象；只有冒烟为了省事把两者并成了一个。
+
+**留给 Phase 3–4**：真 SUT + 真 KB 的全量行为分布、阈值、NaN 行为 —— 本冒烟**不能**代表真实 agent 路径。
