@@ -19,6 +19,12 @@ import urllib.parse
 from dotenv import load_dotenv
 from loguru import logger
 
+# DeepEval 在 import 时会自动加载 .env / .env.local 进 process env，并默认开启
+# posthog 遥测；两者都会污染本项目配置解析。必须在 deepeval 被 import 之前设好，
+# 故放在 settings（最早被 import 的模块之一）顶部、且排在其它 src.* import 之前。
+os.environ.setdefault("DEEPEVAL_DISABLE_DOTENV", "1")
+os.environ.setdefault("DEEPEVAL_TELEMETRY_OPT_OUT", "1")
+
 # 加载项目根目录的 .env 文件（如存在），将键值对注入 os.environ
 load_dotenv()
 

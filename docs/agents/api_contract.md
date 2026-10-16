@@ -730,7 +730,6 @@ Success:
   "answer_relevancy": 0.88,
   "context_precision": 0.85,
   "context_recall": 0.87,
-  "answer_correctness": 0.83,
   "overall_score": 0.87,
   "passed": true,
   "qa_count": 22,
@@ -741,7 +740,7 @@ Success:
 
 无评估记录时返回 `{"code": "SUCCESS", "data": null}`。
 
-`answer_correctness` 在 `eval_report` 表无独立列，由 `detail_json` 逐题 `answer_correctness` 求均值（跳过缺键 / `NaN`），无可取值时为 `null`。`pass_threshold` 下发常量 `EVAL_PASS_THRESHOLD`（见 §3.6），前端据此判定通过，**不得硬编码 `0.7`**。
+`pass_threshold` 下发常量 `EVAL_PASS_THRESHOLD`（见 §3.6），前端据此判定通过，**不得硬编码 `0.7`**。
 
 ### 2.6 健康检查
 
@@ -906,13 +905,13 @@ CASCADE 级联删除：知识库 → 文档 → 对话历史。
 | `report.answer_relevancy` | float | 答案相关性 |
 | `report.context_precision` | float | 上下文精确率 |
 | `report.context_recall` | float | 上下文召回率 |
-| `report.overall_score` | float | **纯 KB 掩码后的五项指标均值**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`），与报告**主分**同口径 |
+| `report.overall_score` | float | **纯 KB 掩码后的四项指标均值**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`），与报告**主分**同口径 |
 | `report.passed` | bool | 是否达标（`overall_score >= EVAL_PASS_THRESHOLD`，`src/config/const.py`） |
 | `report.report_path` | str\|null | CSV 报告路径 |
-| `report.detail_json` | list\|null | 逐条 QA 得分；每条含 `q_index`、**全部 `RAGAS_METRIC_COLUMNS`**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`）与可选 `retrieval_details`（该 query 精排后 `[{source, score, kind}, ...]`）。明细保留**全部样本行**：`empty` 样本的三项 context 指标被掩码为 `NaN`，非 context 指标不按样本类别置空，故 `answer_correctness` 逐题值覆盖全部样本。`NaN` 亦在 ragas 自身对该题该指标产出 `NaN`（如超时/额度耗尽）时出现。注意 `NaN` 是 Python `json.dumps` 的非标准扩展，**严格 JSON 解析器（如浏览器 `JSON.parse`）会拒绝**；见 §8.4 |
+| `report.detail_json` | list\|null | 逐条 QA 得分；每条含 `q_index`、**全部 `RAGAS_METRIC_COLUMNS`**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`）与可选 `retrieval_details`（该 query 精排后 `[{source, score, kind}, ...]`）。明细保留**全部样本行**：`empty` 样本的三项 context 指标被掩码为 `NaN`。`NaN` 亦在 ragas 自身对该题该指标产出 `NaN`（如超时/额度耗尽）时出现。注意 `NaN` 是 Python `json.dumps` 的非标准扩展，**严格 JSON 解析器（如浏览器 `JSON.parse`）会拒绝**；见 §8.4 |
 
 > **口径注（主分）**：落库路径先按样本类别掩码（`apply_sample_masks`），
-> `overall_score` 取**仅 `pure_kb` 样本**的五项指标均值（`main_score_means` 后求均），
+> `overall_score` 取**仅 `pure_kb` 样本**的四项指标均值（`main_score_means` 后求均），
 > 与 CLI 报告 / stdout / 门禁的「**主分**」同口径（见 §8.4）；`passed` 取常量
 > `EVAL_PASS_THRESHOLD`（当前 0.70）。`detail_json` 保留全样本行、仅 `empty` 样本的
 > 三项 context 指标为 `NaN`，故按明细自行复算的均值口径可能与列字段略有出入——
@@ -1350,7 +1349,7 @@ python -m src.cli.eval_ragas --list-kbs
 | context_precision | 0.80 |
 | context_recall | 0.70 |
 
-综合分 = 纯 KB 掩码后的五项指标均值（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`），与主分同口径（见 §8.4）。
+综合分 = 纯 KB 掩码后的四项指标均值（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`），与主分同口径（见 §8.4）。
 综合分 ≥ `EVAL_PASS_THRESHOLD`（当前 0.70）视为通过。
 
 门禁（`--gate`）判据在阈值之外还有两条前置：**纯 KB 样本数为 0** 或
@@ -1376,7 +1375,7 @@ python -m src.cli.eval_ragas --list-kbs
 |----|------|
 | `question` / `ground_truth` | 题面与参考答案 |
 | `trace_id` | 该题 trace，可按 trace 回溯 / 定位回写的分数 |
-| 五个指标列 | `faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` / `answer_correctness`；**CSV 保持 ragas 原生列序**（实测为 `context_precision`→`context_recall`→`faithfulness`→`answer_relevancy`→`answer_correctness`），**与 `const.RAGAS_METRIC_COLUMNS` 的顺序不同**——只有 **MD / stdout / 落库**按 `RAGAS_METRIC_COLUMNS` 排序 |
+| 四个指标列 | `faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`；**CSV 保持 ragas 原生列序**（实测为 `context_precision`→`context_recall`→`faithfulness`→`answer_relevancy`），**与 `const.RAGAS_METRIC_COLUMNS` 的顺序不同**——只有 **MD / stdout / 落库**按 `RAGAS_METRIC_COLUMNS` 排序 |
 | `sample_class` | 该题样本类别（上表三类之一） |
 | `skipped` | 被掩码跳过的指标名，`;` 分隔；未跳过为空串 |
 | `trajectory` | Agent 轨迹诊断摘要 JSON：`{"tool_calls":[{"name","args"}, ...], "iterations":N}`，**不含工具输出正文** |
@@ -1397,7 +1396,7 @@ python -m src.cli.eval_ragas --list-kbs
 是跨进程契约，改动会静默改变 A/B 结论**。
 
 **落库（`eval_report` 表）**：`_build_eval_detail` 产出的逐题 `detail` 与各指标
-`avg` 均含**全部** `RAGAS_METRIC_COLUMNS`（含 `answer_correctness`）；落库前先按
+`avg` 均含**全部** `RAGAS_METRIC_COLUMNS`；落库前先按
 样本类别掩码（`apply_sample_masks`），表内四列指标与 `overall_score` 均为**仅
 `pure_kb` 样本**的指标均值（`main_score_means`），`passed` 取 `EVAL_PASS_THRESHOLD`
 —— 与 §3.6 一致。

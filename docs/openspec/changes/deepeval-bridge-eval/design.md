@@ -87,6 +87,16 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
   - **hook 必须 `async def`**：httpx 0.28.1 同步 client 调 `hook(response)`、**异步 client 调 `await hook(response)`**（`httpx/_client.py:982` vs `:1697`），给 AsyncClient 传同步 hook 会 `await None` 抛 `TypeError`；读体也须 `await response.aread()`（同步 `read()` 在异步流上抛 `RuntimeError`，`httpx/_models.py:944`）。async hook 与"显式闭包绑定 trace_id"**可共存**（闭包内仍是 async def）。
   - **细粒度超时的承载点也随之改变**：`httpx.AsyncClient(timeout=httpx.Timeout(...))` **自带** timeout，故细粒度超时由该 client 保证；**不要依赖** ragas 的 `set_run_config` 去设 `request_timeout`——它在**构造之后**写 `self.langchain_llm.request_timeout = run_config.timeout`（`ragas/llms/base.py:337`），而 langchain 的 client 在**构造期**就建好（`validate_environment` 是 `@model_validator(mode="after")`，`base.py:1140/1154`）⇒ 该赋值**对已建 client 无效**。
   - **思考开关必须走 `thinking=`，SHALL NOT 硬编码 provider 专有键（订正）**：`build_chat` 的 `thinking` 参数经 `thinking_extra_body(spec, enabled)`（`src/infra/llm/provider/thinking.py:8`，仓库里**唯一**产生 provider 思考参数的地方）翻译——dashscope → `{"enable_thinking": …}`，deepseek → `{"thinking": {"type": …}}`。硬写 `extra_body={"enable_thinking": …}` 在**非 dashscope 判官**上会静默失效或 400，且违反 CLAUDE.md「provider 差异收敛到 `src/infra/llm/provider/`」。
+  - **⚠️ 硬约束①：`thinking=True` 会静默打断 `answer_relevancy`（实测，2026-10-16）**：`answer_relevancy` 请求 `n=strictness=3`（`_answer_relevance.py:142-143`），而 DashScope 在 `enable_thinking=true` 时**拒绝 `n>1`**——实测 6/6 返回 `BadRequestError(400) InternalError.Algo.InvalidParameter: The n parameter must be 1 when enable_thinking is true`。该错误被 ragas 的 executor 吞成 `NaN`（不抛，见 D4）⇒ **该指标静默全线失效、且被 NaN 门禁记为一格"裁判失败"**。**影响范围已核源码：四项中只有 `answer_relevancy` 会请求 `n>1`**（`faithfulness` `:158/174`、`context_precision` `:151`、`context_recall` `:137` 的 `generate_multiple()` 均不传 `n`，默认 1）。⇒ **`RAGAS_JUDGE_THINKING` SHALL 保持 `False`**；若日后确需打开，SHALL 同时为该指标配 thinking 关的独立 judge（或把 `strictness` 降为 1，属改口径）并记录该口径变化，**SHALL NOT** 只翻开关了事。
+  - **⚠️ 硬约束②：中文语料下 `faithfulness` 分数不可复现（**两个独立病因**，实测）**：`thinking=False` 时该指标在本判官下不稳定，且**病因与"答案是对 context 的缩写/改写"有关**（ragas `Faithfulness` 两段提示词均为英文且无语言约束，`_faithfulness.py:37` 抽陈述 / `:74` NLI 判定）：
+    - **病因 ①（单位换算）**：判官把中文答案**译成英文陈述**（`约 6603 亿元` → `…approximately 660.3 billion yuan`），NLI 段被迫做**亿↔billion 换算**，偶发算错（`reason` 原文：`a discrepancy by a factor of 10 (6603 vs 660.3)`）⇒ 同输入**二值抖动**（同进程同题 4 次 = `[0.0,1.0,0.0,1.0]`）。
+    - **病因 ②（限定词省略 + NLI 读错 context 数值）**：M 案例（答案 `约 857 亿元`，context `…归属于上市公司股东的净利润约 857 亿元。`）中，抽出的英文陈述本身正确（`85.7 billion yuan`），但 **NLI 段把 context 的 `857 亿元` 读成 `857 billion`** 再判定"差 10 倍"⇒ **10/10 稳定判 0**（确定性错，非抖动）。
+    - **后果**：`faithfulness` 进主分，而主分 / 门禁 / **跨轮台账比对**都假定同输入可复现 ⇒ 不处置会污染组 10 的阈值重标定。
+    - **候选修法 C 已复核失败（N≥20，2 案例 × N=10 × 2 臂）**：换中文提示词**只治病因①**（T 案例判 0 由 1/10 → 0/10），**治不了病因②**（M 案例基线 10/10 判 0 → C 仍 6/10 判 0）。⇒ **C SHALL NOT 采用**（且它本身就是"改第三方内部"，需身份断言守护，收益不抵代价）。
+    - **候选修法 D（`thinking=True`）实测两类都治**：T 案例 `[1]*6`、M 案例 `[1]*6`（共 12/12 稳定；且判官自动跟随答案语言为中文）。**但被硬约束①阻挡**（打断 `answer_relevancy`）。
+    - **⇒ 未决决策（进 Phase 2 前须拍板，SHALL NOT 静默采用任一方）**：① 采纳 **D + 双 judge**——`faithfulness` / `context_precision` / `context_recall` 用 `thinking=True` 的 judge，`answer_relevancy` 单独用 `thinking=False` 的 judge（须改 `build_metrics` 的签名与 D3 的裁判构造条款，并重新记录 ADR-0024 的"关思考"立场）；② 或**接受 `faithfulness` 在本语料上不可复现并降级处置**（排除主分 / 仅作诊断 / 报告标注）。**两案的成本与口径影响不同，须在真实集上抽样确认严重度后再定。**
+    - **严重度待验**：上述均为玩具案例（答案极短）。真实 21 题上 agent 答案若更完整，命中率可能更低 —— 但**任何"数值 + 限定词"型事实都会命中**，故 SHALL 在真实集上抽样复核。
+    - **证据**：`docs/tmp/deepeval-poc/RESULTS.md`「faithfulness 非确定性根因」与「修法 C 的 N≥20 复核」两节。
   - **理由**：桥要的是 langchain `BaseChatModel`；`build_chat(role, *, thinking, model, **overrides)`（`src/infra/llm/provider/factory.py:39-68`）会把 `**overrides` 透传给 `ChatOpenAI`，故上面这批参数**照旧生效**，同时保住 `judge` 角色的 provider 解析（`src/infra/llm/provider/spec.py:87` → `RAGAS_PROVIDER` / `RAGAS_LLM_MODEL`）。
   - **SHALL NOT** 在 `src/` 里直写 `ChatOpenAI` + 硬编码 DashScope 端点 / 密钥：那会绕过 provider 层、与既有 `get_judge_llm()`（`src/models.py:188`）重复，并违反 CLAUDE.md「provider 差异收敛到 `src/infra/llm/provider/`、硬编码集中管理」。上一稿 design 写的 `OpenAIModel(...)` 是 DeepEval 自己的模型类，**桥不接受**，已删。
   - **类型**：`build_chat` 返回 `ReasoningPreservingChat`（`src/infra/llm/provider/chat.py:24`，`ChatOpenAI` 子类）⇒ 桥可作为 langchain `BaseChatModel` 接收。
@@ -95,6 +105,7 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
 - **温度不由我们决定**，由 ragas 按 `n` 分档：
   - `faithfulness` / `context_precision` / `context_recall`（`n=1`）→ **0.01**；
   - **`answer_relevancy` → 0.3**（legacy `_answer_relevance.py:142-143` 传 `n=self.strictness`，`strictness` 默认 **3**；`generate_multiple` 的 ragas-LLM 分支把 `n` 透传，`temperature=None` → `get_temperature(3)=0.3`）。
+- **`answer_relevancy` 的语义与量程（组 10 阈值重标定须知；实测，2026-10-16）**：该指标 = **原问题** 与「**仅凭答案**重生成的问题」的余弦相似度均值（问题生成器**看不到 context**，`_answer_relevance.py:96-115/142`）⇒ 它实质在测"**答案能否自洽地反推问题**"。**答案不自包含时系统性偏低**：同一题的残句答案（`约 6603 亿元`，无主体）稳定 **0.42–0.44**（生成器只能凭空猜主体，实测猜成"中国的 GDP / 某公司的市值"），换成自包含答案（`腾讯控股 2024 年营业收入约为 6603 亿元。`）即 **0.88–0.97**。⇒ 重标定阈值 SHALL 按此语义取值，**SHALL NOT** 把低分当"故障分值"处理（ragas 本就按设计惩罚不完整答案）；另注：该低分**不是**语言问题（强制中文提示词仅把 0.44 抬到 0.45，且英文生成的问题同样能得 0.82–0.96）。
 - **为什么 0.01 是可接受的**：0.01 ≈ 确定性，同时**避开部分供应商对 `temperature=0` 的特殊逻辑**（社区既有此实践）。0.3 对 `answer_relevancy` 是**有意**的——该指标需要"生成多个多样化问题再取均值"，压到 0 会退化。
 - **必须写的代价**：温度**不受我们控制**，且**按指标分档**；`answer_relevancy` 那一项的分数稳定性天然低于其余三项。
 - **订正（上一稿把机制说反了这一处，必须一并纠正）**：`bypass_temperature` 的检查**确实**在 **`agenerate_text`（异步，`ragas/llms/base.py:269` 起，判断在 `:281`）**，**`generate_text`（同步，`:217` 起）不检查**——这一点上一稿写对了。但**结论的理由写错了**：上一稿推"桥走 `measure()` → 同步路径 ⇒ 该开关对我们无效"，**不成立**。
@@ -300,3 +311,13 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
 | R8 | **出题生成成为死代码**（注意：模块**不是**死代码） | 出题生成不再调用，但**测试集加载器仍被评测路径使用**（`eval_ragas.py:803/818`），文件不可删 | 在文件头与台账标注"**出题生成**保留未调用"（区分生成入口与加载器）；重启需先解决 0.4.x；`--generate` 加**硬护栏**（见 D8） |
 | R9 | **行为轴的取分路径（最高风险；已由 spike 定案并修正）** | 原设想"透传 `messages` 自建轨迹"不被接受；**改成只挂 `CallbackHandler` 后实测仍拿不到分**（`metric.score=None`、`reason=''`） | **定案**：必须 `EvaluationDataset.evals_iterator(metrics=[…])` 驱动；**逐题分从 `test_run_*.json` 的 `testCases[].metricsData` 回读**（`metricsScores` 只是按指标聚合，见 D6）；加"轨迹非空 **且**取到分 **且** 生成器已耗尽（JSON 已落盘）"fail-loud；`ainvoke`（异步）兼容性待验 |
 | R10 | **行为轴对被测图有侵入，且每题多一次裁判调用** | 评测运行时图会多挂一层 handler；每题多一次裁判调用（spike 1 题 30–38s，含跑图） | 仅在**评测路径**做（生产链路不动）；**每题新建独立 handler**（并发负向验证）；时间成本计入评测预算 |
+| R11 | **`faithfulness` 在本判官下分数不可复现（两个独立病因，实测）** | `thinking=False` 时，答案凡是 context 的**缩写/改写**即可能触发：(①) 中→英转换迫使 NLI 做**亿↔billion 换算**、偶发算错 ⇒ **二值抖动**（同题 `[0.0,1.0,0.0,1.0]`）；或 (②) **NLI 读错中文 context 的数值**（`857 亿元`→`857 billion`）或纠结**限定词省略**（`净利润` vs `归母净利润`）⇒ **稳定判 0**（实测 10/10）。两者都使 `faithfulness` 偏离真值，且**换中文提示词只治①**（见 D3 硬约束②） | **决策挂起至题集重出**（2026-10-16 决定）：现有 21 题的**口径待重做**，在其上继续抽样/调参价值低 ⇒ R11 的处置（①D+双 judge / ②降级）待新题集定稿后一并拍板。**⚠️ 但须记明：本风险的机制是判官/指标级，不随题集改变**——新题集只能**降低暴露率**（例：参考答案不写残句、答案自包含），**不会消除**它；只要答案仍是对中文 context 的缩写、context 仍含数字/限定词，同样会触发。故新题集的出题规格 SHALL 把本项列为输入（见下） |
+
+**题集重出的输入（由 R11 / D3 硬约束② 的实测证据导出，SHALL 交给新题集的出题规格）**：
+
+`faithfulness` 的失败由"答案是对中文 context 的缩写/改写"触发，而该性质**部分由题集与参考答案的口径决定** ⇒ 新题集（v6 / DeepEval `Synthesizer` 路径）出题时 SHALL 至少满足：
+
+1. **参考答案（`ground_truth`）SHALL 为自包含的完整句**，不得是裸数值/残句——它同时是 `context_recall` / `context_precision` 的 `reference` 输入；实测残句答案会让 `answer_relevancy` 稳定低至 0.42–0.44（见 D3 的语义说明）。
+2. **数值/限定词型事实 SHALL 在出题时显式登记**（如"净利润"须写明"归属于上市公司股东的净利润"）：否则 faithfulness 的 NLI 段会在限定词省略上摇摆。
+3. **题面语言 SHALL 与语料语言一致（中文）**，且出题时 SHALL 记录该题是否含"需跨语言/单位换算才能判定"的内容。
+4. 本项**不构成 R11 的解法**——只是降低暴露率；R11 的处置仍须在新题集定稿后拍板。

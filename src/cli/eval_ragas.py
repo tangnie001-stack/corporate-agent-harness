@@ -1,12 +1,11 @@
 """RAGAS 评估脚本 — 对 RAG 系统的检索和生成质量进行标准化评估.
 
-本脚本使用 RAGAS 库计算五个核心指标（报告 / stdout / 门禁统一采用「主分」口径，
+本脚本使用 RAGAS 库计算四个核心指标（报告 / stdout / 门禁统一采用「主分」口径，
 即仅纯 KB 样本的指标均值；含联网或无检索的样本不计入主分）：
   - faithfulness: 回答是否忠实于检索到的上下文（有无幻觉）
   - answer_relevancy: 回答与问题的相关性
   - context_recall: 检索到的上下文是否覆盖了参考答案所需的信息
   - context_precision: 检索到的上下文中有多少是真正有用的
-  - answer_correctness: 回答与参考答案的事实/语义一致性
 
 运行方式：
   python -m src.cli.eval_ragas --kb-id <kb-uuid>                          # 评估（最新测试集）
@@ -20,11 +19,13 @@
 import argparse
 import asyncio
 import json
+import math
 import os
 import sys
 import time
 import uuid
 from datetime import UTC, datetime
+from importlib.metadata import version
 from typing import Any
 
 import pandas as pd
@@ -35,6 +36,7 @@ from src.cli.eval_scoring import (
     build_metrics,
     classify_sample,
     main_score_means,
+    nan_cell_stats,
     retrieval_coverage,
     summarize_trajectory,
     write_scores,
@@ -43,7 +45,7 @@ from src.config import settings
 from src.config.const import (
     EVAL_PASS_THRESHOLD,
     EVAL_RETRIEVAL_COVERAGE_MIN,
-    RAGAS_EVAL_CONCURRENCY,
+    RAGAS_EVAL_CONCURRENCY,  # noqa: F401  # 打分并发预算留给 Phase 3，暂留符号
     RAGAS_METRIC_COLUMNS,
     SAMPLE_CLASS_EMPTY,
     SAMPLE_CLASS_PURE_KB,
@@ -316,11 +318,10 @@ async def generate_answers_and_contexts(
 
 
 class _EvalResult:
-    """`Experiment` 的行序适配 + `.to_pandas()` 契约（产出层零改动）。
+    """`.to_pandas()` 契约（产出层零改动）。
 
-    `Experiment.to_pandas()` 的行序是 `arun` 的**完成序**，不保证与输入下标对齐
-    （实测 `experiment.py:188` 用 `as_completed`）；本类持一个已按 `q_index` 排好
-    的 DataFrame，并保留既有 `.to_pandas()` 调用面。
+    串行逐题打分产出的行与输入同序（按 `q_index` 排列），本类持一个已按
+    `q_index` 排好的 DataFrame，并保留既有 `.to_pandas()` 调用面。
     """
 
     def __init__(self, df: pd.DataFrame) -> None:
@@ -336,34 +337,16 @@ class _EvalResult:
         return self._df
 
 
-async def _score_metrics(metric_name: str, metric, row: dict):
-    """按指标名调 `ascore`（各指标入参各不相同，在此集中映射）。"""
-    if metric_name == "faithfulness":
-        return await metric.ascore(
-            user_input=row["question"],
-            response=row["answer"],
-            retrieved_contexts=row["contexts"],
-        )
-    if metric_name == "context_precision":
-        return await metric.ascore(
-            user_input=row["question"],
-            reference=row["ground_truth"],
-            retrieved_contexts=row["contexts"],
-        )
-    if metric_name == "context_recall":
-        return await metric.ascore(
-            user_input=row["question"],
-            retrieved_contexts=row["contexts"],
-            reference=row["ground_truth"],
-        )
-    if metric_name == "answer_correctness":
-        return await metric.ascore(
-            user_input=row["question"],
-            response=row["answer"],
-            reference=row["ground_truth"],
-        )
-    # answer_relevancy
-    return await metric.ascore(user_input=row["question"], response=row["answer"])
+def _bridge_test_case(row: dict):
+    """把一行评测数据包成桥要的 LLMTestCase（四字段恒全部提供）。"""
+    from deepeval.test_case import LLMTestCase
+
+    return LLMTestCase(
+        input=row["question"],
+        actual_output=row["answer"],
+        expected_output=row["ground_truth"],
+        retrieval_context=list(row["contexts"]),
+    )
 
 
 def _exc_chain_summary(exc: BaseException, limit: int = 140) -> str:
@@ -387,131 +370,106 @@ def _exc_chain_summary(exc: BaseException, limit: int = 140) -> str:
     return f"{chain}: {msg}" if msg else chain
 
 
-def _judge_failure_note(exc: BaseException, limit: int = 200) -> str:
-    """失败备注：异常链 + **原始响应特征**（诊断为"空结构/截断"提供因果证据）。
-
-    instructor 的 `IncompleteOutputException` 等携带 `last_completion`＝原始响应；
-    只记异常类名会丢掉"模型到底回了什么"。这里把 `finish_reason` / 输出 token 数 /
-    原始输出片段一并带上（实测正是靠它区分出「空结构」与「截断」两种失败模式）。
-    """
-    note = _exc_chain_summary(exc)
-    completion = None
-    cur: BaseException | None = exc
-    seen: set[int] = set()
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        completion = getattr(cur, "last_completion", None) or completion
-        if completion is not None:
-            break
-        cur = cur.__cause__ or cur.__context__
-    if completion is None:
-        return note
-    try:
-        choice = completion.choices[0]
-        usage = getattr(completion, "usage", None)
-        out_tokens = getattr(usage, "completion_tokens", None)
-        raw = getattr(getattr(choice, "message", None), "content", "") or ""
-        snippet = " ".join(raw.split())[:limit]
-        return (
-            f"{note} | finish_reason={getattr(choice, 'finish_reason', None)}"
-            f" out_tokens={out_tokens} raw={snippet!r}"
-        )
-    except Exception:  # noqa: BLE001  # 诊断信息尽力而为，绝不影响评测
-        return note
-
-
-async def _score_metric_with_retry(
-    metric_name: str, metric, row: dict
+def _score_metric_with_retry(
+    metric_name, metric, test_case, row, evidence=None
 ) -> tuple[float, str]:
-    """打分；失败（**含超时**）重试至多 `settings.RAGAS_METRIC_MAX_ATTEMPTS` 次。
+    """打分；**非掩码 NaN** 时重试至多 `settings.RAGAS_METRIC_MAX_ATTEMPTS` 次。
 
-    为何在**本层**重试而非 SDK 层：SDK 重试是静默的乘法放大；这里的重试可见（记
-    `metric retry` 事件）、有界、且逐指标独立。
+    为何判据是 NaN 而不是异常：桥调 `ragas.evaluate(...)` 时未传
+    `raise_exceptions`（默认 False），`ragas/executor.py` 对**任何** Exception 都
+    `return np.nan` ⇒ 桥不抛异常，旧的 `except Exception` 判据永不触发（design D4）。
 
-    **超时也重试**（2026-10-15 实测修订）：曾按"超时重试大概率再挂"的推测排除超时，
-    但实测抓到反例——一次 150s（read 上限）超时，重试后**成功恢复**，该指标拿到真值。
-    故改为任何失败都重试，最坏 2×read 上限/指标，换取不丢指标、均值偏差最小。
+    为何 429 不重试：ragas 框架层已对 `openai.RateLimitError`（HTTP 429）重试
+    ≤10 次（`ragas/run_config.py:52` + `llms/base.py:325-335`），外层再叠会 10×3。
 
-    `error` 语义不变：**只在最终失败时非空**（重试成功不写 error，值即为真值）。
+    为何不做"合法缺值 / 裁判失败"子分类：桥只回一个 float，HTTP 200 的 envelope
+    恒为合法 JSON ⇒ 该分类不可实现（design D4，第 5 轮评审证实）。
 
     Returns:
-        `(值, 错误说明)`；成功时错误说明为 ""，最终失败时为 `"指标:异常类:消息"`。
+        `(值, 错误说明)`；成功与"未被重试的 NaN"错误说明为 ""；
+        重试耗尽时为 `"指标:原因"`。
     """
     attempts = max(1, settings.RAGAS_METRIC_MAX_ATTEMPTS)
-    last_exc: Exception = RuntimeError("unreachable")
+    last_note = ""
     for attempt in range(1, attempts + 1):
         started = time.monotonic()
         try:
-            res = await _score_metrics(metric_name, metric, row)
-        except Exception as exc:  # noqa: BLE001  # 失败可见，不吞
-            last_exc = exc
-            # 每次**尝试**都留痕（含 q_index + 耗时 + 原始响应特征），
-            # 使「哪题/哪个指标/第几次/耗时/原因」可在日志里串成链
-            core_logging.log_event(
-                Event.JUDGE_CALL,
-                metric=metric_name,
-                q_index=row.get("q_index"),
-                trace_id=row.get("trace_id"),
-                attempt=attempt,
-                seconds=round(time.monotonic() - started, 1),
-                ok=False,
-                note=_judge_failure_note(exc),
-            )
-            if attempt >= attempts:
-                break
-            core_logging.log_event(
-                Event.METRIC_RETRY,
-                metric=metric_name,
-                q_index=row.get("q_index"),
-                trace_id=row.get("trace_id"),
-                reason=_exc_chain_summary(exc, 120),
-            )
-            await asyncio.sleep(0.5 * attempt)  # 轻量线性退避
-            continue
+            value = metric.measure(test_case)
+            note = ""
+        except Exception as exc:  # noqa: BLE001  # 异常仅作留证，判据是 NaN
+            value, note = float("nan"), _exc_chain_summary(exc)
+        seconds = round(time.monotonic() - started, 1)
+
+        is_nan = value is None or (isinstance(value, float) and math.isnan(value))
         core_logging.log_event(
             Event.JUDGE_CALL,
             metric=metric_name,
             q_index=row.get("q_index"),
             trace_id=row.get("trace_id"),
             attempt=attempt,
-            seconds=round(time.monotonic() - started, 1),
-            ok=True,
-            note="",
+            seconds=seconds,
+            ok=not is_nan,
+            note=note,
         )
-        return float(res.value), ""
-    # 记**异常链 + 根因消息**（单行、截断），便于从报告/CSV 直接定位根因
-    return float("nan"), f"{metric_name}:{_exc_chain_summary(last_exc)}"
+        if value is not None and not is_nan:
+            return float(value), ""
+        last_note = note or "nan"
+
+        if evidence is not None and evidence.non_2xx and 429 in evidence.status_codes:
+            return float("nan"), ""  # 429：外层不重试（ragas 层已重试）
+        if attempt >= attempts:
+            break
+        core_logging.log_event(
+            Event.METRIC_RETRY,
+            metric=metric_name,
+            q_index=row.get("q_index"),
+            trace_id=row.get("trace_id"),
+            reason=last_note,
+        )
+        time.sleep(0.5 * attempt)  # 原为 await asyncio.sleep；改同步后同义
+    return float("nan"), f"{metric_name}:{last_note}"
+
+
+def score_rows(rows: list[dict], metrics: dict, *, evidence=None) -> list[dict]:
+    """**串行**逐题逐指标打分（并发=1）。
+
+    为何串行：桥复用 `ragas.metrics` 的**模块级指标实例**，`ragas.evaluate`
+    会在执行期把 `metrics[i].llm` 置为该次裁判、结束时复位 `None`，且
+    `LangchainLLMWrapper` 会改写底层 `chat_model.temperature` ⇒ 并发会互踩、
+    表现为间歇性错分（design D7）。并发预算留给"跑图"那一侧。
+
+    Args:
+        rows: 每题一行（含 q_index/trace_id/question/answer/ground_truth/contexts）。
+        metrics: `eval_scoring.build_metrics` 产物（顺序即评分顺序）。
+        evidence: 可选证据桶（本题评分前 `mark(trace_id)`，用于 429 判定）。
+
+    Returns:
+        与输入同序的行副本，追加四指标值与 `error`（最终失败时非空）。
+    """
+    out: list[dict] = []
+    for row in rows:
+        if evidence is not None:
+            evidence.reset()
+            evidence.mark(row.get("trace_id"))
+        scored: dict = {"q_index": row["q_index"], "error": ""}
+        errors: list[str] = []
+        test_case = _bridge_test_case(row)
+        for name, metric in metrics.items():
+            value, err = _score_metric_with_retry(
+                name, metric, test_case, row, evidence
+            )
+            scored[name] = value
+            if err:
+                errors.append(err)
+        scored["error"] = ";".join(errors)
+        out.append(scored)
+    return out
 
 
 def run_evaluation(
-    questions: list[str],
-    ground_truth: list[str],
-    answers: list[str],
-    contexts: list[list[str]],
-    metrics: dict,
-    trace_ids: list[str],
+    questions, ground_truth, answers, contexts, metrics, trace_ids, *, evidence=None
 ) -> Any:
-    """用现代 RAGAS 栈评五项指标，返回 `Experiment`（`.to_pandas()` 供产出层）。
-
-    逐行独立打分：任一指标失败在该行记 `error`（design D2）——**不丢行、不写 NaN
-    冒充分数**。行级并发受 `RAGAS_EVAL_CONCURRENCY` 限制（design D5）。`arun` 按
-    **完成序** append，故每行带 `q_index` 并在返回前按它回排，保证与
-    questions/trace_ids 的下标对齐契约（写错 trace 是静默事故）。
-
-    Args:
-        questions: 问题列表
-        ground_truth: 参考答案列表
-        answers: 系统生成的回答列表
-        contexts: 检索到的上下文列表
-        metrics: `eval_scoring.build_metrics` 产物的指标实例表
-        trace_ids: 每题 trace id（与 questions 同序）。写入行并透传到 `judge call`
-            等事件，使「报告 trace_id → 日志 → 底层模型原始响应」可串起来查。
-
-    Returns:
-        Experiment：行含五项指标 + `q_index` + `error`
-    """
-    from ragas import Dataset, experiment
-
+    """逐题打分并返回带 `.to_pandas()` 的结果（行序与输入一致）。"""
     rows = [
         {
             "q_index": i,
@@ -525,32 +483,10 @@ def run_evaluation(
             zip(questions, answers, ground_truth, contexts, trace_ids, strict=True)
         )
     ]
-
-    dataset = Dataset(name="ragas_eval", backend="inmemory")
-    for r in rows:
-        dataset.append(r)
-
-    sem = asyncio.Semaphore(max(1, RAGAS_EVAL_CONCURRENCY))
-
-    @experiment()
-    async def _score_row(row: dict) -> dict:
-        out: dict = {"q_index": row["q_index"], "error": ""}
-        errors: list[str] = []
-        async with sem:
-            for name, metric in metrics.items():
-                value, err = await _score_metric_with_retry(name, metric, row)
-                out[name] = value
-                if err:
-                    errors.append(err)
-        out["error"] = ";".join(errors)
-        return out
-
     core_logging.log_event(Event.EVALUATION_START, samples=len(rows))
-    view = asyncio.run(_score_row.arun(dataset))
+    scored = score_rows(rows, metrics, evidence=evidence)
     core_logging.log_event(Event.EVALUATION_DONE)
-    # arun 按【完成序】append；按 q_index 回排后再交产出层，保证下标对齐契约
-    # （不对齐会把分数静默写到别的 trace 上）。
-    df = view.to_pandas().sort_values("q_index").reset_index(drop=True)
+    df = pd.DataFrame(scored).sort_values("q_index").reset_index(drop=True)
     return _EvalResult(df)
 
 
@@ -657,6 +593,7 @@ def save_markdown_report(
     sample_classes: list[str],
     trace_ids: list[str] | None = None,
     trajectories: list[dict] | None = None,
+    report_meta: dict | None = None,
 ) -> str:
     """将评估结果保存为 Markdown 摘要报告，与 CSV 同路径（.md 后缀）.
 
@@ -673,6 +610,8 @@ def save_markdown_report(
             传入后在表格中新增 trace_id 列
         trajectories: 每个问题的轨迹诊断摘要（与 questions 一一对应），
             传入后新增 trajectory 列（JSON 字符串）
+        report_meta: 报告元数据（见 build_report_meta），传入后在报告头写入
+            口径版本 / 裁判 / 温度档 / 版本 / NaN 计数
 
     Returns:
         实际写入的 .md 文件路径
@@ -694,6 +633,30 @@ def save_markdown_report(
         f"**Configuration:** TOP_K_RETRIEVAL={cfg_topk}, TOP_K_RERANK={cfg_rerank}"
     )
     lines.append(f"**QA Pairs:** {len(questions)}")
+    if report_meta is not None:
+        lines.append(
+            "**Caliber / Judge:** "
+            f"caliber={report_meta['caliber']}, "
+            f"judge={report_meta['judge_model']}, "
+            f"model_arg_explicit={report_meta['model_arg_explicit']}"
+        )
+        regime = report_meta["temperature_regime"]
+        lines.append(
+            "**Temperature regime:** "
+            f"n1_metrics={regime['n1_metrics']}, "
+            f"answer_relevancy={regime['answer_relevancy']} "
+            f"({report_meta['temperature_control']})"
+        )
+        versions = report_meta["runner_versions"]
+        lines.append(
+            "**Runner versions:** "
+            f"ragas={versions['ragas']}, deepeval={versions['deepeval']}"
+        )
+        lines.append(
+            "**NaN cells:** "
+            f"{report_meta['nan_cells']}/{report_meta['nan_denominator_cells']} "
+            f"(rate={report_meta['nan_rate']})"
+        )
     lines.append("")
 
     lines.extend(_build_markdown_table(df, actual_metrics, trace_ids, trajectories))
@@ -741,6 +704,18 @@ def check_gate(df: pd.DataFrame, questions: list[str]) -> None:
         )
         sys.exit(1)
 
+    stats = nan_cell_stats(df)
+    rate = stats["nan_rate"]
+    from src.config.const import EVAL_NAN_RATE_MAX
+
+    print(
+        f"  NaN: {stats['nan_cells']}/{stats['denominator_cells']} 格 "
+        f"({rate:.2%}) 阈值 {EVAL_NAN_RATE_MAX:.0%}"
+    )
+    if rate > EVAL_NAN_RATE_MAX:
+        print("  gate FAIL: NaN 率超阈值 —— 建议启用逃生门（见 design D10）")
+        sys.exit(1)
+
     means = main_score_means(df)
     all_pass = True
     for metric, threshold in GATE_THRESHOLDS.items():
@@ -760,6 +735,27 @@ def check_gate(df: pd.DataFrame, questions: list[str]) -> None:
         sys.exit(1)
 
     sys.exit(0)
+
+
+def build_report_meta(
+    *, judge_model: str, nan_stats: dict, runner_versions: dict
+) -> dict:
+    """报告/台账元数据（口径版本、温度档、NaN 计数、模型显式性）。
+
+    温度**不由本项目控制**（ragas 按 n 分档：n=1 → 0.01；answer_relevancy
+    n=3 → 0.3），故只记录事实，SHALL NOT 出现「temperature=0」的表述。
+    """
+    return {
+        "caliber": "bridge-0.3.9",
+        "judge_model": judge_model,
+        "model_arg_explicit": True,
+        "temperature_regime": {"n1_metrics": 0.01, "answer_relevancy": 0.3},
+        "temperature_control": "ragas_decides_by_n",
+        "nan_cells": nan_stats["nan_cells"],
+        "nan_denominator_cells": nan_stats["denominator_cells"],
+        "nan_rate": round(nan_stats["nan_rate"], 4),
+        "runner_versions": dict(runner_versions),
+    }
 
 
 def main() -> None:
@@ -823,8 +819,7 @@ def main() -> None:
         from src.infra.db.engine import run_and_dispose
         from src.infra.db.vector_store import VectorStore
         from src.infra.llm.prompt_manager import PromptManager
-        from src.infra.llm.provider import factory as _llm_factory
-        from src.models import get_judge_llm, get_llm, get_rerank
+        from src.models import get_llm, get_rerank
 
         core_logging.log_event(Event.RAG_COMPONENT_INIT)
         vector_store = VectorStore()
@@ -835,17 +830,20 @@ def main() -> None:
         #   评分，避免自我评价偏置；模型名空/None 时由 registry 兜底。
         llm = get_llm()  # 选手：生产模型（含生产 temperature）
         reranker = get_rerank()
-        judge_llm = get_judge_llm()
+        # 裁判走 provider 层桥工厂（langchain chat model + http_async_client 细粒度
+        # 超时 + 请求级观测），embeddings 复用既有 build_embeddings()；证据桶跨题复用，
+        # 每题的 mark/reset 在 score_rows 内做。桥裁判全程唯一实例：EVAL_MODEL_INIT
+        # 日志与报告元数据（judge_model）均取自它，不再构造 temperature=0 的旧裁判。
+        from src.infra.llm.provider.factory import build_bridge_judge, build_embeddings
+        from src.infra.llm.provider.http_observability import HookEvidence
+
+        judge_evidence = HookEvidence()
+        bridge_judge = build_bridge_judge(evidence=judge_evidence)
+        metrics = build_metrics(bridge_judge, build_embeddings())
         core_logging.log_event(
             Event.EVAL_MODEL_INIT,
             sut=settings.LLM_MODEL,
-            judge=judge_llm.model_name,
-        )
-        # 裁判与 embeddings 走现代 RAGAS 工厂：采样策略（temperature=0、不发
-        # top_p）与显式超时已在 build_ragas_judge / build_ragas_embeddings 内落定。
-        metrics = build_metrics(
-            _llm_factory.build_ragas_judge(),
-            _llm_factory.build_ragas_embeddings(),
+            judge=bridge_judge.model_name,
         )
 
         # 构建 LangGraph
@@ -893,10 +891,23 @@ def main() -> None:
             contexts,
             metrics,
             trace_ids,
+            evidence=judge_evidence,
         )
 
         # 统一「主分」口径：报告 / stdout / 门禁都读同一张已掩码表（纯 KB 样本）。
         masked_df = apply_sample_masks(result.to_pandas(), sample_classes)
+
+        # 报告/台账元数据：口径版本、温度档、NaN 计数、裁判版本与模型显式性。
+        # judge_model 复用上方 EVAL_MODEL_INIT 同源的 bridge_judge.model_name；
+        # 温度由 ragas 按 n 分档、本项目不可控，故只记录事实（见 build_report_meta）。
+        report_meta = build_report_meta(
+            judge_model=bridge_judge.model_name,
+            nan_stats=nan_cell_stats(masked_df),
+            runner_versions={
+                "ragas": version("ragas"),
+                "deepeval": version("deepeval"),
+            },
+        )
 
         # 指标均值输出到 stdout：compare_retrieval 等 A/B 脚本以
         # 子进程方式调用本脚本，靠 stdout 解析指标（parse_metrics）；logger 只写
@@ -920,6 +931,7 @@ def main() -> None:
             sample_classes=sample_classes,
             trace_ids=trace_ids,
             trajectories=trajectories,
+            report_meta=report_meta,
         )
 
         # 行序契约：write_scores 按 enumerate 下标把 masked_df 第 i 行写到
@@ -1063,7 +1075,7 @@ def _save_eval_report(
 ) -> None:
     """把评估结果持久化到 eval_report 表。
 
-    `overall_score` 统一到**主分口径**（纯 KB 五项均值，design D11），替换原先
+    `overall_score` 统一到**主分口径**（纯 KB 四项均值，design D11），替换原先
     「四项加权、未掩码」的旧口径；`passed` 取常量 `EVAL_PASS_THRESHOLD`。
     传入 `sample_classes` 时先按样本类别掩码，使落库的逐题明细与各指标均值
     同为主分口径。

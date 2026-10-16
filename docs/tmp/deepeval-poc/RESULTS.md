@@ -138,3 +138,179 @@ DEEPEVAL_DISABLE_DOTENV=1 DEEPEVAL_TELEMETRY_OPT_OUT=1 /tmp/deepeval-poc/.venv/b
 **结论**：① 挂 `http_async_client` 时 hook **确实触发**，且能 `await response.aread()` + `json.loads` 拿到 `finish_reason`（失败留证与"429 识别"的观测前提成立）；② 挂 `http_client` 时 **0 触发**——错误接线**不会报错、只是静默失去全部可观测性与细粒度超时**（这正是它一路没被发现的原因）。⇒ 已把"响应 hook 触发数 > 0"与"只挂同步字段时 == 0"两条**互为反向的冒烟断言**写进 tasks 3.3。
 
 **顺带实测**：`build_chat("judge", thinking=…, max_tokens=…, max_retries=0, http_async_client=…)` 经 provider 层透传后，judge 实例上 `http_async_client` 已置、`http_client` 为 `None`（即字段确实按名路由）。
+
+---
+
+## Phase 1 收口冒烟重跑（2026-10-16）：hook 断言 PASS，但 `faithfulness` 被证实为**非确定**
+
+**背景**：Phase 1 的 T12 曾跑过一次真实链路冒烟，记录 `hook_events=13`、四指标有值，但 **`faithfulness=0.0`**（toy 题：答案「约 6603 亿元」对 context「…营业收入 6603 亿元。」），当时被挂账为"待证伪"，终审的假设是"判官严格"。T12 的原始报告文件随 SDD 工作区清理一并删除，故本轮重跑以恢复可复验证据。
+
+**做法**：`/tmp/deepeval-poc-scripts/phase1_smoke.py`（脚本不入库）。真调裁判（`build_chat("judge", …)` + `thinking=False`），两题各自 `HookEvidence` 与 judge 同源：
+
+- **A 原 toy 题**：答案 `约 6603 亿元`，context `腾讯控股 2024 年报：营业收入 6603 亿元。`
+- **B 逐字答案探针**：答案 `腾讯控股 2024 年报显示，营业收入 6603 亿元。`（逐字抄自 context），同一 context
+
+**结果（1 次）**：
+
+| 题 | faithfulness | answer_relevancy | context_precision | context_recall | hook_events | 耗时 |
+|---|---|---|---|---|---|---|
+| A 原 toy | **1.0** | 0.444 | 1.0 | 1.0 | 13 | 37.4s |
+| B 逐字答案 | **0.0** | 0.893 | 1.0 | 1.0 | 13 | 35.7s |
+
+**Hook 断言的 A 向成立**：两题各 13 事件、`status_codes` 全 200、`abnormal=False` ⇒ tasks 3.3a 的 `hook_events > 0` **PASS**（合计 26）。
+
+**但 A 题的 `faithfulness` 与 T12 记录相反（0.0 → 1.0）**，而 B 题（**更该得高分**的逐字抄写）反而 0.0。这不是"判官严格"，是**同一输入不同结果**。故追加重复性探针：
+
+**做法**：`/tmp/deepeval-poc-scripts/faithfulness_repeat.py` —— **同一进程、同一 judge、同一题**连跑 4 次（每题新建指标实例，与 `score_rows` 内一致）。
+
+**结果**：
+
+```
+[0] faithfulness=0.0   answer_relevancy=0.4628  ... 41.0s
+[1] faithfulness=1.0   answer_relevancy=0.4590  ... 38.5s   （[2]/[3] 见下）
+faithfulness 序列: [0.0, 1.0, 0.0, 1.0]
+```
+
+**结论**：
+
+1. **`faithfulness` 在本判官下是二值抖动**（`[0.0, 1.0, 0.0, 1.0]`），输入完全一致、judge 完全一致、串行执行 ⇒ **不是并发/状态串用，也不是"判官严格"，而是调用级非确定性**。（注意 `answer_relevancy` 反而稳定在 0.44–0.47，尽管它的温度档更高（0.3 vs 0.01）—— 这把"温度分档"排除为主因，更像 faithfulness 内部的两段式 LLM 流程（抽陈述 → NLI 判定）某一段偶发翻转或解析回退。）
+2. 挂账假设（"判官严格 / 未排除 `actual_output` 接线"）**不成立**：`actual_output` 接线正常（B 题答案更长更逐字，仍 0.0；且 context 侧指标稳定 1.0）。
+3. **对 change 的影响**：`faithfulness` 进入主分，而主分/门禁/跨轮台账比对都假定同一输入可复现。若该指标二值抖动，**跨轮比对与阈值重标定（组 10）会失真** —— 这必须在 Phase 2/4 处置，不能当噪声忽略。
+
+**探针自身的坑（供后人）**：`faithfulness_repeat.py` 里 judge 建在一个**随手丢弃的** `HookEvidence()` 上，逐题又传另一个 `ev` ⇒ 该探针打印的 `hooks=0` 是**构造错误**，不是产品缺陷。真实路径 `src/cli/eval_ragas.py:840-841/894` 里 `judge_evidence` 是**同一个对象**同时喂给 judge 与 `run_evaluation`，故 hooks 正常。但这暴露一个**静默失效耦合**：`score_rows(..., evidence=None)` 缺省即跳过 429 判定（`:418` 的 `evidence is not None` 守卫），且传了非 judge 所用的桶也照样静默零观测 —— 建议后续加一条断言（judge 的桶 is 传入的桶）。
+
+**脚本**：`/tmp/deepeval-poc-scripts/{phase1_smoke.py,faithfulness_repeat.py}`（按本仓先例**不入库**，否则 ruff/pyright 会拦）。
+
+---
+
+## faithfulness 非确定性根因（2026-10-16）：语言错配 ⇒ 被迫做亿↔billion 换算
+
+**接上一节**：`faithfulness` 实测二值抖动（`[0.0,1.0,0.0,1.0]`）。本节定位到机制，并验证两种修法。
+
+### 定位手段
+
+`/tmp/deepeval-poc-scripts/faithfulness_rootcause.py`：monkeypatch `ragas.metrics._faithfulness.Faithfulness._create_statements` / `_create_verdicts`（类级），dump 两段中间产物。同一进程、同一 judge、同一题连跑 6 次。
+
+**6 次抽出的陈述（全英文）**：
+```
+"Tencent's 2024 operating revenue was approximately 660.3 billion yuan."
+```
+**6 次 NLI 判定**（分数 `[1,1,1,1,1,0]`）—— 关键在判官给出的 `reason`：
+
+| iter | verdict | reason 摘要 |
+|---|---|---|
+| 0 | 1 | "1 billion is equal to 10 hundred million (10亿), 6603 hundred million equals 660.3 billion" |
+| 1 | 1 | "6603 billion yuan is equivalent to 660.3 * 10 = 6603 billion? **No, let's re-calculate carefully.**… 660.3 billion" |
+| 2 | 1 | "1 billion is equal to 100 million, and 1 亿 is 100 million, 6603 亿 equals 660.3 billion"（前提写错、结论对） |
+| 3 | 1 | "There is a discrepancy in the magnitude… **Wait, let me re-read carefully.**… This matches exactly." |
+| 4 | 1 | "6603 * 100,000,000 = 660,300,000,000 … 660.3 billion" |
+| 5 | **0** | "**a discrepancy by a factor of 10 (6603 vs 660.3)** … cannot be directly inferred" ← 把 `6603 亿元` 当成 `6603`（丢掉"亿"） |
+
+**机制**：陈述生成把中文答案**译成英文**并做了单位改写（`6603 亿元` → `660.3 billion yuan`）；NLI 段因此**必须做亿↔billion 换算**才能判定。`enable_thinking=False` 下该换算不稳（理由里能看到明显的自我纠错与偶发算错）⇒ verdict 在 0/1 之间跳。**1 句答案 ⇒ faithfulness 粒度就是 1/1 ⇒ 直接二值抖动。**
+
+排除项（均已核）：解析回退不是原因（解析失败会 `raise RagasOutputParserException` → 被 executor 吞成 `NaN`，而实测是 0.0/1.0 不是 NaN）；温度分档不是主因（`answer_relevancy` 温度档更高却稳定）；并发/状态串用不是（同一进程串行）。
+
+### 修法对照（`/tmp/deepeval-poc-scripts/faithfulness_fix_arms.py`，各臂 N=6）
+
+| 臂 | 设置 | scores | distinct | 抽出的陈述 |
+|---|---|---|---|---|
+| **A** 基线 | thinking 关 + ragas 英文默认提示词 | `[1,1,1,1,0,1]` | `{0,1}` 抖动 | 英文 `…660.3 billion yuan` |
+| **B** 开思考 | `RAGAS_JUDGE_THINKING=True`（提示词不变） | `[1,1,1,1,1,1]` | `{1.0}` 稳定 | **中文** `腾讯2024年营业收入约为6603亿元人民币` |
+| **C** 中文提示词 | thinking 关 + 换 `statement_generator_prompt`/`nli_statements_prompt` 为**强制中文、禁翻译禁单位换算** | `[1,1,1,1,1,1]` | `{1.0}` 稳定 | **中文** `腾讯2024营业收入约6603亿元` |
+
+**两个反直觉点**：① **B 臂用原英文提示词却吐出中文陈述** ⇒ `thinking=False` 时判官被英文提示词带跑做翻译，开思考才跟随答案语言；② 两臂的稳定**共同机制都是"语言对齐"**（中文陈述 ⇒ 无需单位换算），而非"思考更强"。
+
+**结论**：根因 = **判官把中文答案译成英文陈述，迫使 NLI 段做亿↔billion 换算，非思考模式下该换算偶发失败**。修法至少两条可行：语言对齐（C，需替换 ragas 提示词）或开思考（B，一行 env，且附带修掉推理能力）。
+
+**影响面（须评估）**：① 真实 21 题是中文语料 ⇒ `faithfulness` 系统性偏低且不可复现，直接影响主分、门禁与**跨轮台账比对**（组 10 阈值重标定会失真）；② **疑似同族问题**：`answer_relevancy` 在"问题对答案明显相关"的 toy 题上只有 **0.44**——该指标也是先生成问题再比相似度，若生成的是英文问题而原问题是中文，相似度会被系统性压低。**未验证，建议同法探针确认。**
+
+**N 的局限**：每臂 N=6，样本小；"稳定"是 6/6，不足以排除低频抖动。若据此改设计，建议先跑 N≥20。
+
+**脚本**：`/tmp/deepeval-poc-scripts/{faithfulness_rootcause.py,faithfulness_fix_arms.py}`（不入库）。
+
+---
+
+## answer_relevancy 0.44 根因（2026-10-16）：答案不自包含 ⇒ 生成器猜错主体（**玩具题假象**）
+
+**背景**：冒烟里 `answer_relevancy` 在"问题对答案明显相关"的 toy 题上只有 0.44，疑与 faithfulness 同为语言错配。
+
+**链路（ragas 0.3.9 `ResponseRelevancy`）**：答案 →（LLM，`strictness=3`）生成 3 个问题 → 与**原问题**算余弦相似度 → 均值 ×(1−全 noncommittal)。**注意：问题生成器只看答案，看不到 context。**
+
+### 探针 `answer_relevancy_rootcause.py`（三臂，各 N=6）
+
+| 臂 | scores | 生成的问题样例 |
+|---|---|---|
+| **A** 基线（thinking 关 + 英文提示词） | `[0.4404,0.4188,0.4511,0.4313,0.4173,0.4490]`（**稳，非抖动**） | `中国的GDP是多少？` / `What is the approximate amount in billions of yuan?` / `某公司的市值是多少？` |
+| **B** 开思考（`thinking=True`） | **空 —— 6 次全 HTTP 400** | — |
+| **C** 中文问题生成提示词（thinking 关） | `[0.4526,0.4767,0.4573,0.4549,0.4496,0.4460]`（≈0.45，几乎没变） | `2023年中国国内生产总值（GDP）大约是多少？`（**主体仍猜错**） |
+
+**B 臂的报错（关键约束）**：
+```
+BadRequestError(400): InternalError.Algo.InvalidParameter:
+The n parameter must be 1 when enable_thinking is true
+```
+`answer_relevancy` 请求 `n=strictness=3` ⇒ **DashScope 在 `enable_thinking=true` 时拒绝 n>1** ⇒ 该指标在开思考下直接不可用（错误被 ragas 吞成 NaN）。
+
+### 对照：残句 vs 自包含答案（`answer_relevancy_selfcontained.py`，同一问题/context，thinking 关）
+
+| 答案 | scores | 生成的问题 |
+|---|---|---|
+| **F 残句**「约 6603 亿元」（**无主体**） | `0.42–0.44` | `中国的GDP是多少？` / `某公司的市值是多少？` |
+| **S 自包含**「腾讯控股 2024 年营业收入约为 6603 亿元。」 | **`[0.9656,0.8769,0.9164,0.9640,0.9655,0.9190]`** | `腾讯控股 2024 年的营业收入是多少？` |
+
+**结论**：0.44 **不是**语言问题（C 臂只升到 0.45；英文生成问题也能拿 0.82–0.96，说明该 embedding 跨语言相似度足够），**也不是**判官问题，而是**答案不自包含**：生成器只看答案，残句没有主体 ⇒ 凭空猜主体（猜成"中国 GDP"）⇒ 与原问题相似度低。**这是 ragas 按设计惩罚"不完整答案"**（其 docstring：*"Answers with incomplete, redundant or unnecessary information is penalized"*）。**⇒ 0.44 是玩具题假象，管线无需为此改动。**
+
+**但两条对 change 有效的发现**：
+
+1. **`enable_thinking=True` 与 `answer_relevancy` 不兼容**（DashScope 下 `n>1` 被拒）。故上一节 faithfulness 修法 **B（开思考）不能全局采用** —— 单一 judge 跨指标共享，一开思考 `answer_relevancy` 即失效。⇒ **faithfulness 应选 C（语言对齐，thinking 保持关）**；若确要用 B，须给 `answer_relevancy` 单独配 thinking 关的 judge，或把 `strictness` 降到 1（改口径），两者都更重。
+2. **口径提示（供组 10 阈值重标定）**：`answer_relevancy` 实质在测"答案能否自洽地反推问题"。若 agent 真实答案偏残句/多跳拼接，该指标会系统性偏低——**这是指标语义，不是故障**；重标定阈值时须按此理解取值。
+
+**局限**：仍基于单题（1 个 toy 题）；`answer_relevancy` 在真实 21 题上的分布未测。若要据此改设计，建议在真实集上抽样复核。
+
+**脚本**：`/tmp/deepeval-poc-scripts/{answer_relevancy_rootcause.py,answer_relevancy_selfcontained.py}`（不入库）。
+
+**影响范围（已核源码）**：四项里**只有 `answer_relevancy` 会请求 `n>1`**（`strictness=3`，`_answer_relevance.py:142`）。`faithfulness`、`context_precision`、`context_recall` 的 `generate_multiple()`/`generate()` **均不传 `n`（默认 1）**（`_faithfulness.py:158/174`、`_context_precision.py:151`、`_context_recall.py:137`）⇒ **`enable_thinking=True` 恰好只打断 `answer_relevancy` 一个指标**。若将来确要开思考，最小代价路径是给该指标单独配 thinking 关的 judge（或把 `strictness` 降到 1，属改口径）。
+
+---
+
+## faithfulness 修法 C 的 N≥20 复核（2026-10-16）：**不通过** —— 暴露出第二个病因
+
+**做法**：`/tmp/deepeval-poc-scripts/faithfulness_n20.py` —— **2 案例 × N=10 × 2 臂**（A 基线英文提示词 / C 中文提示词），共 40 次调用。第二个案例用于检验 T 案例结论能否泛化。
+
+| 案例 | A 基线（英文提示词） | C 中文提示词 |
+|---|---|---|
+| **T 腾讯营收**（答案 `约 6603 亿元`，context `…营业收入 6603 亿元。`） | 判 0 **1/10** | 判 0 **0/10** ✅ |
+| **M 茅台净利润**（答案 `约 857 亿元`，context `…归属于上市公司股东的净利润约 857 亿元。`） | 判 0 **10/10**（不是抖动，**确定性判错**） | 判 0 **6/10** ❌ |
+
+**结论**：**修法 C 只治了"单位换算"那一类，治不了 M 那一类** ⇒ 不通过复核。
+
+### M 案例的中间产物（`faithfulness_moutai_dump.py`，A/C 各 N=6）
+
+**A 臂（英文提示词）—— 6/6 稳定判 0，病因是"NLI 段读错 context 的数值"**：
+```
+抽出陈述: "The net profit of Kweichow Moutai in 2024 is approximately 85.7 billion yuan."   ← 这句本身是对的（857 亿 = 85.7 billion）
+NLI 理由: "The context states the net profit ... is approximately 857 billion yuan (857 亿元).
+          The statement claims it is 85.7 billion yuan, which is a numerical discrepancy
+          (off by a factor of 10)."                                                        ← 判官把 context 的「857 亿元」读成「857 billion」
+```
+⇒ 抽陈述那步正确，**是 NLI 段把中文 context 的数值读错**（丢了"亿"），再拿它去比 ⇒ 稳定判 0。
+
+**C 臂（中文提示词）—— 陈述已正确，但暴露第二个病因：语义严格性摇摆**：
+```
+抽出陈述: "贵州茅台2024年净利润约为857亿元。"   ← 单位问题已消失
+NLI 理由: "上下文指出'归属于上市公司股东的净利润'，而陈述仅称'净利润'…
+          前者是后者的子集…然而更常见的判断标准是看核心事实是否被支持…"
+```
+⇒ 判官在 **"归母净利润" vs "净利润" 的限定词省略**上反复自我辩解，3/6 判 1、3/6 判 0。
+
+### 补充：D 臂（`thinking=True` + 英文默认提示词）实测**两类都治好**
+
+`faithfulness_moutai_thinking.py`（M 案例，N=6）：scores = **[1.0]*6**；且抽出的陈述自动为**中文**（`贵州茅台2024年净利润约为857亿元。`），理由不再纠结单位或限定词。结合先前 T 案例 B 臂 `[1]*6` ⇒ **D 在两类案例上共 12/12 稳定**。
+
+### 修正后的综合结论
+
+1. **`faithfulness` 在本判官下有至少两个独立病因**，且**都与"答案是对 context 的缩写/改写"有关**：① 中文数值的单位换算（T）；② 限定词省略 + NLI 读错 context 数值（M）。**换成中文提示词只能治 ①**。
+2. **`thinking=True` 两类都治**（判官推理能力足够时，单位换算与限定词判断都稳），但**被 `answer_relevancy` 的 `n>1` 硬约束阻挡**（见上一节）。
+3. **另一个统一视角**：M 的失败与 `answer_relevancy` 的 0.44 同源——**答案不是 context 的忠实长句而是缩写**。在真实 21 题上，若 agent 答案偏长/完整，严重度可能低于这两个玩具案例；**但任何"数值 + 限定词"型事实都会命中**。⇒ 需在真实集上抽样确认严重度。
+
+**脚本**：`/tmp/deepeval-poc-scripts/{faithfulness_n20.py,faithfulness_moutai_dump.py,faithfulness_moutai_thinking.py}`（不入库）。

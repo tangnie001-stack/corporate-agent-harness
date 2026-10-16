@@ -21,29 +21,39 @@ from src.rag.context import RAGContext
 
 
 def build_metrics(judge, embeddings) -> dict:
-    """构造现代 collections 五指标实例（口径与 legacy 对齐，design D3）。
+    """构造 DeepEval RAGAS 桥的**经典四项**（design D2）。
+
+    只用单项、不用聚合：聚合 `RagasMetric` 在源码里是 5 项算术平均（含
+    `ContextualEntitiesRecall`），与官方文档写四项不一致 ⇒ 口径不可控。
 
     Args:
-        judge: 现代裁判 LLM（`llm_factory` 产物）
-        embeddings: 现代 embeddings（`embedding_factory` 产物）
+        judge: langchain `BaseChatModel`（桥要求）
+        embeddings: langchain Embeddings（`answer_relevancy` 唯一需要）
 
     Returns:
-        指标名 -> 指标实例（顺序即评估顺序）
+        指标名 -> 桥度量实例；**顺序即串行评分顺序**
     """
-    from ragas.metrics.collections import (
-        AnswerCorrectness,
-        AnswerRelevancy,
-        ContextPrecision,
-        ContextRecall,
-        Faithfulness,
+    # 确保 DEEPEVAL_* 兜底先于 deepeval 被 import（顺序即语义，故禁用 isort 重排）
+    # isort: off
+    import src.config.settings  # noqa: F401
+    from deepeval.metrics.ragas import (
+        RAGASAnswerRelevancyMetric,
+        RAGASContextualPrecisionMetric,
+        RAGASContextualRecallMetric,
+        RAGASFaithfulnessMetric,
     )
+    # isort: on
+
+    if embeddings is None:
+        raise AssertionError("answer_relevancy 需要显式 embeddings（不得为 None）")
 
     return {
-        "faithfulness": Faithfulness(llm=judge),
-        "answer_relevancy": AnswerRelevancy(llm=judge, embeddings=embeddings),
-        "context_precision": ContextPrecision(llm=judge),
-        "context_recall": ContextRecall(llm=judge),
-        "answer_correctness": AnswerCorrectness(llm=judge, embeddings=embeddings),
+        "faithfulness": RAGASFaithfulnessMetric(model=judge),
+        "answer_relevancy": RAGASAnswerRelevancyMetric(
+            model=judge, embeddings=embeddings
+        ),
+        "context_precision": RAGASContextualPrecisionMetric(model=judge),
+        "context_recall": RAGASContextualRecallMetric(model=judge),
     }
 
 
@@ -96,11 +106,33 @@ def apply_sample_masks(df: pd.DataFrame, sample_classes: list[str]) -> pd.DataFr
     return out
 
 
+def nan_cell_stats(df: pd.DataFrame) -> dict:
+    """NaN 率（单位是**格**，不是题）：分母 = 纯 KB 样本 × 四指标。
+
+    分子 = 纯 KB 格里的**全部** NaN（合法缺值与裁判失败不可区分，一并计入）。
+    掩码产生的 NaN 只出现在 `empty` 样本 ⇒ 天然落在分母之外，无需排除。
+
+    Returns:
+        {"nan_cells": int, "denominator_cells": int, "nan_rate": float}
+    """
+    pure = df[df["sample_class"] == SAMPLE_CLASS_PURE_KB]
+    cols = [c for c in RAGAS_METRIC_COLUMNS if c in df.columns]
+    denom = len(pure) * len(cols)
+    nan_cells = int(pure.loc[:, cols].isna().to_numpy().sum()) if denom else 0
+    return {
+        "nan_cells": nan_cells,
+        "denominator_cells": denom,
+        "nan_rate": (nan_cells / denom) if denom else 0.0,
+    }
+
+
 def main_score_means(df: pd.DataFrame) -> dict[str, float]:
     """计算主分：仅纯 KB 样本行的各指标均值。
 
     指标集合在函数内收窄到 `RAGAS_METRIC_COLUMNS` 白名单（不依赖调用方过滤），
     以免结果表混入额外数值列（如 chunk_size）时被静默计入主分。
+    均值口径为"纯 KB 且非 NaN"（`Series.mean()` 默认 `skipna=True`，即本口径；
+    **不得**改为 `skipna=False`）。
 
     Args:
         df: 经 apply_sample_masks 处理、含 sample_class 列的结果
