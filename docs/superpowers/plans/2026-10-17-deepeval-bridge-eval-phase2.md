@@ -75,17 +75,18 @@ from __future__ import annotations
 
 import pytest
 from deepeval.models import DeepEvalBaseLLM
+from langchain_core.messages import AIMessage
 
 from src.infra.llm.provider.deepeval_llm import BridgeDeepEvalLLM
 
 
-class _FakeMsg:
-    def __init__(self, content: str) -> None:
-        self.content = content
-
-
 class _FakeChat:
-    """最小化身：记录调用并回固定 JSON 文本。"""
+    """最小化身：记录调用并回固定 JSON 文本。
+
+    返回**真实** `AIMessage`（langchain 实际返回的类型）：使 `_content` 走
+    `isinstance(msg, BaseMessage)` 分支。用自定义假消息类会落到 `str(msg)` 分支、
+    拿不到内容（这正是本计划首版的自相矛盾处）。
+    """
 
     model_name = "fake-judge"
 
@@ -93,13 +94,13 @@ class _FakeChat:
         self.invoked: list[str] = []
         self.ainvoked: list[str] = []
 
-    def invoke(self, prompt: str) -> _FakeMsg:
+    def invoke(self, prompt: str) -> AIMessage:
         self.invoked.append(prompt)
-        return _FakeMsg('{"verdict": "yes", "reason": "ok"}')
+        return AIMessage(content='{"verdict": "yes", "reason": "ok"}')
 
-    async def ainvoke(self, prompt: str) -> _FakeMsg:
+    async def ainvoke(self, prompt: str) -> AIMessage:
         self.ainvoked.append(prompt)
-        return _FakeMsg('{"verdict": "yes", "reason": "ok"}')
+        return AIMessage(content='{"verdict": "yes", "reason": "ok"}')
 
 
 def test_adapter_is_a_deepeval_llm_and_reports_name():
