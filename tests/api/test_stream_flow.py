@@ -257,7 +257,7 @@ async def test_background_task_error_event_round_trips_from_payload():
     TypeError: string indices must be integers。
 
     载荷文案另有契约：未归类的异常不得透出内部文本，留空串由前端回落通用
-    文案（timeout-and-degradation-hardening P2；见 turn_runner._error_copy）。
+    文案（timeout-and-degradation-hardening P2；见 turn_runner.safe_error_copy）。
     """
     from src.chat.streaming import StreamingRunManager
     from src.infra.llm.request_context import RequestContext

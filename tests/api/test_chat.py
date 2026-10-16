@@ -131,6 +131,9 @@ def test_chat_stream_emits_error_and_done_when_subscription_raises():
     回归场景：_frames 订阅 handle.events 时若 from_payload 遇畸形载荷抛异常，
     旧实现以 except 兜底为 error + done 终止态；若丢失该兜底，客户端只表现为
     连接中断且无终态（违反站点外部行为不变）。
+
+    兜底 error 帧的文案走 safe_error_copy：未归类异常 ⇒ 空串（前端回落通用
+    文案），**不得**透出原始异常文本（前端 T4 后已消费 data.error）。
     """
     from src.utils.sse import SSETokenEvent
 
@@ -155,7 +158,9 @@ def test_chat_stream_emits_error_and_done_when_subscription_raises():
         assert response.status_code == 200
         assert "event: error" in response.text
         assert "event: done" in response.text
-        assert "boom" in response.text
+        # 原始异常文本不上屏：未归类 ⇒ 空串载荷
+        assert "boom" not in response.text
+        assert '"error": ""' in response.text
         # 终止帧顺序：error 在前、done 在后，且 done 为末帧
         assert response.text.index("event: error") < response.text.index("event: done")
         assert response.text.rstrip().endswith("}")

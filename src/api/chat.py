@@ -77,7 +77,9 @@ async def chat_stream(
                 yield to_sse(event)
         except Exception as e:  # noqa: BLE001
             logger.exception("Chat stream unhandled error: {}", str(e))
-            yield to_sse(SSEErrorEvent(str(e)))
+            # 兜底 error 帧的文案走唯一策略 safe_error_copy：未归类 ⇒ 空串，
+            # 前端回落通用文案；不得直接透出原始异常文本（前端消费 data.error）
+            yield to_sse(SSEErrorEvent(turn_runner.safe_error_copy(e)))
             yield to_sse(SSEDoneEvent(trace_id=trace_id))
 
     return StreamingResponse(

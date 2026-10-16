@@ -3244,6 +3244,11 @@ function rebuildProcessFromEvents(container, events) {
       }
       const div = document.createElement('div');
       div.className = 'status-tag';
+      // 回放与实时视觉一致（见本段自述契约）：降级告知同样给琥珀配色，
+      // 与实时 renderStatusTag 的 status-tag-degraded 对齐
+      if (p.stage === 'degraded') {
+        div.classList.add('status-tag-degraded');
+      }
       let text = escapeHtml(p.message || '');
       if (p.detail) {
         text += ' <span class="status-detail">' + escapeHtml(p.detail) + '</span>';

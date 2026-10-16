@@ -238,3 +238,44 @@ async def test_success_path_never_calls_release_reservation(monkeypatch):
     finally:
         streaming_manager.clear_buffer(session_id)
         streaming_manager.unregister(session_id)
+
+
+def test_safe_error_copy_two_branches():
+    """safe_error_copy：未归类 → 空串（前端回落通用文案）；已归类 → 取值集合表文案。
+
+    它是"异常 → 用户可见文案"策略的唯一归属：前端 T4 后消费 data.error，
+    凡以其结果入 error 事件的发射点都不得透出原始异常文本。
+    """
+    from src.config.const import SSEInteractionTexts
+    from src.services.turn_runner import safe_error_copy
+
+    # 未归类（无 status_code 的普通异常）⇒ 空串
+    assert safe_error_copy(RuntimeError("boom")) == ""
+
+    class _ProviderDown(Exception):
+        status_code = 403  # 401/403 ⇒ provider_unavailable
+
+    assert (
+        safe_error_copy(_ProviderDown("upstream 403"))
+        == SSEInteractionTexts.DEGRADATION_TEXTS["provider_unavailable"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_failure_error_event_payload_uses_safe_copy():
+    """起流失败兜底事件（_error_events）不得透出原始异常文本。
+
+    端到端：stream_chat 抛未归类异常 ⇒ 句柄产 error + done，error 载荷为空串
+    （非 str(e)）。这是跨层泄漏修复的核心证据：前端消费 data.error 后，
+    空串会让其回落通用文案，与改造前逐字一致。
+    """
+    from src.utils.sse import SSEErrorEvent
+
+    svc = _FakeSvc(raise_on_stream_chat=True)  # RuntimeError("boom")：未归类
+    handle = await start_turn(svc, session_id="sess-safe", kb_id="", query="你好")  # type: ignore[reportArgumentType]
+
+    errors = []
+    async for ev in handle.events:
+        if isinstance(ev, SSEErrorEvent):
+            errors.append(ev.error)
+    assert errors == [""]
