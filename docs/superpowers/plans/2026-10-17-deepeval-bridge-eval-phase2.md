@@ -715,6 +715,12 @@ def test_no_metric_score_at_all_fails_loud():
     rows = [{"q_index": 0, "input": "Q0", "metrics": {}}]
     with pytest.raises(RuntimeError, match="行为分"):
         assert_behaviour_scores_complete(["Q0"], rows, _traj(1))
+
+
+def test_trajectory_count_mismatch_fails_loud():
+    """轨迹数偏短 ⇒ 循环体一次都不跑，会静默通过 —— 必须显式拦（评审 Important）。"""
+    with pytest.raises(RuntimeError, match="轨迹"):
+        assert_behaviour_scores_complete(["Q0", "Q1"], _rows(2), _traj(1))
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -737,6 +743,12 @@ def assert_behaviour_scores_complete(
     if len(rows) != len(questions):
         raise RuntimeError(
             f"行为分题数不齐：questions={len(questions)} rows={len(rows)}（JSON 缺失或循环未耗尽）"
+        )
+    if len(trajectories) != len(questions):
+        # 缺这条守卫时，trajectories 偏短会让下面的循环体一次都不跑 ⇒ 静默通过，
+        # 正是本函数要防的"没测到当成没异常"（评审 Important）
+        raise RuntimeError(
+            f"轨迹数与题数不齐：questions={len(questions)} trajectories={len(trajectories)}"
         )
     for r in rows:
         if not any(v is not None for v in (r.get("metrics") or {}).values()):
