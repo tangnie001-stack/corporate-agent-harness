@@ -2,7 +2,7 @@
 
 降级路径（`except TimeoutError` 分支）绕过 rerank_results、按检索原始顺序手工构造
 RAGContext，改后同样调用 `_dedup_by_parent` 并落 `dedup done`。本测试通过把
-RERANK_TIMEOUT 置 0 强制 `asyncio.wait_for` 立即抛 TimeoutError 进入该分支，锁定
+RERANK_OUTER_TIMEOUT 置 0 强制 `asyncio.wait_for` 立即抛 TimeoutError 进入该分支，锁定
 "同父块只留最高分 + dedup done"。
 """
 
@@ -63,12 +63,12 @@ async def test_timeout_fallback_contexts_are_deduped(monkeypatch):
         return results
 
     def fake_rerank(query, results, reranker):
-        """mock rerank_results：立即返回空（RERANK_TIMEOUT=0 使其实际不被消费）。"""
+        """mock rerank_results：立即返回空（RERANK_OUTER_TIMEOUT=0 使其实际不被消费）。"""
         return []
 
     monkeypatch.setattr(retrieval, "search", fake_search)
     monkeypatch.setattr(retrieval, "rerank_results", fake_rerank)
-    monkeypatch.setattr(rag_tools_mod, "RERANK_TIMEOUT", 0)
+    monkeypatch.setattr(rag_tools_mod, "RERANK_OUTER_TIMEOUT", 0)
 
     logged: list[dict] = []
 

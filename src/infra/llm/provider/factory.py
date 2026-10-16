@@ -218,6 +218,28 @@ def build_ragas_embeddings():
     return embedding_factory("openai", model=resolved.model, client=client)
 
 
+class _TimeoutReRankAdapter:
+    """给 DashScope TextReRank 注入请求级超时的薄适配器。
+
+    为什么需要：`DashScopeRerank` 的 pydantic 字段只有
+    `['client','model','top_n','dashscope_api_key']` 且 `model_config['extra']='forbid'`
+    ⇒ **构造器传 timeout 会直接报错**；而它唯一的调用出口是 `self.client.call(...)`，
+    dashscope SDK 又**原生支持 `request_timeout`**（`api_request_factory.py:33` 会 pop 出来
+    交给 HTTP 层）。故在 `client` 这一个注入点上兜住超时。
+
+    它**根治而非绕过**：有了 `request_timeout`，挂死的调用会自行结束
+    （外层 `asyncio.wait_for` 只是放弃等待，**不终止** `to_thread` 里的线程）。
+    """
+
+    def __init__(self, inner: object, timeout: float) -> None:
+        self._inner = inner
+        self._timeout = timeout
+
+    def call(self, **kwargs: object) -> object:
+        kwargs.setdefault("request_timeout", self._timeout)
+        return self._inner.call(**kwargs)  # type: ignore[attr-defined]
+
+
 def build_rerank(model: str | None = None, top_n: int | None = None) -> DashScopeRerank:
     """构造精排模型（DashScope 专有，角色固定 rerank）。
 
@@ -226,7 +248,8 @@ def build_rerank(model: str | None = None, top_n: int | None = None) -> DashScop
         top_n: 保留条数；None 时取 settings.TOP_K_RERANK。
 
     Returns:
-        DashScopeRerank：DashScope TextReRank 精排器实例。
+        DashScopeRerank：DashScope TextReRank 精排器实例，其 client 为注入
+        `request_timeout=RERANK_TIMEOUT_READ` 的适配器（超时下沉到客户端，D13）。
     """
     import dashscope
 
@@ -238,5 +261,7 @@ def build_rerank(model: str | None = None, top_n: int | None = None) -> DashScop
         model=model or resolved.model,
         top_n=effective_top_n,
         api_key=resolved.api_key,
-        client=dashscope.TextReRank,
+        client=_TimeoutReRankAdapter(
+            dashscope.TextReRank, timeout=settings.RERANK_TIMEOUT_READ
+        ),
     )

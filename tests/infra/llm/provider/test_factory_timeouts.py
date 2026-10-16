@@ -58,3 +58,43 @@ def test_get_embeddings_passes_read_timeout_through(monkeypatch):
     ingest = get_embeddings()
     assert _read_of(query.http_client) == 15.0
     assert _read_of(ingest.http_client) > _read_of(query.http_client)
+
+
+def test_rerank_adapter_injects_request_timeout():
+    """适配器必须把 request_timeout 注入底层 call（D13：SDK 无构造期超时字段）。"""
+    from src.infra.llm.provider.factory import _TimeoutReRankAdapter
+
+    seen: dict[str, object] = {}
+
+    class _FakeClient:
+        @staticmethod
+        def call(**kwargs):
+            seen.update(kwargs)
+            return "resp"
+
+    adapter = _TimeoutReRankAdapter(_FakeClient, timeout=5.0)
+    assert adapter.call(model="m", query="q", documents=["d"]) == "resp"
+    assert seen["request_timeout"] == 5.0
+
+
+def test_rerank_outer_budget_exceeds_inner():
+    from src.config import settings
+
+    assert settings.RERANK_OUTER_TIMEOUT > settings.RERANK_TIMEOUT_READ, (
+        "外层 wait_for 必须大于内层唯一预算，否则外层先放弃、底层线程跑到底"
+    )
+
+
+def test_build_rerank_injects_timeout_adapter(monkeypatch):
+    """build_rerank 必须把超时适配器注入 client（而非 dashscope.TextReRank 类本身）。
+
+    判据取 `isinstance` 与适配器持有的超时值：T2 阶段该断言被移出，
+    由本任务在超时下沉落地后接回，防止接线回退成裸类。
+    """
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test")
+    from src.config import settings
+    from src.infra.llm.provider.factory import _TimeoutReRankAdapter
+
+    reranker = factory.build_rerank()
+    assert isinstance(reranker.client, _TimeoutReRankAdapter)
+    assert reranker.client._timeout == settings.RERANK_TIMEOUT_READ

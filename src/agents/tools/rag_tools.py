@@ -17,10 +17,9 @@ from pydantic import BaseModel, Field
 
 from src.agents.graph.state import AgentState
 from src.agents.tools.ask_tools import AskQuestion, AskUserArgs, ask_user
-from src.config import TOP_K_RERANK, settings
+from src.config import RERANK_OUTER_TIMEOUT, TOP_K_RERANK, settings
 from src.config.const import (
     ASK_USER_TIMEOUT,
-    RERANK_TIMEOUT,
     SSEInteractionTexts,
     resolve_source_tier,
 )
@@ -148,17 +147,18 @@ def make_rag_tools(
         else:
             results = []
 
-        # rerank 为同步 HTTP 调用（无内置超时），放线程池 + 超时兜底，避免阻塞事件循环；
-        # 超时后降级为检索原始顺序（distance 升序），避免空结果触发 abstain
+        # rerank 为同步 HTTP 调用：内层经 client 注入 request_timeout 使挂死调用自行结束，
+        # 外层 wait_for 仅作双保险（预算须大于内层，否则外层先放弃、线程仍跑到底）；
+        # 放线程池避免阻塞事件循环，超时后降级为检索原始顺序（distance 升序）避免空结果 abstain
         try:
             contexts = await asyncio.wait_for(
                 asyncio.to_thread(retrieval.rerank_results, query, results, reranker),
-                timeout=RERANK_TIMEOUT,
+                timeout=RERANK_OUTER_TIMEOUT,
             )
         except TimeoutError:
             core_logging.log_event(
                 Event.RERANK_TIMEOUT,
-                timeout_s=RERANK_TIMEOUT,
+                timeout_s=RERANK_OUTER_TIMEOUT,
                 query=query,
             )
             contexts = []
