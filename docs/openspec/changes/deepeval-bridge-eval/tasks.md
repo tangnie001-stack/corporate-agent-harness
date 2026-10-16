@@ -5,41 +5,45 @@
 >
 > **提交点判据（明写，避免误读）**：仓库纪律"每组跑通再提交"在本 change 下**有已知例外**——第 1 组把 `ragas` 降到 0.3.9 后，`src/cli/eval_ragas.py` 里现代栈的导入与其测试（`tests/cli/test_eval_modern_stack.py`、`tests/cli/test_eval_ragas.py`）会**红到第 9 组**（删除动作与调用点改写同批）。故**第 1–8 组的"跑通并提交"= 本组新增/改动的测试通过**，SHALL NOT 被读成"全量绿"；全量绿以**第 9 组收口**为准，判据是**最终态无悬空引用**（spec「0.4.x-era artifacts」条款）。
 
+> **Phase 1 分组调整（两处）**：
+> 1. 「删除/重写现代栈测试」（原 9.6）在 Phase 1 的收尾任务（T11）内提前执行——否则阶段无法以「全量绿」收口；其复选框仍留第 9 组（未勾选），归组不变。
+> 2. 「评测路径无现代栈符号」自查（原 1.3）作为**阶段级断言**在阶段末（T12）执行，而非在第 1 组内。
+
 ## 1. 依赖与环境（D1）
 
-- [ ] 1.1 `pyproject.toml`：`ragas` 由 `0.4.3` 改为 **`ragas==0.3.9`**（精确 pin，与仓库既有 pin 纪律一致）；新增 `deepeval`；显式记录 `click` 与 `huggingface_hub` 的下限，防回落。
-- [ ] 1.2 重建环境并留证：`pip install -e .` 后 `pip check` 无**新增**冲突；记录实装版本（`ragas` / `deepeval` / `click` / `huggingface_hub`）。
-- [ ] 1.3 自查：全仓 grep 确认评测路径不再引用 `ragas.metrics.collections` / `llm_factory` / `embedding_factory` / `@experiment`。
-- [ ] 1.4 **环境变量（官方明文，防污染）**：评测运行环境显式设 `DEEPEVAL_DISABLE_DOTENV=1`（否则 import 即把 `.env`/`.env.local` 注入 process env）与 `DEEPEVAL_TELEMETRY_OPT_OUT=1`（否则 posthog 遥测开启）；加测试断言两者生效。
+- [x] 1.1 `pyproject.toml`：`ragas` 由 `0.4.3` 改为 **`ragas==0.3.9`**（精确 pin，与仓库既有 pin 纪律一致）；新增 `deepeval`；显式记录 `click` 与 `huggingface_hub` 的下限，防回落。
+- [x] 1.2 重建环境并留证：`pip install -e .` 后 `pip check` 无**新增**冲突；记录实装版本（`ragas` / `deepeval` / `click` / `huggingface_hub`）。
+- [x] 1.3 自查：全仓 grep 确认评测路径不再引用 `ragas.metrics.collections` / `llm_factory` / `embedding_factory` / `@experiment`。
+- [x] 1.4 **环境变量（官方明文，防污染）**：评测运行环境显式设 `DEEPEVAL_DISABLE_DOTENV=1`（否则 import 即把 `.env`/`.env.local` 注入 process env）与 `DEEPEVAL_TELEMETRY_OPT_OUT=1`（否则 posthog 遥测开启）；加测试断言两者生效。
 
 ## 2. 评测入口与指标面（D2）
 
-- [ ] 2.1 **先建裁判与 Embeddings（前移自第 9 组的"改嫁"；本组必须先做，否则本组提交点必红——桥要 langchain `BaseChatModel`，旧 `build_ragas_judge()` 产出 `InstructorBaseRagasLLM` 类型不接）**：裁判 SHALL 经**项目 provider 层**构造——`build_chat("judge", thinking=RAGAS_JUDGE_THINKING, max_tokens=RAGAS_JUDGE_MAX_TOKENS, http_async_client=httpx.AsyncClient(timeout=httpx.Timeout(connect/read/write/pool=RAGAS_HTTP_TIMEOUT_*), event_hooks=...), max_retries=RAGAS_HTTP_MAX_RETRIES)`。**⚠️ 必须传 `http_async_client`，不是 `http_client`**——ragas 的裁判调用走**异步**，而 langchain 的 `http_client` **只喂同步 client**（`langchain_openai/chat_models/base.py:806`；异步用 `:1273`）⇒ 只传同步字段则细粒度超时与 hooks **双双失效**（务必落一个断言用例钉住该实参）。`thinking` 经 `thinking_extra_body` 按 provider 归一化；返回 `ReasoningPreservingChat`，是 `ChatOpenAI` 子类，桥可接收。**SHALL NOT** 在 `src/` 里直写 `ChatOpenAI` + 硬编码 DashScope 端点/密钥；**SHALL NOT 硬写 `extra_body={"enable_thinking": …}`**；**SHALL NOT 传 `temperature`**（温度由 ragas 决定）。`Embeddings` 复用现有 `build_embeddings()`。
-- [ ] 2.2 写失败测试：指标集为**经典四项**，且**不含** `RagasMetric` / `RAGASContextualEntitiesRecall`。
-- [ ] 2.3 写失败测试：每个桥度量构造时**显式传入 `model=`**（防回落到 `gpt-3.5-turbo`；该默认值在源码里是 **7 处**）。
-- [ ] 2.4 实现：`src/cli/eval_scoring.py` 的指标构造改为桥的四个单项；`RAGASAnswerRelevancyMetric` 传入显式 langchain `Embeddings`。
-- [ ] 2.5 实现：`src/cli/eval_ragas.py` 打分阶段由 modern `@experiment` **就地改写**为桥度量驱动（逐样本构造 `LLMTestCase`：`input` / `actual_output` / `expected_output` / `retrieval_context`）。**边界**：本组改写**编排本身**；第 9 组只清理因此**失引用**的辅助函数与残留，**不重复改写编排**。
-- [ ] 2.6 实现：**四指标评分串行（并发=1）** —— 停用对桥度量的并发调用。**依据**：桥复用 `ragas.metrics` 的模块级指标实例，`ragas.evaluate` 会复位 `metrics[i].llm = None`、`LangchainLLMWrapper` 会改写 `chat_model.temperature` ⇒ 并发会互踩、间歇性错分（design D7）。
-- [ ] 2.7 跑通并提交。
+- [x] 2.1 **先建裁判与 Embeddings（前移自第 9 组的"改嫁"；本组必须先做，否则本组提交点必红——桥要 langchain `BaseChatModel`，旧 `build_ragas_judge()` 产出 `InstructorBaseRagasLLM` 类型不接）**：裁判 SHALL 经**项目 provider 层**构造——`build_chat("judge", thinking=RAGAS_JUDGE_THINKING, max_tokens=RAGAS_JUDGE_MAX_TOKENS, http_async_client=httpx.AsyncClient(timeout=httpx.Timeout(connect/read/write/pool=RAGAS_HTTP_TIMEOUT_*), event_hooks=...), max_retries=RAGAS_HTTP_MAX_RETRIES)`。**⚠️ 必须传 `http_async_client`，不是 `http_client`**——ragas 的裁判调用走**异步**，而 langchain 的 `http_client` **只喂同步 client**（`langchain_openai/chat_models/base.py:806`；异步用 `:1273`）⇒ 只传同步字段则细粒度超时与 hooks **双双失效**（务必落一个断言用例钉住该实参）。`thinking` 经 `thinking_extra_body` 按 provider 归一化；返回 `ReasoningPreservingChat`，是 `ChatOpenAI` 子类，桥可接收。**SHALL NOT** 在 `src/` 里直写 `ChatOpenAI` + 硬编码 DashScope 端点/密钥；**SHALL NOT 硬写 `extra_body={"enable_thinking": …}`**；**SHALL NOT 传 `temperature`**（温度由 ragas 决定）。`Embeddings` 复用现有 `build_embeddings()`。
+- [x] 2.2 写失败测试：指标集为**经典四项**，且**不含** `RagasMetric` / `RAGASContextualEntitiesRecall`。
+- [x] 2.3 写失败测试：每个桥度量构造时**显式传入 `model=`**（防回落到 `gpt-3.5-turbo`；该默认值在源码里是 **7 处**）。
+- [x] 2.4 实现：`src/cli/eval_scoring.py` 的指标构造改为桥的四个单项；`RAGASAnswerRelevancyMetric` 传入显式 langchain `Embeddings`。
+- [x] 2.5 实现：`src/cli/eval_ragas.py` 打分阶段由 modern `@experiment` **就地改写**为桥度量驱动（逐样本构造 `LLMTestCase`：`input` / `actual_output` / `expected_output` / `retrieval_context`）。**边界**：本组改写**编排本身**；第 9 组只清理因此**失引用**的辅助函数与残留，**不重复改写编排**。
+- [x] 2.6 实现：**四指标评分串行（并发=1）** —— 停用对桥度量的并发调用。**依据**：桥复用 `ragas.metrics` 的模块级指标实例，`ragas.evaluate` 会复位 `metrics[i].llm = None`、`LangchainLLMWrapper` 会改写 `chat_model.temperature` ⇒ 并发会互踩、间歇性错分（design D7）。
+- [x] 2.7 跑通并提交。
 
 ## 3. 裁判与元数据（D3 / D9）
 
-- [ ] 3.1 写失败测试：报告元数据含 `ragas` 版本、`deepeval` 版本、judge 模型、**温度档位说明（0.01 / 0.3，本项目不可控）**、`model=` 已显式传入的标记。
-- [ ] 3.2 实现：报告头与台账条目补齐上述字段；断言报告中 SHALL NOT 出现"裁判 temperature=0"表述。
-- [ ] 3.3 **框架内部调用的可观测性（D13）**：给裁判的 **`http_async_client`**（`httpx.AsyncClient`）挂 httpx **event hooks**，记录请求级日志（模型 / 耗时 / 状态码 / 请求体摘要 / **响应体摘要 + `finish_reason`**——主因失败是 HTTP 200 + 畸形响应体，只记请求与状态码会看不到）。**挂错字段 = 零触发**：`http_client` 只喂同步 client（langchain `chat_models/base.py:806`），ragas 走异步。**hook SHALL 为 `async def` 且用 `await response.aread()`**（异步 client 调 `await hook(response)`，`httpx/_client.py:1697`；同步 hook 会 `TypeError`；同步 `read()` 在异步流上抛 `RuntimeError`，`_models.py:944`）。**`trace_id` 以显式闭包绑定进 hook**（async def 内可闭包），SHALL NOT 依赖 contextvar（ragas `evaluate` 内部用自己的 `Executor` 线程池，不保证携带）；client 跨样本复用 ⇒ 绑到**可变证据桶**而非固定 `trace_id`（评分串行，安全）。**该日志只做留证**，SHALL NOT 用于 NaN 子分类。验收范围限「**经我们 `http_async_client` 发出的请求**」。
-- [ ] 3.3a **hook 冒烟断言（必做；方向相反的两条）**：跑 1 题桥度量（如 `RAGASFaithfulnessMetric`，真调裁判）断言 ① 响应 hook 触发 **> 0** 次、② hook 内 `await response.aread()` + `json.loads(body)` 成功且能取到 `finish_reason`、③ 指标有分；**并加负向用例**：只传 `http_client`（同步字段）时响应 hook 触发 **== 0**——把"挂错字段就零触发"钉成回归防线（实证见 `docs/tmp/deepeval-poc/RESULTS.md`「Hook 冒烟」：A 臂 4 事件 / B 臂 0 事件，2026-10-16）。
-- [ ] 3.4 跑通并提交。
+- [x] 3.1 写失败测试：报告元数据含 `ragas` 版本、`deepeval` 版本、judge 模型、**温度档位说明（0.01 / 0.3，本项目不可控）**、`model=` 已显式传入的标记。
+- [x] 3.2 实现：报告头与台账条目补齐上述字段；断言报告中 SHALL NOT 出现"裁判 temperature=0"表述。
+- [x] 3.3 **框架内部调用的可观测性（D13）**：给裁判的 **`http_async_client`**（`httpx.AsyncClient`）挂 httpx **event hooks**，记录请求级日志（模型 / 耗时 / 状态码 / 请求体摘要 / **响应体摘要 + `finish_reason`**——主因失败是 HTTP 200 + 畸形响应体，只记请求与状态码会看不到）。**挂错字段 = 零触发**：`http_client` 只喂同步 client（langchain `chat_models/base.py:806`），ragas 走异步。**hook SHALL 为 `async def` 且用 `await response.aread()`**（异步 client 调 `await hook(response)`，`httpx/_client.py:1697`；同步 hook 会 `TypeError`；同步 `read()` 在异步流上抛 `RuntimeError`，`_models.py:944`）。**`trace_id` 以显式闭包绑定进 hook**（async def 内可闭包），SHALL NOT 依赖 contextvar（ragas `evaluate` 内部用自己的 `Executor` 线程池，不保证携带）；client 跨样本复用 ⇒ 绑到**可变证据桶**而非固定 `trace_id`（评分串行，安全）。**该日志只做留证**，SHALL NOT 用于 NaN 子分类。验收范围限「**经我们 `http_async_client` 发出的请求**」。
+- [x] 3.3a **hook 冒烟断言（必做；方向相反的两条）**：跑 1 题桥度量（如 `RAGASFaithfulnessMetric`，真调裁判）断言 ① 响应 hook 触发 **> 0** 次、② hook 内 `await response.aread()` + `json.loads(body)` 成功且能取到 `finish_reason`、③ 指标有分；**并加负向用例**：只传 `http_client`（同步字段）时响应 hook 触发 **== 0**——把"挂错字段就零触发"钉成回归防线（实证见 `docs/tmp/deepeval-poc/RESULTS.md`「Hook 冒烟」：A 臂 4 事件 / B 臂 0 事件，2026-10-16）。
+- [x] 3.4 跑通并提交。
 
 ## 4. 失败语义与主分口径（D4 / D7）
 
-- [ ] 4.1 写失败测试：桥返回 `NaN` 时该行**仍存在**、携带失败信息、被计入 `NaN` 计数，且**不参与**主分均值。
-- [ ] 4.2 写失败测试：`NaN`（裁判故障）与样本类别 `empty`（未检索）在报告中**标记不同**。
-- [ ] 4.3 **重试判据改造（D4；**不做 NaN 子分类**）**：桥把失败吞成 `NaN`、**不抛异常** ⇒ 把 `_score_metric_with_retry` 的判据从 `except Exception` 改为 **非掩码 `NaN`**（有界，`RAGAS_METRIC_MAX_ATTEMPTS` 保留）。**SHALL NOT 实现"按请求级日志把 NaN 分为合法缺值与裁判失败"的分类**——该分类不可实现（桥只回一个 float；HTTP 200 的 envelope 恒为合法 JSON，主因失败与"生成问题全空"在 HTTP 层同形）。**唯一例外：限流类（= HTTP 429 / `openai.RateLimitError`）不触发外层重试**（ragas 框架层已对该类重试 ≤10 次，`run_config.py:52` + `base.py:325-335`；429 由 hooks 状态码判定 ⇒ **hook 需按格记下状态码**，用于该例外）；**403 额度类不属该列，仍由外层重试**。写测试：非掩码 NaN → 重试 → 可恢复；**429 → 不触发外层重试**。
-- [ ] 4.4 **失败留证换承载点（D4 / D13）**：删 `_judge_failure_note`（桥无异常、无 `last_completion`），失败证据由裁判 **`http_async_client`** 上的请求级日志承载（与 3.3 复用同一 client）；**该日志只做留证，不用于 NaN 子分类**。
-- [ ] 4.5 实现：`apply_sample_masks` / `main_score_means` 改为「纯 KB **且非 NaN**」的四指标均值；报告新增 `NaN` 计数。
-- [ ] 4.6 实现：`eval_report` 落库与 `kb_eval` API 去掉 `answer_correctness`；同步 `RAGAS_METRIC_COLUMNS`、**`const.py:496` 的注释**（仍写"answer_relevancy/answer_correctness 不在此列"）、报告/stdout 断言、**`docs/agents/api_contract.md` 逐处**（`:733` / `:744` / `:909` / `:912` / `:1353` / `:1379` / `:1400`）、**`docs/agents/ragas-eval-ledger.md` 表头**（**新增「口径版本」列**；`answer_correctness` 列**保留**、历史行不动、新行留空/`N/A`——**不得删列**，否则表头列数与历史行不等、Markdown 表破损）。**同时处置"失义配置"**：① `RAGAS_EVAL_CONCURRENCY`（`const.py:515`，注释明写"行级并发上限"，`eval_ragas.py:533` 用）在四指标改**串行**后失义 ⇒ 删除或改为串行语义并重述注释；② 台账「公共配置」段（`ragas-eval-ledger.md:19` 的并发项、`:21` 的"**五项**均值"）SHALL 同步更新（历史行不动）。
-- [ ] 4.7 **NaN 率门禁（D10，spec「NaN rate gates the evaluation」）**：`check_gate` 增加 NaN 率判据（阈值 = 经验初值 **10%**，`>阈值` 则 fail）；**分子/分母按 spec 口径**——**分母 = 纯 KB 样本 × 四指标**（实测 19×4 = **76 格**；`>10%` 即 **>7.6 格 ⇒ ≥8 格**），**分子 = 纯 KB 格里的全部 NaN**（掩码类由分母天然排除；合法缺值型与裁判失败型**一并计入**，**不做子分类**）；报告打印「**建议启用逃生门**」提示。写测试覆盖：`≤阈值` 不判失败、`>阈值` 判失败且出提示、**掩码 NaN 不计入分子/分母**。**注意单位**：SHALL NOT 用"题数"口径实现（与分母定义差约 4 倍）。
-- [ ] 4.8 跑通并提交。
+- [x] 4.1 写失败测试：桥返回 `NaN` 时该行**仍存在**、携带失败信息、被计入 `NaN` 计数，且**不参与**主分均值。
+- [x] 4.2 写失败测试：`NaN`（裁判故障）与样本类别 `empty`（未检索）在报告中**标记不同**。
+- [x] 4.3 **重试判据改造（D4；**不做 NaN 子分类**）**：桥把失败吞成 `NaN`、**不抛异常** ⇒ 把 `_score_metric_with_retry` 的判据从 `except Exception` 改为 **非掩码 `NaN`**（有界，`RAGAS_METRIC_MAX_ATTEMPTS` 保留）。**SHALL NOT 实现"按请求级日志把 NaN 分为合法缺值与裁判失败"的分类**——该分类不可实现（桥只回一个 float；HTTP 200 的 envelope 恒为合法 JSON，主因失败与"生成问题全空"在 HTTP 层同形）。**唯一例外：限流类（= HTTP 429 / `openai.RateLimitError`）不触发外层重试**（ragas 框架层已对该类重试 ≤10 次，`run_config.py:52` + `base.py:325-335`；429 由 hooks 状态码判定 ⇒ **hook 需按格记下状态码**，用于该例外）；**403 额度类不属该列，仍由外层重试**。写测试：非掩码 NaN → 重试 → 可恢复；**429 → 不触发外层重试**。
+- [x] 4.4 **失败留证换承载点（D4 / D13）**：删 `_judge_failure_note`（桥无异常、无 `last_completion`），失败证据由裁判 **`http_async_client`** 上的请求级日志承载（与 3.3 复用同一 client）；**该日志只做留证，不用于 NaN 子分类**。
+- [x] 4.5 实现：`apply_sample_masks` / `main_score_means` 改为「纯 KB **且非 NaN**」的四指标均值；报告新增 `NaN` 计数。
+- [x] 4.6 实现：`eval_report` 落库与 `kb_eval` API 去掉 `answer_correctness`；同步 `RAGAS_METRIC_COLUMNS`、**`const.py:496` 的注释**（仍写"answer_relevancy/answer_correctness 不在此列"）、报告/stdout 断言、**`docs/agents/api_contract.md` 逐处**（`:733` / `:744` / `:909` / `:912` / `:1353` / `:1379` / `:1400`）、**`docs/agents/ragas-eval-ledger.md` 表头**（**新增「口径版本」列**；`answer_correctness` 列**保留**、历史行不动、新行留空/`N/A`——**不得删列**，否则表头列数与历史行不等、Markdown 表破损）。**同时处置"失义配置"**：① `RAGAS_EVAL_CONCURRENCY`（`const.py:515`，注释明写"行级并发上限"，`eval_ragas.py:533` 用）在四指标改**串行**后失义 ⇒ 删除或改为串行语义并重述注释；② 台账「公共配置」段（`ragas-eval-ledger.md:19` 的并发项、`:21` 的"**五项**均值"）SHALL 同步更新（历史行不动）。
+- [x] 4.7 **NaN 率门禁（D10，spec「NaN rate gates the evaluation」）**：`check_gate` 增加 NaN 率判据（阈值 = 经验初值 **10%**，`>阈值` 则 fail）；**分子/分母按 spec 口径**——**分母 = 纯 KB 样本 × 四指标**（实测 19×4 = **76 格**；`>10%` 即 **>7.6 格 ⇒ ≥8 格**），**分子 = 纯 KB 格里的全部 NaN**（掩码类由分母天然排除；合法缺值型与裁判失败型**一并计入**，**不做子分类**）；报告打印「**建议启用逃生门**」提示。写测试覆盖：`≤阈值` 不判失败、`>阈值` 判失败且出提示、**掩码 NaN 不计入分子/分母**。**注意单位**：SHALL NOT 用"题数"口径实现（与分母定义差约 4 倍）。
+- [x] 4.8 跑通并提交。
 
 ## 5. Agent 行为轴（D6，**必须 `evals_iterator` 驱动、分数从 `test_run` JSON 回读**）
 
