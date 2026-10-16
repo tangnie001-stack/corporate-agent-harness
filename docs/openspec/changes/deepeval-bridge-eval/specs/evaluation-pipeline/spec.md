@@ -68,7 +68,7 @@
 - **判为 (b)** ⇔ 至少捕获到**一次正常调用**（2xx + 响应体可解析 + `finish_reason=stop`）且无任何异常证据，而指标仍返回 `NaN`。
 - **无证据时默认归 (c)**：宁可触发重试与计数，也不静默把失败当"合法缺值"（ADR-0024 决策 3/6 的教训）。
 
-因此评测 SHALL：① 让三类 `NaN` 显式可见、在报告中**标记不同**（SHALL NOT 静默计入均分）；② 单独统计 **(c) 类 `NaN` 计数**并在报告中呈现；③ **以 (c) 类 `NaN`（而非 `except Exception`）为判据执行有界重试**——`RAGAS_METRIC_MAX_ATTEMPTS` 保留，但判据 SHALL NOT 沿用异常；(b) 类合法缺值 SHALL NOT 触发重试；**限流类 (c) SHALL NOT 触发外层重试**（ragas 框架层已对限流错误重试 ≤10 次，见「RAGAS dependency is pinned to the 0.3 line」的复用条款，外层再叠会乘法放大）；④ 裁判失败的留证 SHALL 由**框架内部请求级日志**承载，且该日志 SHALL 记**响应体摘要 + `finish_reason`**（主因失败是 HTTP 200 + 畸形响应体；**该日志同时充当③的分类依据**），SHALL NOT 依赖 `_judge_failure_note`。
+因此评测 SHALL：① 让三类 `NaN` 显式可见、在报告中**标记不同**（SHALL NOT 静默计入均分）；② 单独统计 **(c) 类 `NaN` 计数**并在报告中呈现；③ **以 (c) 类 `NaN`（而非 `except Exception`）为判据执行有界重试**——`RAGAS_METRIC_MAX_ATTEMPTS` 保留，但判据 SHALL NOT 沿用异常；(b) 类合法缺值 SHALL NOT 触发重试；**限流类 (c)（= HTTP 429 / `openai.RateLimitError`，可用 hooks 的状态码判定）SHALL NOT 触发外层重试**（ragas 框架层已对该类重试 ≤10 次，见「RAGAS dependency is pinned to the 0.3 line」的复用条款，外层再叠会 10×3 放大）；**其余 (c)（超时 / 畸形响应 / 403 额度类 / 连接失败）SHALL 由外层重试**（403 额度类**不**属 `RateLimitError`，ragas 不会重试它，故外层重试是唯一一层）；④ 裁判失败的留证 SHALL 由**框架内部请求级日志**承载，且该日志 SHALL 记**响应体摘要 + `finish_reason`**（主因失败是 HTTP 200 + 畸形响应体；**该日志同时充当③的分类依据**），SHALL NOT 依赖 `_judge_failure_note`。
 
 `NaN`（裁判故障）与样本类别 `empty`（未检索到材料）SHALL 被区分为**两种不同的跳过语义**。
 
@@ -442,7 +442,7 @@
 弃用 0.4.x 时，为现代栈而写的代码与配置 SHALL 被**逐项处置**（复用 / 删除 / 改写），SHALL NOT 留下悬空引用或失义配置。
 
 - **复用**：`RAGAS_JUDGE_MAX_TOKENS` / `RAGAS_JUDGE_THINKING` SHALL 改嫁到 **provider 层 `build_chat("judge", max_tokens=…, thinking=…)`**（`thinking` 经 `thinking_extra_body` 按 provider 归一化），SHALL NOT 硬写 `extra_body={"enable_thinking": …}` 等 provider 专有键；`RAGAS_METRIC_MAX_ATTEMPTS` SHALL 保留（桥无内置重试，判据见「Metric failures」）；`RAGAS_HTTP_TIMEOUT_{CONNECT,READ,WRITE,POOL}` 与 `RAGAS_HTTP_MAX_RETRIES` SHALL 经 `ChatOpenAI` 的 `http_client`（细粒度 `httpx.Timeout`）与 `max_retries=0` 保留——SHALL NOT 因换入口而退化为单值超时或重新打开 **SDK** 重试。
-  - **⚠️ 重试维度的边界（订正，SHALL 如实记录）**：`max_retries=0` **只关掉 OpenAI SDK 的重试**；**ragas 框架层自带重试**——`ragas/llms/base.py:113` 用 `add_async_retry` 包裹每次生成，`ragas/run_config.py:52` 默认 `max_retries=10`（`:89/:110 stop_after_attempt`，主要针对限流错误），且**桥不暴露 `RunConfig`**（与 `bypass_temperature` "开关存在却无法置真"**同型**）。⇒ SHALL **登记为接受的偏离**，SHALL NOT 在本规格或设计里声称"重试维度已完整保住"；防倍增效的口径见「Metric failures」③（**限流类不触发外层重试**）。
+  - **⚠️ 重试维度的边界（订正，SHALL 如实记录）**：`max_retries=0` **只关掉 OpenAI SDK 的重试**；**ragas 框架层自带重试**——`ragas/llms/base.py:113` 用 `add_async_retry` 包裹每次生成，`ragas/run_config.py:52` 默认 `max_retries=10`（`:89/:110 stop_after_attempt`），且其重试**只针对 `openai.RateLimitError`（= HTTP 429）**（`ragas/llms/base.py:325-335` 的 `set_run_config` 把 `exception_types` 设为 `RateLimitError`）；**桥不暴露 `RunConfig`**（与 `bypass_temperature` "开关存在却无法置真"**同型**）。⇒ SHALL **登记为接受的偏离**，SHALL NOT 在本规格或设计里声称"重试维度已完整保住"；防倍增效的口径见「Metric failures」③（**429 / `RateLimitError` 不触发外层重试**，其余失败类别仍由外层重试）。
 - **删除**：`build_ragas_judge()` / `build_ragas_embeddings()` SHALL 被删除；`build_native_client()` 在确认无其他消费方后 SHALL 被删除。
 - **改写**：`@experiment()` 编排与 `src/cli/eval_scoring.py` 的现代 `build_metrics()` SHALL 被替换；`judge call` / `metric retry` 日志事件的口径 SHALL 随埋点位置变化而重述。
 - **ADR**：本次推翻既有裁判 client 政策（含 `temperature=0`），SHALL **追加新 ADR** 并在旧 ADR 的 Status 加**反向指针**（ADR 正文不可变），并更新 ADR 索引表。

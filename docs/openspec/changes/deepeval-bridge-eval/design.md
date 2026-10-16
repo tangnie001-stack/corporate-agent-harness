@@ -115,7 +115,7 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
      - **分母** = **纯 KB 样本 × 四项指标**（格数）。实测台账有效纯 KB = **19** 题 ⇒ 分母 **76 格**；`>10%` 即 **≥8 格**。（**订正**：原稿写"21 题下允许 ≤2 题"，与分母定义**单位不一致**，已按格数重述。）
      - **分子** = **仅 (c) 类**；(a) 由分母天然排除；(b) 不计入分子、不重试。
    - **连带后果（必须显式处理，否则 ADR-0024 的两条核心保护静默失效）**：
-     - ① **重试判据要换**：现 `_score_metric_with_retry`（`src/cli/eval_ragas.py:423-483`）以 `except Exception` 为判据 ⇒ 在桥下**永不触发**，一次瞬时失败即永久 `NaN`、把该题踢出均值（正是 ADR-0024 决策 3 要消除的"乐观偏差 + 分母不齐"）⇒ 重试 SHALL 以 **(c) 类 `NaN`** 为判据；**(b) 类合法缺值 SHALL NOT 重试**。**且限流类不重试**（见下 I2 口径：ragas 框架层已对 `RateLimitError` 重试 ≤10 次，外层再叠会乘法放大）。
+     - ① **重试判据要换**：现 `_score_metric_with_retry`（`src/cli/eval_ragas.py:423-483`）以 `except Exception` 为判据 ⇒ 在桥下**永不触发**，一次瞬时失败即永久 `NaN`、把该题踢出均值（正是 ADR-0024 决策 3 要消除的"乐观偏差 + 分母不齐"）⇒ 重试 SHALL 以 **(c) 类 `NaN`** 为判据；**(b) 类合法缺值 SHALL NOT 重试**。**且限流类（= HTTP 429 / `openai.RateLimitError`）不重试**（ragas 框架层已对该类重试 ≤10 次、`base.py:325-335` 把 `exception_types` 设为 `RateLimitError`，外层再叠会 10×3 放大）；**403 额度类不属该列** ⇒ 仍由外层重试。
      - ② **失败留证要换承载点**：`_judge_failure_note` 依赖异常对象上的 `last_completion`（它抓 `finish_reason` / 输出 token / **原始输出片段**，`src/cli/eval_ragas.py:390-420`——ADR-0024 决策 6 称此为"最大教训"），桥下**拿不到异常、也拿不到该字段** ⇒ 失败证据改由 **D13 的请求级日志**承载（**同一批证据同时充当上文的分类依据**）。故 D13 的 hooks SHALL 记**响应体摘要 + `finish_reason`**，SHALL NOT 只记"请求体摘要"。**SHALL NOT** 保留"复用 `_judge_failure_note`"的声明。
    - 设计上要求：
      - 三类 NaN SHALL 在报告中**标记不同**、可区分；
