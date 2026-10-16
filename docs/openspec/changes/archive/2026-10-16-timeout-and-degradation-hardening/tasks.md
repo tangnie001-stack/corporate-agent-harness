@@ -10,10 +10,10 @@
 - [x] 0.2 **验收边界**：worktree 内只跑**非 DB 单测 + `ruff` + `pyright`**；DB 用例与端到端回主工作区（worktree 缺 gitignored `data/`，`tests/parsers` 会环境性失败，不是回归）。
 - [x] 0.3 **对照实测载体**：**本地真实发起调用**取分位（本机 `.env` 已走真实 provider）；**本机日志不可用**（stub 流量，`latency_ms=0~1`）；**不在生产做对照**。
 - [x] 0.4 每阶段收尾走 ⑥ 两道闸门（`verification-before-completion` + `requesting-code-review`）；本 change 属**纯代码任务为主**，无破坏性操作。
-- [ ] 0.5 **定序与开工前置断言（D17）**：`deepeval-bridge-eval` 的在途改动**已收口**（2026-10-16 拉入 `b8ca89ae`，脚本/机检可复跑）；仍与 `turn-provenance-observability` 共享 `agent_service.py` / `log_events.py` / `log_event_specs.py` / `const.py` ⇒ **动这四个文件前**先看它是否在途。**断言按阻塞面分开，不再一律卡住开工**：
+- [x] 0.5 **定序与开工前置断言（D17）**：`deepeval-bridge-eval` 的在途改动**已收口**（2026-10-16 拉入 `b8ca89ae`，脚本/机检可复跑）；仍与 `turn-provenance-observability` 共享 `agent_service.py` / `log_events.py` / `log_event_specs.py` / `const.py` ⇒ **动这四个文件前**先看它是否在途。**断言按阻塞面分开，不再一律卡住开工**：
   - **阻塞 P1/P2/P3 代码的（两条）**：① **生产自有键与 `RAGAS_*` 族无交集**（D2「键名归属」，本侧可自证）；② 对方仍计划删 `build_native_client`（"核引用后删"）⇒ **动 `factory.py` 前重读其当前形态**，且本变更不引用该函数。
   - **只阻塞「建本变更的 ADR」的（一条）**：③ 对方那条取代 ADR-0024 的新 ADR **编号已落**（截至 2026-10-16 `docs/adr` 最大仍是 `0024`）—— 本变更 ADR 序号要排在它之后 ⇒ **不阻塞任何代码任务**，只影响建档时机。
-  **超时策略真源**：生产链路归本变更、评测链（`RAGAS_*` 族、含 `judge`）归它，两侧不互相覆盖。
+  **超时策略真源**：生产链路归本变更、评测链（`RAGAS_*` 族、含 `judge`）归它，两侧不互相覆盖。 **2026-10-16 收口**：断言③（"对方新 ADR 编号已落"）**未按原计划等待** —— 核实对方**从未指名编号、也未占用 0025**（全仓可查），而编号约束只要求「写时连续」⇒ 本变更直接取 **ADR-0025**，对方将来取下一个可用号。故该断言以"反向解决"方式失效，不再构成阻塞。
 - [x] 0.6 **提交 / 开工前跑一致性机检**：`python docs/tmp/check-change-consistency.py docs/openspec/changes/timeout-and-degradation-hardening`（应 **0 命中**）。它兜的是本 change 连过三轮评审反复出现的那一类缺陷 —— **修正只改了一半 / 只改了一处**（design 改了 spec 没改、spec 改了 tasks 没改）。检查项、四类误报的调参记录与灵敏度验证结果见脚本头部 docstring。
 
 ## 1. P1 底座：重试原语 + 显式超时 + 关 SDK 重试（可独立交付）
