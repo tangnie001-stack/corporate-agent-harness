@@ -26,6 +26,8 @@
     --kb-accent: #3B82F6;
     --shadow: 0 1px 3px rgba(0,0,0,0.08);
     --shadow-lg: 0 4px 12px rgba(0,0,0,0.04);
+    --degraded: #B45309;
+    --degraded-bg: #FEF3C7;
     --font-display: 'Lexend', 'Source Sans 3', sans-serif;
     --font-body: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     --transition: 150ms ease;
@@ -544,6 +546,10 @@
     font-size: 12px; color: var(--text-secondary);
     background: var(--surface-muted); border-radius: 8px; padding: 4px 10px;
     animation: fadeInUp 250ms ease-out;
+  }
+  .status-tag-degraded {
+    color: var(--degraded);
+    background: var(--degraded-bg);
   }
   .status-dot {
     display: inline-block; width: 6px; height: 6px; border-radius: 50%;
@@ -1204,11 +1210,13 @@ let toolCallSeen = false;      // 是否已出现工具调用（之后 token = �
 let pendingPreviewEl = null;   // 待定区预览 div（单一节点引用，固化时原位保留）
 let currentStatusGroup = null; // 相邻同型合并：当前 status 组 div
 let answerStartIdx = 0;        // 气泡正文起点指针：上次工具边界在 streamBuffer 中的位置（其后内容尚未被边界重分类，可能是旁白）
+let degradedNoticeSeen = false; // 本轮是否已收到降级告知（其后 token = 交付正文，不进旁白待定区）
 
 // 新提问全量复位过程渲染状态（随 removeStreamingState 调用）
 function resetProcessRenderState() {
   pendingTokens = [];
   toolCallSeen = false;
+  degradedNoticeSeen = false;
   pendingPreviewEl = null;
   currentStatusGroup = null;
   currentThinkRow = null;
@@ -1315,6 +1323,13 @@ function renderStatusTag(stage, message, detail) {
     mountProcessElement(currentStatusGroup);
   }
   const div = buildStatusTag(stage, message, detail);
+  // 降级告知（stage 约定字符串 'degraded'，对应后端 SSEInteractionTexts.STAGE_DEGRADED）：
+  // 只作提示，不标记 toolCallSeen、不触发正文/旁白重分类（与 retrieve/web_search 的区别）
+  if (stage === 'degraded') {
+    div.classList.add('status-tag-degraded');
+    // 降级告知**之后**到达的 token 是本轮交付的正文（检索原文），不是旁白待定区内容
+    degradedNoticeSeen = true;
+  }
   currentStatusGroup.appendChild(div);
   scrollToBottom();
 }
@@ -1361,10 +1376,10 @@ let streamBubble = null; // 当前轮 assistant 气泡的 .bubble-content（过�
 let streamTimer = null;
 
 // 流式：累积 buffer，60ms 节流整段重渲染（预览走闭合补全）。
-// 首个工具调用前的 token 进旁白待定区（bubble-content 内正文段落预览），
+// 首个工具调用前、且未收到降级告知时的 token 进旁白待定区（bubble-content 内正文段落预览），
 // 之后到达的 token 才是正文，渲染进 bubble-content 内的 answer-md 子容器
 function renderAiAnswerStream(text) {
-  if (!toolCallSeen) {
+  if (!toolCallSeen && !degradedNoticeSeen) {
     pendingTokens.push(text);
     updatePendingPreview();
     return;
@@ -2357,7 +2372,9 @@ function buildStreamHandlers() {
       finalizeAnswer();
       streamRetryCount = 0; // 服务端终态 error，不再重连
       if (state.current === STATE.STREAMING) {
-        showError('连接异常，请重试');
+        // 后端已归类时给出可区分文案（可用性类不含"重试"诱导）；
+        // 未归类时 data.error 为空串 ⇒ 回落通用文案（与改造前逐字一致）
+        showError(data.error || '连接异常，请重试');
         state.current = STATE.IDLE;
         setInputState(true);
       } else if (state.current === STATE.CLARIFYING) {
