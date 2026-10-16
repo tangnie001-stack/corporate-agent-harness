@@ -1565,3 +1565,232 @@ class TestTurnProvenanceStatus:
             if e["type"] == "status"
         ]
         assert log_stages == ["turn_agent", "turn_skill"]
+
+
+class _Recorder:
+    """StreamingRunManager 的最小替身：只收 add_event。"""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def add_event(self, session_id: str, etype: str, payload: dict) -> None:
+        self.events.append((etype, payload))
+
+    def unregister_if_current(self, session_id: str, task) -> None:
+        return None
+
+
+class _FailingGraph:
+    """astream_events 立刻抛出（模拟首 token 前失败）。"""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    async def astream_events(self, state, version=None):
+        raise self._exc
+        yield  # pragma: no cover  # 让本方法成为异步生成器
+
+
+class _TokenThenFailGraph:
+    """先吐一个 token 再抛出（模拟流中途断）。"""
+
+    def __init__(self, item: dict, exc: BaseException) -> None:
+        self._item = item
+        self._exc = exc
+
+    async def astream_events(self, state, version=None):
+        yield self._item
+        raise self._exc
+
+
+async def _run(manager, ctx, graph, partial_holder) -> None:
+    from src.services.agent_service import _run_generation
+
+    await _run_generation(
+        ctx.session_id,
+        ctx.kb_id,
+        "营收多少",
+        [],
+        False,
+        ctx,
+        manager,
+        graph=graph,
+        partial_holder=partial_holder,
+    )
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_with_context_delivers_retrieved_original():
+    """首 token 前失败且已有检索结果 ⇒ 送检索原文 + 告知，并更新 partial_holder。"""
+    from src.config.const import SSEInteractionTexts
+    from src.infra.llm.request_context import RequestContext
+    from src.rag.errors import (
+        RetrievalUnavailableError,  # noqa: F401  # 保持与 T1 的依赖可见
+    )
+
+    ctx = RequestContext(session_id="s-ctx", kb_id="kb1")
+    ctx.tool_contexts = [
+        RAGContext(
+            content="营业总收入 100 亿元",
+            source="年报.pdf",
+            page=3,
+            doc_id="d1",
+            chunk_id="c1",
+            score=0.9,
+        )
+    ]
+    manager = _Recorder()
+    partial: dict = {"text": "", "sources": []}
+
+    with pytest.raises(RuntimeError):
+        await _run(manager, ctx, _FailingGraph(RuntimeError("upstream 500")), partial)
+
+    statuses = [p for t, p in manager.events if t == "status"]
+    assert statuses, "必须发出降级告知"
+    assert statuses[0]["stage"] == SSEInteractionTexts.STAGE_DEGRADED
+    assert (
+        statuses[0]["message"]
+        == SSEInteractionTexts.DEGRADATION_TEXTS["llm_unavailable_with_context"]
+    )
+    tokens = [p["token"] for t, p in manager.events if t == "token"]
+    assert tokens, "检索原文必须作为正文送出"
+    assert "营业总收入 100 亿元" in tokens[0]
+    assert partial["text"] == tokens[0]
+    citations = [p for t, p in manager.events if t == "citation"]
+    assert citations and citations[0]["source"] == "年报.pdf"
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_without_context_gives_notice_only():
+    """首 token 前失败且无检索结果 ⇒ 仅告知，不送空正文。"""
+    from src.config.const import SSEInteractionTexts
+    from src.infra.llm.request_context import RequestContext
+
+    ctx = RequestContext(session_id="s-noctx", kb_id="kb1")  # tool_contexts 为空
+    manager = _Recorder()
+    partial: dict = {"text": "", "sources": []}
+
+    with pytest.raises(RuntimeError):
+        await _run(manager, ctx, _FailingGraph(RuntimeError("upstream 500")), partial)
+
+    statuses = [p for t, p in manager.events if t == "status"]
+    assert (
+        statuses[0]["message"]
+        == SSEInteractionTexts.DEGRADATION_TEXTS["llm_unavailable_no_context"]
+    )
+    assert [t for t, _ in manager.events if t == "token"] == []
+    assert partial["text"] == ""
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_after_token_is_stream_interrupted():
+    """已产出后失败 ⇒ 只告知"回答未生成完整"，不重放检索原文。"""
+    from src.config.const import SSEInteractionTexts
+    from src.infra.llm.request_context import RequestContext
+
+    ctx = RequestContext(session_id="s-mid", kb_id="kb1")
+    ctx.tool_contexts = [
+        RAGContext(
+            content="旧原文",
+            source="x.pdf",
+            page=1,
+            doc_id="d",
+            chunk_id="c",
+            score=0.5,
+        )
+    ]
+    manager = _Recorder()
+    partial: dict = {"text": "", "sources": []}
+
+    with pytest.raises(RuntimeError):
+        await _run(
+            manager,
+            ctx,
+            _TokenThenFailGraph(
+                _chat_model_stream_item("部分回答"), RuntimeError("boom")
+            ),
+            partial,
+        )
+
+    statuses = [p for t, p in manager.events if t == "status"]
+    degraded = [p for p in statuses if p["stage"] == SSEInteractionTexts.STAGE_DEGRADED]
+    assert degraded, "已产出后失败也必须告知"
+    assert (
+        degraded[0]["message"]
+        == SSEInteractionTexts.DEGRADATION_TEXTS["llm_stream_interrupted"]
+    )
+    # 不得重放检索原文（旧原文不该出现在任何 token 里）
+    assert all("旧原文" not in p["token"] for t, p in manager.events if t == "token")
+
+
+@pytest.mark.asyncio
+async def test_vector_store_failure_maps_to_vector_store_copy():
+    """向量库不可用 ⇒ reason=vector_store_failed、文案=知识库暂不可用。"""
+    from src.config.const import SSEInteractionTexts
+    from src.infra.llm.request_context import RequestContext
+    from src.rag.errors import RetrievalUnavailableError
+
+    ctx = RequestContext(session_id="s-vs", kb_id="kb1")
+    manager = _Recorder()
+    partial: dict = {"text": "", "sources": []}
+
+    with pytest.raises(RetrievalUnavailableError):
+        await _run(
+            manager,
+            ctx,
+            _FailingGraph(RetrievalUnavailableError("pg down")),
+            partial,
+        )
+
+    statuses = [p for t, p in manager.events if t == "status"]
+    assert (
+        statuses[0]["message"]
+        == SSEInteractionTexts.DEGRADATION_TEXTS["vector_store_failed"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_error_event_carries_safe_copy_only_when_classified():
+    """终态 error 的载荷：已归类给表内文案；未归类留空（前端回落通用文案，不泄露内部文本）。"""
+    from src.config.const import SSEInteractionTexts
+    from src.infra.llm.request_context import RequestContext
+    from src.services.turn_runner import _run_with_finalize
+
+    class _StatusErr(Exception):
+        def __init__(self, code: int) -> None:
+            super().__init__(f"http {code}")
+            self.status_code = code
+
+    async def _drive(exc: BaseException) -> dict:
+        ctx = RequestContext(session_id="s-err")
+        manager = _Recorder()
+        svc = Mock()
+        svc.save_assistant_async = AsyncMock()
+        svc.chat_manager = Mock()
+        svc.chat_manager.add_message_async = AsyncMock()
+
+        async def builder() -> str:
+            raise exc
+
+        await _run_with_finalize(
+            svc,
+            "s-err",
+            "",
+            {"text": "", "sources": []},
+            builder,
+            manager,  # type: ignore[reportArgumentType]  # 运行时为最小替身 _Recorder
+            asyncio.Event(),
+            lambda: None,
+            ctx,
+        )
+        errors = [p for t, p in manager.events if t == "error"]
+        assert errors, "异常路径必须发 error 终态"
+        return errors[0]
+
+    forbidden = await _drive(_StatusErr(403))
+    assert (
+        forbidden["error"]
+        == SSEInteractionTexts.DEGRADATION_TEXTS["provider_unavailable"]
+    )
+    # 未归类：留空，前端回落通用文案（与改造前逐字一致，且不透出内部异常文本）
+    assert (await _drive(ValueError("secret internal detail")))["error"] == ""

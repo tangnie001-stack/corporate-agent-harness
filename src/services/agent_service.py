@@ -47,6 +47,7 @@ from src.config.const import (
 from src.config.prompts import loader
 from src.core import logging as core_logging
 from src.core.log_events import Event, Signal
+from src.infra import retry_policy
 from src.infra.db.repos import KbRepo
 from src.infra.db.vector_store import VectorStore
 from src.infra.llm.chat_message import ChatMessage
@@ -375,6 +376,106 @@ class AgentResolution:
 
     effective: str  # 生效值；来源：解析结果；范围：本轮请求；用途：ctx.agent/日志
     source: str  # 来源枚举；来源：解析结果；范围：本轮请求；用途：日志/单测
+
+
+def _degradation_reason(exc: BaseException, ctx: RequestContext, produced: bool) -> str:
+    """判定降级 reason（取值取自规格取值集合表，不得自造）。
+
+    优先级：
+    1. **已产出** ⇒ `llm_stream_interrupted`——流已开始输出就不能再声称"以下是
+       已检索到的原文"（那部分用户已看到），也不重试（D4）；
+    2. `classify_failure` 归类成功 ⇒ 用它的取值（`provider_unavailable` /
+       `upstream_exhausted` / `vector_store_failed`）；
+    3. 未归类 ⇒ 按本轮**是否已有检索结果**分 `llm_unavailable_with_context` /
+       `llm_unavailable_no_context`。
+
+    Args:
+        exc: 触发的异常
+        ctx: 请求上下文（`tool_contexts` 判定"是否已有检索结果"）
+        produced: 本次是否已向用户产出过 token
+
+    Returns:
+        取值集合表内的 reason 字符串
+    """
+    if produced:
+        return "llm_stream_interrupted"
+    classified = retry_policy.classify_failure(exc)
+    if classified is not None:
+        return classified
+    if ctx.tool_contexts:
+        return "llm_unavailable_with_context"
+    return "llm_unavailable_no_context"
+
+
+def _emit_degradation(
+    manager: StreamingRunManager,
+    session_id: str,
+    capture: _StreamCapture,
+    ctx: RequestContext,
+    partial_holder: dict | None,
+    exc: BaseException,
+    produced: bool,
+) -> None:
+    """失败时的降级发射（P2 / D6 / D9）：判定 → 留痕 → 经 status + 专用 stage 送达。
+
+    动作在**本调用点**完成（D1 ③：不抽统一降级管理器）。三个分支见
+    `_degradation_reason`；其中"有检索原文"这一支额外做两件事：
+    先补发 citation（引用横条），再把原文作为 token 送进回答气泡 —— 并把
+    `partial_holder["text"]` 设为该原文，使异常收尾落 `interrupted` 且**有内容**
+    （spec 要求：不得落一条空内容却标记为正常完成的消息）。
+
+    Args:
+        manager: 事件缓冲（实时 SSE）
+        session_id: 会话 ID
+        capture: 流捕获容器（事件日志，随 process 持久化/历史回放）
+        ctx: 请求上下文（`tool_contexts` 为检索原文来源）
+        partial_holder: 共享 dict（有原文时更新 text/sources）
+        exc: 触发的异常（供归类与留痕）
+        produced: 本次是否已向用户产出过 token
+    """
+    reason = _degradation_reason(exc, ctx, produced)
+    core_logging.log_event(Event.DEGRADED, reason=reason, err=str(exc))
+
+    notice = SSEStatusEvent(
+        stage=SSEInteractionTexts.STAGE_DEGRADED,
+        message=SSEInteractionTexts.DEGRADATION_TEXTS[reason],
+    )
+    _record_event(capture, notice)
+    manager.add_event(session_id, notice.type, notice.payload_for_buffer())
+
+    if reason != "llm_unavailable_with_context":
+        return
+
+    for index, context in enumerate(ctx.tool_contexts, start=1):
+        citation = SSECitationEvent(
+            source=context.source,
+            page=context.page,
+            snippet=context.content[:200],
+            score=context.score,
+            index=index,
+            kind=context.kind,
+            tier=context.tier,
+        )
+        _record_event(capture, citation)
+        manager.add_event(session_id, citation.type, citation.payload_for_buffer())
+        if partial_holder is not None:
+            partial_holder.setdefault("sources", []).append(
+                {
+                    "source": context.source,
+                    "page": context.page,
+                    "snippet": context.content[:200],
+                    "kind": context.kind,
+                    "index": index,
+                    "tier": context.tier,
+                }
+            )
+
+    passages = "\n\n".join(c.to_prompt_text() for c in ctx.tool_contexts)
+    token = SSETokenEvent(token=passages)
+    _record_event(capture, token)
+    manager.add_event(session_id, token.type, token.payload_for_buffer())
+    if partial_holder is not None:
+        partial_holder["text"] = passages
 
 
 def _record_event(capture: _StreamCapture | None, event: SSEEvent) -> None:
@@ -735,6 +836,13 @@ async def _run_generation(
             tool_trace.consume(item)
             if abort_signal is not None and abort_signal.is_set():
                 raise asyncio.CancelledError
+    except Exception as e:
+        # 失败降级（P2 / D6 / D9）：动作留本调用点；分类与取值来自 retry_policy + 规格表。
+        # CancelledError 属 BaseException，不落此分支（取消语义由调用方收尾，不在本变更范围）。
+        _emit_degradation(
+            manager, session_id, capture, ctx, partial_holder, e, bool(full_answer)
+        )
+        raise
     finally:
         # 生成结束/异常/取消后停止澄清消费（工具等待期间图事件循环阻塞，
         # 澄清项已被并行任务即时消费，收尾时队列已空）

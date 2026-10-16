@@ -20,7 +20,8 @@ from src.chat.streaming import (
     _subscribe_events,
     streaming_manager,
 )
-from src.config.const import CHANNEL_DEFAULT
+from src.config.const import CHANNEL_DEFAULT, SSEInteractionTexts
+from src.infra import retry_policy
 from src.infra.llm.request_context import RequestContext, current_request_ctx
 from src.infra.llm.trace_context import (
     current_channel,
@@ -48,6 +49,25 @@ class TurnHandle:
 
     session_id: str
     events: AsyncIterator[SSEEvent]
+
+
+def _error_copy(exc: BaseException) -> str:
+    """终态 error 事件给前端的用户可见文案。
+
+    已归类的降级 ⇒ 取取值集合表里的文案；未归类 ⇒ **空串** —— 前端据此回落
+    其通用文案（与改造前逐字一致），这样既不会把内部异常文本透给用户
+    （改造后前端会消费 `data.error`），也不会对可用性类错误给出"请重试"的误导。
+
+    Args:
+        exc: 收尾时捕获的异常
+
+    Returns:
+        文案字符串；未归类时为空串
+    """
+    reason = retry_policy.classify_failure(exc)
+    if reason is None:
+        return ""
+    return SSEInteractionTexts.DEGRADATION_TEXTS.get(reason, "")
 
 
 async def _run_with_finalize(
@@ -149,7 +169,7 @@ async def _run_with_finalize(
                 process_json=process_json,
                 model_name=partial_holder.get("model_name", ""),
             )
-        manager.add_event(session_id, "error", {"error": str(e)})
+        manager.add_event(session_id, "error", {"error": _error_copy(e)})
     else:
         process_json, purified = serialize_process(
             partial_holder.get("events_log") or []

@@ -255,6 +255,9 @@ async def test_background_task_error_event_round_trips_from_payload():
     回归防线：error 事件必须以 dict {"error": str} 入缓冲（与实时 sse_error 的
     data: 同构），否则 resume/status 回放路径在 from_payload 处抛
     TypeError: string indices must be integers。
+
+    载荷文案另有契约：未归类的异常不得透出内部文本，留空串由前端回落通用
+    文案（timeout-and-degradation-hardening P2；见 turn_runner._error_copy）。
     """
     from src.chat.streaming import StreamingRunManager
     from src.infra.llm.request_context import RequestContext
@@ -295,7 +298,8 @@ async def test_background_task_error_event_round_trips_from_payload():
     assert isinstance(payload, dict)
     restored = from_payload(etype, payload)
     assert isinstance(restored, SSEErrorEvent)
-    assert restored.error == "LLM generation failed"
+    # RuntimeError 未归类 ⇒ 安全文案为空串（内部异常文本不外泄）
+    assert restored.error == ""
 
 
 @pytest.mark.asyncio
