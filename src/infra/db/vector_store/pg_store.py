@@ -35,7 +35,7 @@ class QueryEmbedder:
     """查询/文档的向量化入口 —— 薄封装，便于测试注入假实现。"""
 
     def embed_query(self, text: str) -> list[float]:
-        """把查询文本向量化。
+        """把查询文本向量化（用查询档 read 超时，失败可退词法，D10）。
 
         Args:
             text: 查询文本
@@ -43,7 +43,11 @@ class QueryEmbedder:
         Returns:
             1024 维向量
         """
-        return get_embeddings().embed_query(text)
+        from src.config import settings
+
+        return get_embeddings(
+            read_timeout=settings.EMBEDDING_TIMEOUT_READ_QUERY
+        ).embed_query(text)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """批量向量化文档文本。

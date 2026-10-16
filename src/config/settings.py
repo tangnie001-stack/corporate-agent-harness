@@ -362,6 +362,35 @@ DELEGATE_TOTAL_TIMEOUT_THINKING_S: float = float(
 # 宁宽不宁紧；配合 `delegate skip` 的命中率观测，上线一版数据后再收紧。
 DELEGATE_MAX_PER_SESSION: int = int(os.getenv("DELEGATE_MAX_PER_SESSION", "50"))
 
+# ====== 生产链路角色级超时（自有键名；评测链用 RAGAS_* 族，两者不共享）======
+# 依据：change timeout-and-degradation-hardening 的 design D2/D11。
+# ⚠ 这些值待真实分位校准（D11 取值表标注"待校准"）；全部可被 .env 覆盖。
+HTTP_TIMEOUT_CONNECT: float = float(os.getenv("HTTP_TIMEOUT_CONNECT", "10"))
+HTTP_TIMEOUT_WRITE: float = float(os.getenv("HTTP_TIMEOUT_WRITE", "30"))
+HTTP_TIMEOUT_POOL: float = float(os.getenv("HTTP_TIMEOUT_POOL", "10"))
+# main 为流式：read 是「请求发出 → 字节到达」的**单一预算**（含首字节等待，D4）
+MAIN_TIMEOUT_READ: float = float(os.getenv("MAIN_TIMEOUT_READ", "180"))
+CLASSIFY_TIMEOUT_READ: float = float(os.getenv("CLASSIFY_TIMEOUT_READ", "60"))
+SUMMARY_TIMEOUT_READ: float = float(os.getenv("SUMMARY_TIMEOUT_READ", "60"))
+# embedding 两档：查询（在线、失败可退词法）要紧；入库（离线批量）可宽（D10 的唯一例外）
+EMBEDDING_TIMEOUT_READ_QUERY: float = float(
+    os.getenv("EMBEDDING_TIMEOUT_READ_QUERY", "15")
+)
+EMBEDDING_TIMEOUT_READ_INGEST: float = float(
+    os.getenv("EMBEDDING_TIMEOUT_READ_INGEST", "150")
+)
+# rerank：内层唯一预算（外层 wait_for 见 RERANK_OUTER_TIMEOUT，必须 > 内层，D13）
+RERANK_TIMEOUT_READ: float = float(os.getenv("RERANK_TIMEOUT_READ", "5"))
+RERANK_OUTER_TIMEOUT: float = float(os.getenv("RERANK_OUTER_TIMEOUT", "6"))
+# 按角色查表；judge **不在表内**（其真源归评测链，D17）
+ROLE_TIMEOUT_READ: dict[str, float] = {
+    "main": MAIN_TIMEOUT_READ,
+    "classify": CLASSIFY_TIMEOUT_READ,
+    "summary": SUMMARY_TIMEOUT_READ,
+    "embedding": EMBEDDING_TIMEOUT_READ_INGEST,
+    "rerank": RERANK_TIMEOUT_READ,
+}
+
 # ====== 重试策略 ======
 # 外部调用（DashScope / PostgreSQL / Redis）失败时的指数退避参数
 # 重试 3 次，初始间隔 1s，每次翻倍：1s → 2s → 4s

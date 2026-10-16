@@ -132,18 +132,21 @@ def get_judge_llm(model: str | None = None) -> ChatOpenAI:
     )
 
 
-def get_embeddings(model: str | None = None) -> OpenAIEmbeddings:
+def get_embeddings(
+    model: str | None = None, *, read_timeout: float | None = None
+) -> OpenAIEmbeddings:
     """创建文本向量化模型实例（薄委托 build_embeddings）。
 
     批次大小取自 registry 中该 embedding 模型的声明（缺省 20）。
 
     Args:
         model: 兼容既有调用方的占位参数；实际模型名由 embedding 角色绑定解析。
+        read_timeout: 覆盖 read 超时秒数；None ⇒ 用入库档（离线批量，较宽）。
 
     Returns:
         OpenAIEmbeddings 实例
     """
-    return build_embeddings()
+    return build_embeddings(read_timeout=read_timeout)
 
 
 def get_rerank(model: str | None = None, top_n: int | None = None) -> DashScopeRerank:

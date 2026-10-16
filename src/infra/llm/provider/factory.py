@@ -36,6 +36,23 @@ def _llm_kwargs() -> dict:
     return json.loads(settings.LLM_KWARGS)
 
 
+def _http_timeout(read: float) -> httpx.Timeout:
+    """构造细粒度 httpx 超时（ADR-0024：不用平铺标量，否则四维同值且看不出卡在哪段）。
+
+    Args:
+        read: 「请求发出 → 字节到达」的读超时秒数（按角色取值）。
+
+    Returns:
+        httpx.Timeout：connect/write/pool 取生产链路通用值，read 取入参。
+    """
+    return httpx.Timeout(
+        connect=settings.HTTP_TIMEOUT_CONNECT,
+        read=read,
+        write=settings.HTTP_TIMEOUT_WRITE,
+        pool=settings.HTTP_TIMEOUT_POOL,
+    )
+
+
 def build_chat(
     role: str,
     *,
@@ -59,6 +76,15 @@ def build_chat(
     if thinking is not None:
         extra_kwargs["extra_body"] = thinking_extra_body(resolved.provider, thinking)
     extra_kwargs.update(overrides)
+    # judge 不在 ROLE_TIMEOUT_READ 表内 ⇒ 不注入默认超时/client（其真源归评测链，D17）；
+    # 调用方显式传入的 http_client / http_async_client 用 setdefault 语义，不被覆盖。
+    if role in settings.ROLE_TIMEOUT_READ:
+        tout = _http_timeout(settings.ROLE_TIMEOUT_READ[role])
+        # 同步与异步两个 client 都要设：主链路走异步流式，只设 http_client 不生效
+        extra_kwargs.setdefault("http_client", httpx.Client(timeout=tout))
+        extra_kwargs.setdefault("http_async_client", httpx.AsyncClient(timeout=tout))
+        # spec：SDK 自动重试必须关闭（不得被 env / 调用方打开）
+        extra_kwargs["max_retries"] = 0
     return ReasoningPreservingChat(
         model=model or resolved.model,
         api_key=SecretStr(resolved.api_key),
@@ -68,23 +94,34 @@ def build_chat(
     )
 
 
-def build_embeddings() -> OpenAIEmbeddings:
+def build_embeddings(*, read_timeout: float | None = None) -> OpenAIEmbeddings:
     """构造向量化模型（角色固定 embedding）。
 
+    Args:
+        read_timeout: 覆盖 read 超时秒数；None ⇒ 用入库档（离线批量，较宽）。
+
     Returns:
-        OpenAIEmbeddings：按 registry 的 embedding_batch_size 设置批大小。
+        OpenAIEmbeddings：按 registry 的 embedding_batch_size 设置批大小，
+        带显式细粒度超时且 SDK 自动重试为 0。
     """
     resolved = _resolve_model("embedding")
     facts = resolved.provider.catalog.get(resolved.model)
     chunk_size = 20
     if facts is not None and facts.embedding_batch_size:
         chunk_size = facts.embedding_batch_size
+    read = settings.EMBEDDING_TIMEOUT_READ_INGEST
+    if read_timeout is not None:
+        read = read_timeout
+    tout = _http_timeout(read)
     return OpenAIEmbeddings(
         model=resolved.model,
         api_key=SecretStr(resolved.api_key),
         base_url=resolved.base_url,
         check_embedding_ctx_length=False,
         chunk_size=chunk_size,
+        http_client=httpx.Client(timeout=tout),
+        http_async_client=httpx.AsyncClient(timeout=tout),
+        max_retries=0,
     )
 
 
