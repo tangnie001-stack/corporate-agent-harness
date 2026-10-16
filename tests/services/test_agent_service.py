@@ -16,8 +16,10 @@ from src.agents.graph.state import (
     LangGraphNode,
 )
 from src.agents.skills.models import SkillContext
-from src.config import TOP_K_RERANK
+from src.config import TOP_K_RERANK, settings
 from src.config.const import SSEInteractionTexts
+from src.core.log_events import Event
+from src.infra.llm.request_context import RequestContext
 from src.rag.context import RAGContext
 from src.services.agent_service import (
     AgentService,
@@ -1568,13 +1570,23 @@ class TestTurnProvenanceStatus:
 
 
 class _Recorder:
-    """StreamingRunManager 的最小替身：只收 add_event。"""
+    """StreamingRunManager 的最小替身：收 add_event，并满足 idle 守卫的三方法契约。"""
 
     def __init__(self) -> None:
-        self.events: list[tuple[str, dict]] = []
+        self.events: list[tuple[str, dict]] = []  # 既有形状，勿动（P2 用例依赖）
+        self._seq_events: list[tuple[int, str, dict]] = []  # 守卫判活跃用（含 seq）
 
-    def add_event(self, session_id: str, etype: str, payload: dict) -> None:
+    def add_event(self, session_id: str, etype: str, payload: dict) -> int:
         self.events.append((etype, payload))
+        seq = len(self._seq_events) + 1
+        self._seq_events.append((seq, etype, payload))
+        return seq
+
+    def get_events_since(self, session_id: str, after_seq: int) -> list:
+        return [e for e in self._seq_events if e[0] > after_seq]
+
+    def buffer_exists(self, session_id: str) -> bool:
+        return True
 
     def unregister_if_current(self, session_id: str, task) -> None:
         return None
@@ -1918,3 +1930,79 @@ async def test_classified_failure_without_context_gives_reason_copy(monkeypatch)
     degraded = spy.degraded()
     assert len(degraded) == 1, "失败路径恰好记一条 degraded"
     assert degraded[0]["reason"] == "provider_unavailable"
+
+
+class _SlowGraph:
+    """两个 token 事件之间刻意静默一段（用于触发 idle 守卫），但**不中止**。"""
+
+    def __init__(self, gap_s: float) -> None:
+        self._gap = gap_s
+
+    async def astream_events(self, state, version=None):
+        yield _chat_model_stream_item("前")
+        await asyncio.sleep(self._gap)
+        yield _chat_model_stream_item("后")
+
+
+@pytest.mark.asyncio
+async def test_idle_guard_notifies_without_aborting_generation(monkeypatch):
+    """3.1/3.2/3.4：静默到点 ⇒ 送降到用户 + 记 degraded；**生成仍跑完**（档 1 不动控制流）。"""
+    from src.services import agent_service
+    from src.services.agent_service import _run_generation
+
+    monkeypatch.setattr(settings, "MAIN_IDLE_POLL_INTERVAL_S", 0.01)
+    monkeypatch.setattr(settings, "MAIN_IDLE_FIRST_S", 0.05)
+    monkeypatch.setattr(settings, "MAIN_IDLE_GAP_S", 0.05)
+    logged: list = []
+    monkeypatch.setattr(
+        agent_service.core_logging,
+        "log_event",
+        lambda event, **fields: logged.append((event, fields)),
+    )
+    ctx = RequestContext(session_id="s-idle", kb_id="")
+    manager = _Recorder()
+    partial: dict = {"text": "", "sources": []}
+
+    answer = await _run_generation(
+        "s-idle",
+        "",
+        "你好",
+        [],
+        False,
+        ctx,
+        manager,  # type: ignore[reportArgumentType]  # 运行时为最小替身 _Recorder
+        graph=_SlowGraph(0.25),  # type: ignore[reportArgumentType]  # 运行时为最小替身图
+        partial_holder=partial,
+    )
+
+    # 不中止：两个 token 都到、函数正常返回
+    tokens = [p["token"] for t, p in manager.events if t == "token"]
+    assert tokens == ["前", "后"]
+    assert answer == "前后"
+    # 且确实发过降级告知（stage=degraded + 取值集合表文案）
+    notices = [
+        p
+        for t, p in manager.events
+        if t == "status" and p.get("stage") == SSEInteractionTexts.STAGE_DEGRADED
+    ]
+    assert notices, "静默超阈应送出降级告知"
+    assert (
+        notices[0]["message"]
+        == SSEInteractionTexts.DEGRADATION_TEXTS["generation_idle"]
+    )
+    assert [f for e, f in logged if e == Event.DEGRADED]
+
+
+def test_p3_does_not_change_sse_subscription_layer():
+    """3.5 防回归（结构性）：主 POST 流与续传路的订阅仍传 max_idle=None。
+
+    行为判据是"活跃任务长静默不断流"，而该门槛是 180s / None，单测里等不出来；
+    此处钉住"调用方仍传 max_idle=None"这一事实，足以防住本阶段的回退
+    （把已被推翻的 180s 空闲收流改回来）。
+    """
+    import inspect
+
+    from src.services import agent_service, turn_runner
+
+    assert "max_idle=None" in inspect.getsource(turn_runner)
+    assert "max_idle=None" in inspect.getsource(agent_service)

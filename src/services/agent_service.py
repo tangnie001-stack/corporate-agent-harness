@@ -692,76 +692,6 @@ async def _drain_clarify_channel(
             )
 
 
-# ─────────── 临时取证埋点（systematic-debugging 走 A：定位"长时间静默"的挂起点）───────────
-# 用途：某轮生成在出网调用（web 搜索 / LLM）里长时间无任何事件推送时，打印当时所有
-# asyncio 任务的栈，直接看出卡在哪个 await。定位完成后**整块删除**（含上面 import time、
-# 下面的 watch_task 创建与取消）。仅诊断用，不改变任何业务逻辑。
-_SILENCE_WATCH_INTERVAL_S = 10.0  # 看门狗轮询间隔（秒）
-_SILENCE_WATCH_THRESHOLD_S = 60.0  # 缓冲无新事件达该秒数即打印任务栈
-
-
-def _dump_task_stacks() -> str:
-    """把所有 asyncio 任务的当前调用栈格式化为多行文本（临时取证用）。
-
-    Returns:
-        每个任务一行标题 + 其栈帧（文件:行号 in 函数名）；无 Python 栈时打印协程对象
-    """
-    lines: list[str] = []
-    for task in asyncio.all_tasks():
-        if task is asyncio.current_task():
-            continue
-        lines.append(
-            f"--- task={task.get_name()} done={task.done()} cancelled={task.cancelled()}"
-        )
-        stack = task.get_stack()
-        if not stack:
-            lines.append(f"    (无 Python 栈) coro={task.get_coro()}")
-            continue
-        for frame in stack:
-            lines.append(
-                f"    {frame.f_code.co_filename}:{frame.f_lineno} in {frame.f_code.co_name}"
-            )
-    return "\n".join(lines)
-
-
-async def _silence_watchdog(
-    manager: StreamingRunManager,
-    session_id: str,
-    interval: float,
-    threshold: float,
-) -> None:
-    """临时取证：本轮缓冲长时间无新事件时，打印所有 asyncio 任务栈。
-
-    判据用缓冲事件条数（token/status/citation 都会增长），因此出网调用期间必然静默。
-
-    Args:
-        manager: StreamingRunManager（读该 session 的事件缓冲长度）
-        session_id: 会话 ID
-        interval: 轮询间隔（秒）
-        threshold: 静默阈值（秒），超过即打印一次并重置计时
-    """
-    last_len = len(manager.get_events_since(session_id, 0))
-    last_change = time.monotonic()
-    while True:
-        await asyncio.sleep(interval)
-        current_len = len(manager.get_events_since(session_id, 0))
-        if current_len != last_len:
-            last_len = current_len
-            last_change = time.monotonic()
-            continue
-        idle = time.monotonic() - last_change
-        if idle < threshold:
-            continue
-        core_logging.logger.warning(
-            "[agent] TIMING silence_idle_s={} events={} session_id={}\n{}",
-            int(idle),
-            current_len,
-            session_id,
-            _dump_task_stacks(),
-        )
-        last_change = time.monotonic()  # 打印后重置，避免每轮轮询都刷
-
-
 @observe(name="chat_turn", capture_input=False)
 async def _run_generation(
     session_id: str,
@@ -907,11 +837,10 @@ async def _run_generation(
     drain_task = asyncio.create_task(
         _drain_clarify_channel(ctx, manager, session_id, capture)
     )
-    # 临时取证埋点：静默看门狗（定位完成后删除）
-    watch_task = asyncio.create_task(
-        _silence_watchdog(
-            manager, session_id, _SILENCE_WATCH_INTERVAL_S, _SILENCE_WATCH_THRESHOLD_S
-        )
+    # 业务层「生成任务静默」守卫（P3 / D15）：与澄清消费并行；档 1 只记录不中止，
+    # 故它不会影响下面的图事件循环（取消由本函数 finally 统一负责）
+    idle_task = asyncio.create_task(
+        _idle_guard(manager, session_id, capture, deep_thinking)
     )
     try:
         async for item in graph.astream_events(
@@ -951,10 +880,10 @@ async def _run_generation(
         # 生成结束/异常/取消后停止澄清消费（工具等待期间图事件循环阻塞，
         # 澄清项已被并行任务即时消费，收尾时队列已空）
         drain_task.cancel()
-        watch_task.cancel()  # 临时取证埋点：随生成结束一并取消
+        idle_task.cancel()  # 生成结束/异常/取消后停止静默守护
         # 取消 / 异常路径同样走到这里 —— 不关的 span 会永远悬空
         tool_trace.close()
-        await asyncio.gather(drain_task, watch_task, return_exceptions=True)
+        await asyncio.gather(drain_task, idle_task, return_exceptions=True)
         if partial_holder is not None:
             partial_holder["model_name"] = capture.model_used
     # 收尾：复刻旧 stream_chat 语义，按捕获结果补发 abstention / model_info

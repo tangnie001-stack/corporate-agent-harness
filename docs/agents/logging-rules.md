@@ -119,6 +119,8 @@ channel），业务不手写。channel 取值见 `src/config/const.py` 的 `Chan
   vector_store_failed / llm_unavailable_with_context / llm_unavailable_no_context /
   llm_stream_interrupted / provider_unavailable / upstream_exhausted / generation_idle
   （唯一来源：`docs/openspec/specs/degradation-policy/spec.md` 的取值集合表）
+  ；`idle_s` 为静默秒数（整数）；`tier` 取 first（首事件前档）/ gap（首事件后档），
+  仅 `reason=generation_idle` 时出现
 
 **不再扩 `iteration done`**：其「消息数拆分」意图已由 `prompt messages` 在组装点承载，
 不重复记录同一事实（避免后人再提）。

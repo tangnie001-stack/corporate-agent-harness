@@ -425,5 +425,10 @@ EVENT_SPECS: dict[str, EventSpec] = {
         "model retry", "agent", "warning", ("role", "attempt", "err")
     ),
     # 外部依赖降级留痕（reason 取值见 specs/degradation-policy 的取值集合表；不得自造）
-    "degraded": EventSpec("degraded", "degradation", "warning", ("reason", "err")),
+    "degraded": EventSpec(
+        "degraded",
+        "degradation",
+        "warning",
+        ("reason", "err", "idle_s", "tier"),
+    ),
 }
