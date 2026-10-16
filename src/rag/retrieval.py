@@ -26,6 +26,7 @@ from src.infra.db.vector_store import VectorStore
 from src.infra.db.vector_store.types import ChunkResult
 from src.infra.llm.chat_message import ChatMessage
 from src.rag.context import RAGContext
+from src.rag.errors import RetrievalUnavailableError
 from src.rag.fusion import rrf_fusion
 
 # 全部实体键（核心 + 可选），rerank 透传时从 chunk.metadata 读取
@@ -61,6 +62,26 @@ def _dedup_by_parent(contexts: list[RAGContext]) -> list[RAGContext]:
     return merged
 
 
+def _path_status(failed: bool, results: list[ChunkResult]) -> str:
+    """支路本次调用状态（规格三态：ok / empty / failed）。
+
+    failed 与 empty **必须可分**：`count = 0` 分不出"该路失败"与"该路成功但没命中"，
+    而两者的处置完全不同（前者是降级、后者是缺席）。
+
+    Args:
+        failed: 该路调用是否未成功（抛错 / 超时）
+        results: 该路成功时返回的结果列表（failed=True 时忽略）
+
+    Returns:
+        "failed" / "empty" / "ok"
+    """
+    if failed:
+        return "failed"
+    if results:
+        return "ok"
+    return "empty"
+
+
 async def search(
     query: str,
     kb_id: str,
@@ -82,18 +103,42 @@ async def search(
     if HYBRID_SEARCH_ENABLED:
         dense_coro = vector_store.dense_search(kb_id, query, TOP_K_RETRIEVAL)
         lexical_coro = vector_store.lexical_search(kb_id, query, TOP_K_RETRIEVAL)
-        dense, sparse = await asyncio.gather(dense_coro, lexical_coro)
-        dense_results = dense or []
-        sparse_results = sparse or []
+        # return_exceptions=True：任一路失败不得连带丢弃另一路（design D7）。
+        # 修前未传该参数 ⇒ 稠密路一抛整个 search 就抛，"退化为词法单路"根本不成立。
+        dense_out, sparse_out = await asyncio.gather(
+            dense_coro, lexical_coro, return_exceptions=True
+        )
+        dense_failed = isinstance(dense_out, BaseException)
+        sparse_failed = isinstance(sparse_out, BaseException)
+        if dense_failed and sparse_failed:
+            # 两路皆失败 ⇒ 向量库不可用：按失败处置（抛给上层归类/告知），
+            # 不得静默返回空结果当作"没有数据"。本层只抛不留痕（见计划 Task 1 落地规则）。
+            assert isinstance(dense_out, BaseException)  # 供类型收窄，运行期恒真
+            raise RetrievalUnavailableError(str(dense_out)) from dense_out
+        if dense_failed:
+            # 稠密路失败 ⇒ 跳过稠密路只走词法（降级动作在本调用点完成）。
+            # 原因统一记 embedding_failed：dense 路的失败来源（查询向量化 / pgvector）
+            # 与本降级动作同义，不引入区分二者所需的新判据。
+            log_event(Event.DEGRADED, reason="embedding_failed", err=str(dense_out))
+            dense_results: list[ChunkResult] = []
+        else:
+            dense_results = dense_out or []
+        if sparse_failed:
+            sparse_results: list[ChunkResult] = []
+        else:
+            sparse_results = sparse_out or []
         results = rrf_fusion(dense_results, sparse_results, k=RRF_K, top_n=RRF_TOP_N)
         # 两路各自的贡献必须可见：任一路为 0 时该字段就是 0。
         # 只记融合后的总数会让"某一路长期失效"不可发现（trace_c54ce259 的教训）。
+        # dense_status / sparse_status 另把"失败"与"成功但空"分开（规格要求）。
         log_event(
             Event.HYBRID_DONE,
             kb_id=kb_id,
             query_len=len(query),
             dense_count=len(dense_results),
             sparse_count=len(sparse_results),
+            dense_status=_path_status(dense_failed, dense_results),
+            sparse_status=_path_status(sparse_failed, sparse_results),
             result_count=len(results),
         )
         return results
