@@ -1,0 +1,67 @@
+import math
+
+import pytest
+
+from src.cli.eval_ragas import _score_metric_with_retry
+from src.infra.llm.provider.http_observability import HookEvidence
+
+
+class _Seq:
+    """按序列返回分值；None 表示返回 NaN。"""
+
+    def __init__(self, seq):
+        self.seq = list(seq)
+        self.calls = 0
+
+    def measure(self, test_case):
+        self.calls += 1
+        v = self.seq.pop(0)
+        self.score = math.nan if v is None else v
+        return self.score
+
+
+ROW = {"q_index": 0, "trace_id": "t0"}
+
+
+def test_nan_triggers_bounded_retry_and_can_recover():
+    m = _Seq([None, 0.8])
+    value, err = _score_metric_with_retry(
+        "faithfulness", m, object(), ROW, HookEvidence()
+    )
+
+    assert m.calls == 2, "首次非掩码 NaN 必须触发重试"
+    assert value == pytest.approx(0.8) and err == ""
+
+
+def test_success_does_not_retry():
+    m = _Seq([0.9])
+    value, err = _score_metric_with_retry(
+        "faithfulness", m, object(), ROW, HookEvidence()
+    )
+
+    assert m.calls == 1 and value == pytest.approx(0.9) and err == ""
+
+
+def test_exhausted_retries_report_error_and_return_nan():
+    m = _Seq([None, None, None])
+    value, err = _score_metric_with_retry(
+        "faithfulness", m, object(), ROW, HookEvidence()
+    )
+
+    assert math.isnan(value)
+    assert err.startswith("faithfulness:")
+    assert m.calls == 3, "有界：RAGAS_METRIC_MAX_ATTEMPTS=3"
+
+
+def test_rate_limit_evidence_skips_outer_retry():
+    ev = HookEvidence()
+    ev.mark("t0")
+    ev.append(
+        {"phase": "response", "status": 429, "json_ok": True, "finish_reason": []}
+    )
+    m = _Seq([None, 0.8])
+
+    value, _ = _score_metric_with_retry("faithfulness", m, object(), ROW, ev)
+
+    assert m.calls == 1, "429 已由 ragas 层重试 ≤10 次，外层不得再叠（防 10×3 放大）"
+    assert math.isnan(value)

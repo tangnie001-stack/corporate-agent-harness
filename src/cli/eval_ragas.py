@@ -20,6 +20,7 @@
 import argparse
 import asyncio
 import json
+import math
 import os
 import sys
 import time
@@ -368,100 +369,64 @@ def _exc_chain_summary(exc: BaseException, limit: int = 140) -> str:
     return f"{chain}: {msg}" if msg else chain
 
 
-def _judge_failure_note(exc: BaseException, limit: int = 200) -> str:
-    """失败备注：异常链 + **原始响应特征**（诊断为"空结构/截断"提供因果证据）。
-
-    instructor 的 `IncompleteOutputException` 等携带 `last_completion`＝原始响应；
-    只记异常类名会丢掉"模型到底回了什么"。这里把 `finish_reason` / 输出 token 数 /
-    原始输出片段一并带上（实测正是靠它区分出「空结构」与「截断」两种失败模式）。
-    """
-    note = _exc_chain_summary(exc)
-    completion = None
-    cur: BaseException | None = exc
-    seen: set[int] = set()
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        completion = getattr(cur, "last_completion", None) or completion
-        if completion is not None:
-            break
-        cur = cur.__cause__ or cur.__context__
-    if completion is None:
-        return note
-    try:
-        choice = completion.choices[0]
-        usage = getattr(completion, "usage", None)
-        out_tokens = getattr(usage, "completion_tokens", None)
-        raw = getattr(getattr(choice, "message", None), "content", "") or ""
-        snippet = " ".join(raw.split())[:limit]
-        return (
-            f"{note} | finish_reason={getattr(choice, 'finish_reason', None)}"
-            f" out_tokens={out_tokens} raw={snippet!r}"
-        )
-    except Exception:  # noqa: BLE001  # 诊断信息尽力而为，绝不影响评测
-        return note
-
-
 def _score_metric_with_retry(
-    metric_name: str, metric, test_case, row: dict, evidence=None
-):
-    """（本阶段临时形态）失败重试；判据在 Task 6 换成非掩码 NaN。
+    metric_name, metric, test_case, row, evidence=None
+) -> tuple[float, str]:
+    """打分；**非掩码 NaN** 时重试至多 `settings.RAGAS_METRIC_MAX_ATTEMPTS` 次。
 
-    为何在**本层**重试而非 SDK 层：SDK 重试是静默的乘法放大；这里的重试可见（记
-    `metric retry` 事件）、有界、且逐指标独立。
+    为何判据是 NaN 而不是异常：桥调 `ragas.evaluate(...)` 时未传
+    `raise_exceptions`（默认 False），`ragas/executor.py` 对**任何** Exception 都
+    `return np.nan` ⇒ 桥不抛异常，旧的 `except Exception` 判据永不触发（design D4）。
 
-    **超时也重试**（2026-10-15 实测修订）：曾按"超时重试大概率再挂"的推测排除超时，
-    但实测抓到反例——一次 150s（read 上限）超时，重试后**成功恢复**，该指标拿到真值。
-    故改为任何失败都重试，最坏 2×read 上限/指标，换取不丢指标、均值偏差最小。
+    为何 429 不重试：ragas 框架层已对 `openai.RateLimitError`（HTTP 429）重试
+    ≤10 次（`ragas/run_config.py:52` + `llms/base.py:325-335`），外层再叠会 10×3。
 
-    `error` 语义不变：**只在最终失败时非空**（重试成功不写 error，值即为真值）。
+    为何不做"合法缺值 / 裁判失败"子分类：桥只回一个 float，HTTP 200 的 envelope
+    恒为合法 JSON ⇒ 该分类不可实现（design D4，第 5 轮评审证实）。
 
     Returns:
-        `(值, 错误说明)`；成功时错误说明为 ""，最终失败时为 `"指标:异常类:消息"`。
+        `(值, 错误说明)`；成功与"未被重试的 NaN"错误说明为 ""；
+        重试耗尽时为 `"指标:原因"`。
     """
     attempts = max(1, settings.RAGAS_METRIC_MAX_ATTEMPTS)
-    last_exc: Exception = RuntimeError("unreachable")
+    last_note = ""
     for attempt in range(1, attempts + 1):
         started = time.monotonic()
         try:
             value = metric.measure(test_case)
-        except Exception as exc:  # noqa: BLE001  # 失败可见，不吞（Task 6 改判据）
-            last_exc = exc
-            # 每次**尝试**都留痕（含 q_index + 耗时 + 原始响应特征），
-            # 使「哪题/哪个指标/第几次/耗时/原因」可在日志里串成链
-            core_logging.log_event(
-                Event.JUDGE_CALL,
-                metric=metric_name,
-                q_index=row.get("q_index"),
-                trace_id=row.get("trace_id"),
-                attempt=attempt,
-                seconds=round(time.monotonic() - started, 1),
-                ok=False,
-                note=_judge_failure_note(exc),
-            )
-            if attempt >= attempts:
-                break
-            core_logging.log_event(
-                Event.METRIC_RETRY,
-                metric=metric_name,
-                q_index=row.get("q_index"),
-                trace_id=row.get("trace_id"),
-                reason=_exc_chain_summary(exc, 120),
-            )
-            time.sleep(0.5 * attempt)  # 轻量线性退避
-            continue
+            note = ""
+        except Exception as exc:  # noqa: BLE001  # 异常仅作留证，判据是 NaN
+            value, note = float("nan"), _exc_chain_summary(exc)
+        seconds = round(time.monotonic() - started, 1)
+
+        is_nan = value is None or (isinstance(value, float) and math.isnan(value))
         core_logging.log_event(
             Event.JUDGE_CALL,
             metric=metric_name,
             q_index=row.get("q_index"),
             trace_id=row.get("trace_id"),
             attempt=attempt,
-            seconds=round(time.monotonic() - started, 1),
-            ok=True,
-            note="",
+            seconds=seconds,
+            ok=not is_nan,
+            note=note,
         )
-        return float(value), ""
-    # 记**异常链 + 根因消息**（单行、截断），便于从报告/CSV 直接定位根因
-    return float("nan"), f"{metric_name}:{_exc_chain_summary(last_exc)}"
+        if value is not None and not is_nan:
+            return float(value), ""
+        last_note = note or "nan"
+
+        if evidence is not None and evidence.non_2xx and 429 in evidence.status_codes:
+            return float("nan"), ""  # 429：外层不重试（ragas 层已重试）
+        if attempt >= attempts:
+            break
+        core_logging.log_event(
+            Event.METRIC_RETRY,
+            metric=metric_name,
+            q_index=row.get("q_index"),
+            trace_id=row.get("trace_id"),
+            reason=last_note,
+        )
+        time.sleep(0.5 * attempt)  # 原为 await asyncio.sleep；改同步后同义
+    return float("nan"), f"{metric_name}:{last_note}"
 
 
 def score_rows(rows: list[dict], metrics: dict, *, evidence=None) -> list[dict]:
