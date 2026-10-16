@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import httpx
+
 from src.infra.llm.provider import factory
 from src.infra.llm.retrying_chat import RetryingReasoningChat
 
@@ -22,6 +24,23 @@ def test_build_chat_sets_explicit_timeouts_and_disables_sdk_retry(monkeypatch):
     assert _read_of(model.http_client) > 0
 
 
+def test_build_chat_passes_request_timeout_object(monkeypatch):
+    """超时必须同时以 request_timeout 传入，否则 SDK per-request timeout 覆盖 client 超时。
+
+    判据：request_timeout 是与 client 同量级的 `httpx.Timeout` 实例（非标量），
+    且 read 与 http_async_client 上的 read 一致 —— 证明同一个细粒度对象被复用。
+    """
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test")
+    from src.config import settings
+
+    model = factory.build_chat("main")
+    assert isinstance(model.request_timeout, httpx.Timeout), (
+        "request_timeout 必须是 httpx.Timeout 对象（标量会把四维压成同值，违反 ADR-0024）"
+    )
+    assert model.request_timeout.read == settings.ROLE_TIMEOUT_READ["main"]
+    assert model.request_timeout.read == _read_of(model.http_async_client)
+
+
 def test_roles_can_have_different_read_timeouts(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test")
     main = factory.build_chat("main")
@@ -38,6 +57,9 @@ def test_judge_role_is_not_touched_by_this_change(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test")
     model = factory.build_chat("judge")
     assert model.http_async_client is None
+    assert model.request_timeout is None, (
+        "judge 不得被注入 request_timeout（真源归评测链）"
+    )
 
 
 def test_judge_role_does_not_inherit_model_layer_retry(monkeypatch):
@@ -62,6 +84,11 @@ def test_build_embeddings_explicit_and_query_override(monkeypatch):
     assert ingest.http_client is not None
     assert _read_of(query.http_client) == 15.0
     assert _read_of(ingest.http_client) > _read_of(query.http_client)
+    # 同 build_chat：request_timeout 必须是与 client 同量级的细粒度对象（否则空转）
+    assert isinstance(ingest.request_timeout, httpx.Timeout)
+    assert ingest.request_timeout.read == _read_of(ingest.http_client)
+    assert isinstance(query.request_timeout, httpx.Timeout)
+    assert query.request_timeout.read == 15.0
 
 
 def test_get_embeddings_passes_read_timeout_through(monkeypatch):

@@ -246,6 +246,8 @@
 | `rerank` | 内层 **5s**（**唯一预算，attempts=1**）；外层 `wait_for` **6s** 作双保险 | 见 D13 修订：三个超时**必须嵌套**，否则外层先放弃、底层线程跑到底 |
 | 重试（仅可重试类） | attempts=3 / 初始 1s / ×2 / **±30% jitter** | D5 |
 
+> **超时必须同时以 `request_timeout` 传入**（2026-10-16 实测修正）：SDK 每次请求自带 `timeout` 参数、会**覆盖** httpx client 上的超时 ⇒ 只设 `http_client`/`http_async_client` 时本表数值**空转**（实测仅 client `read=0.001` 时首 chunk 仍 0.49s 到达、embeddings 0.42s 成功）。`build_chat` / `build_embeddings` 须把**同一个细粒度 `httpx.Timeout` 对象**也作为 `request_timeout` 传入（用标量虽也生效，但会把 connect/read/write/pool 压成同值，违反 ADR-0024）。
+
 #### 可观测：**范围收窄**（原表述"完整可观测"过宽）
 
 实测查明主链路与检索**已有现成耗时字段**，无需新增埋点：`[agent] model turn … latency_ms=`（`src/agents/graph/middleware.py:250` 计算、`:326-337` 落日志、`:379-397` 同值写 Langfuse generation）、`[retrieval] retrieve done … latency_ms=`（`src/agents/tools/rag_tools.py:239-245`，**含 embedding+search+rerank 合计**）、`web search done`（`web_tools.py:175,181`）、`delegate end … elapsed_ms=`（`delegate_task.py:231`）、`judge call … seconds=`。

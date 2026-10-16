@@ -85,6 +85,10 @@ def build_chat(
         # 同步与异步两个 client 都要设：主链路走异步流式，只设 http_client 不生效
         extra_kwargs.setdefault("http_client", httpx.Client(timeout=tout))
         extra_kwargs.setdefault("http_async_client", httpx.AsyncClient(timeout=tout))
+        # SDK 的 per-request timeout 会覆盖 httpx client 上的超时：只设 client 时
+        # 我们的 read 超时是空转（实测 read=.001 时首 chunk 仍 0.49s 到达）。
+        # 故必须把同一个细粒度 Timeout 对象也作为 request_timeout 传入。
+        extra_kwargs.setdefault("request_timeout", tout)
         # spec：SDK 自动重试必须关闭（不得被 env / 调用方打开）
         extra_kwargs["max_retries"] = 0
     base_kwargs = {
@@ -136,6 +140,10 @@ def build_embeddings(*, read_timeout: float | None = None) -> OpenAIEmbeddings:
         chunk_size=chunk_size,
         http_client=httpx.Client(timeout=tout),
         http_async_client=httpx.AsyncClient(timeout=tout),
+        # 同 build_chat：SDK per-request timeout 覆盖 client 超时，必须同时传入，
+        # 否则 client 上的 read 超时是空转（实测 read=.001 时仍成功 0.42s 返回）。
+        # langchain 的 pydantic 字段在 pyright 的合成签名里缺席（误报），运行期有效。
+        request_timeout=tout,  # type: ignore[reportCallIssue]
         max_retries=0,
     )
 
