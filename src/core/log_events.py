@@ -30,6 +30,7 @@ LOG_PREFIXES: frozenset[str] = frozenset(
         "clarify",
         "provider",
         "alert",
+        "degradation",
     }
 )
 
@@ -220,6 +221,15 @@ class Event(str, Enum):
     KB_DOMAIN_FALLBACK = "kb domain fallback"
     # [session] 预设与知识库领域不一致（用户自选行为，记日志但不阻断）
     AGENT_DOMAIN_MISMATCH = "agent domain mismatch"
+
+    # [agent] 主链路 LLM 本层有界重试留痕（timeout-and-degradation-hardening D16：
+    # 首个 chunk 之前才重试，每次重试记 role/attempt/err）
+    MODEL_RETRY = "model retry"
+
+    # [degradation] 外部依赖降级留痕（timeout-and-degradation-hardening P2）：
+    # reason 取值取自 specs/degradation-policy 的取值集合表，不得自造；
+    # 「谁处置谁留痕」—— 同一失败不在两层各记一次。
+    DEGRADED = "degraded"
 
 
 @dataclass(frozen=True)

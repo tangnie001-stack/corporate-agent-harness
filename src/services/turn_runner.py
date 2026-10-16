@@ -20,7 +20,8 @@ from src.chat.streaming import (
     _subscribe_events,
     streaming_manager,
 )
-from src.config.const import CHANNEL_DEFAULT
+from src.config.const import CHANNEL_DEFAULT, SSEInteractionTexts
+from src.infra import retry_policy
 from src.infra.llm.request_context import RequestContext, current_request_ctx
 from src.infra.llm.trace_context import (
     current_channel,
@@ -48,6 +49,29 @@ class TurnHandle:
 
     session_id: str
     events: AsyncIterator[SSEEvent]
+
+
+def safe_error_copy(exc: BaseException) -> str:
+    """终态 error 事件给前端的用户可见文案（所有 error 事件的文案唯一来源）。
+
+    已归类的降级 ⇒ 取取值集合表里的文案；未归类 ⇒ **空串** —— 前端据此回落
+    其通用文案（与改造前逐字一致），这样既不会把内部异常文本透给用户
+    （前端会消费 `data.error`），也不会对可用性类错误给出"请重试"的误导。
+
+    本函数是"异常 → 用户可见文案"策略的唯一归属：凡产出 error 事件的路径
+    （起流/建任务失败的兜底、收尾异常、SSE 帧化兜底）都必须经它以该文案填载荷，
+    不得直接传 `str(exc)`。
+
+    Args:
+        exc: 捕获到的异常
+
+    Returns:
+        文案字符串；未归类时为空串
+    """
+    reason = retry_policy.classify_failure(exc)
+    if reason is None:
+        return ""
+    return SSEInteractionTexts.DEGRADATION_TEXTS.get(reason, "")
 
 
 async def _run_with_finalize(
@@ -149,7 +173,7 @@ async def _run_with_finalize(
                 process_json=process_json,
                 model_name=partial_holder.get("model_name", ""),
             )
-        manager.add_event(session_id, "error", {"error": str(e)})
+        manager.add_event(session_id, "error", {"error": safe_error_copy(e)})
     else:
         process_json, purified = serialize_process(
             partial_holder.get("events_log") or []
@@ -347,7 +371,10 @@ def _make_answer_builder(
 
 
 async def _error_events(error_text: str, trace_id: str) -> AsyncIterator[SSEEvent]:
-    """任务未启动时的终止态事件流：error + done（不抛，保调用方 200+流）。"""
+    """任务未启动时的终止态事件流：error + done（不抛，保调用方 200+流）。
+
+    `error_text` 须为用户可见文案（调用方经 safe_error_copy 取得），不得传原始异常串。
+    """
     yield SSEErrorEvent(error_text)
     yield SSEDoneEvent(trace_id=trace_id)
 
@@ -480,7 +507,7 @@ async def _launch_and_register(
         release_lock_cb()
         return TurnHandle(
             session_id=session_id,
-            events=_error_events(str(e), current_trace_id.get() or ""),
+            events=_error_events(safe_error_copy(e), current_trace_id.get() or ""),
         )
 
     try:
@@ -493,7 +520,7 @@ async def _launch_and_register(
         release_lock_cb()
         return TurnHandle(
             session_id=session_id,
-            events=_error_events(str(e), current_trace_id.get() or ""),
+            events=_error_events(safe_error_copy(e), current_trace_id.get() or ""),
         )
 
     events = _subscribe_events(

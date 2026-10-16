@@ -1565,3 +1565,356 @@ class TestTurnProvenanceStatus:
             if e["type"] == "status"
         ]
         assert log_stages == ["turn_agent", "turn_skill"]
+
+
+class _Recorder:
+    """StreamingRunManager 的最小替身：只收 add_event。"""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def add_event(self, session_id: str, etype: str, payload: dict) -> None:
+        self.events.append((etype, payload))
+
+    def unregister_if_current(self, session_id: str, task) -> None:
+        return None
+
+
+class _DegradedSpy:
+    """记录 core_logging.log_event 的调用，便于断言降级留痕条数与 reason。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, dict]] = []
+
+    def __call__(self, event, **fields) -> None:
+        self.calls.append((event, fields))
+
+    def degraded(self) -> list[dict]:
+        """返回本次记录的 Event.DEGRADED 字段列表。"""
+        from src.core.log_events import Event
+
+        return [fields for event, fields in self.calls if event == Event.DEGRADED]
+
+
+def _spy_degraded(monkeypatch) -> _DegradedSpy:
+    """把 core_logging.log_event 换成记录器，返回 spy。
+
+    守护绑定裁定「失败路径**恰好**记一条 Event.DEGRADED」（评审 M1）。
+    """
+    from src.services import agent_service
+
+    spy = _DegradedSpy()
+    monkeypatch.setattr(agent_service.core_logging, "log_event", spy)
+    return spy
+
+
+class _StatusErr(Exception):
+    """带 status_code 的替身异常（模拟 httpx.HTTPStatusError 的可用性类失败）。"""
+
+    def __init__(self, code: int) -> None:
+        super().__init__(f"http {code}")
+        self.status_code = code
+
+
+class _FailingGraph:
+    """astream_events 立刻抛出（模拟首 token 前失败）。"""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    async def astream_events(self, state, version=None):
+        raise self._exc
+        yield  # pragma: no cover  # 让本方法成为异步生成器
+
+
+class _TokenThenFailGraph:
+    """先吐一个 token 再抛出（模拟流中途断）。"""
+
+    def __init__(self, item: dict, exc: BaseException) -> None:
+        self._item = item
+        self._exc = exc
+
+    async def astream_events(self, state, version=None):
+        yield self._item
+        raise self._exc
+
+
+async def _run(manager, ctx, graph, partial_holder) -> None:
+    from src.services.agent_service import _run_generation
+
+    await _run_generation(
+        ctx.session_id,
+        ctx.kb_id,
+        "营收多少",
+        [],
+        False,
+        ctx,
+        manager,
+        graph=graph,
+        partial_holder=partial_holder,
+    )
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_with_context_delivers_retrieved_original(monkeypatch):
+    """首 token 前失败且已有检索结果 ⇒ 送检索原文 + 告知，并更新 partial_holder。"""
+    from src.config.const import SSEInteractionTexts
+    from src.infra.llm.request_context import RequestContext
+    from src.rag.errors import (
+        RetrievalUnavailableError,  # noqa: F401  # 保持与 T1 的依赖可见
+    )
+
+    ctx = RequestContext(session_id="s-ctx", kb_id="kb1")
+    ctx.tool_contexts = [
+        RAGContext(
+            content="营业总收入 100 亿元",
+            source="年报.pdf",
+            page=3,
+            doc_id="d1",
+            chunk_id="c1",
+            score=0.9,
+        )
+    ]
+    manager = _Recorder()
+    partial: dict = {"text": "", "sources": []}
+    spy = _spy_degraded(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        await _run(manager, ctx, _FailingGraph(RuntimeError("upstream 500")), partial)
+
+    statuses = [p for t, p in manager.events if t == "status"]
+    assert statuses, "必须发出降级告知"
+    assert statuses[0]["stage"] == SSEInteractionTexts.STAGE_DEGRADED
+    assert (
+        statuses[0]["message"]
+        == SSEInteractionTexts.DEGRADATION_TEXTS["llm_unavailable_with_context"]
+    )
+    tokens = [p["token"] for t, p in manager.events if t == "token"]
+    assert tokens, "检索原文必须作为正文送出"
+    assert "营业总收入 100 亿元" in tokens[0]
+    assert partial["text"] == tokens[0]
+    citations = [p for t, p in manager.events if t == "citation"]
+    assert citations and citations[0]["source"] == "年报.pdf"
+    degraded = spy.degraded()
+    assert len(degraded) == 1, "失败路径恰好记一条 degraded"
+    assert degraded[0]["reason"] == "llm_unavailable_with_context"
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_without_context_gives_notice_only(monkeypatch):
+    """首 token 前失败且无检索结果 ⇒ 仅告知，不送空正文。"""
+    from src.config.const import SSEInteractionTexts
+    from src.infra.llm.request_context import RequestContext
+
+    ctx = RequestContext(session_id="s-noctx", kb_id="kb1")  # tool_contexts 为空
+    manager = _Recorder()
+    partial: dict = {"text": "", "sources": []}
+    spy = _spy_degraded(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        await _run(manager, ctx, _FailingGraph(RuntimeError("upstream 500")), partial)
+
+    statuses = [p for t, p in manager.events if t == "status"]
+    assert (
+        statuses[0]["message"]
+        == SSEInteractionTexts.DEGRADATION_TEXTS["llm_unavailable_no_context"]
+    )
+    assert [t for t, _ in manager.events if t == "token"] == []
+    assert partial["text"] == ""
+    degraded = spy.degraded()
+    assert len(degraded) == 1, "失败路径恰好记一条 degraded"
+    assert degraded[0]["reason"] == "llm_unavailable_no_context"
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_after_token_is_stream_interrupted(monkeypatch):
+    """已产出后失败 ⇒ 只告知"回答未生成完整"，不重放检索原文。"""
+    from src.config.const import SSEInteractionTexts
+    from src.infra.llm.request_context import RequestContext
+
+    ctx = RequestContext(session_id="s-mid", kb_id="kb1")
+    ctx.tool_contexts = [
+        RAGContext(
+            content="旧原文",
+            source="x.pdf",
+            page=1,
+            doc_id="d",
+            chunk_id="c",
+            score=0.5,
+        )
+    ]
+    manager = _Recorder()
+    partial: dict = {"text": "", "sources": []}
+    spy = _spy_degraded(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        await _run(
+            manager,
+            ctx,
+            _TokenThenFailGraph(
+                _chat_model_stream_item("部分回答"), RuntimeError("boom")
+            ),
+            partial,
+        )
+
+    statuses = [p for t, p in manager.events if t == "status"]
+    degraded = [p for p in statuses if p["stage"] == SSEInteractionTexts.STAGE_DEGRADED]
+    assert degraded, "已产出后失败也必须告知"
+    assert (
+        degraded[0]["message"]
+        == SSEInteractionTexts.DEGRADATION_TEXTS["llm_stream_interrupted"]
+    )
+    # 不得重放检索原文（旧原文不该出现在任何 token 里）
+    assert all("旧原文" not in p["token"] for t, p in manager.events if t == "token")
+    logged = spy.degraded()
+    assert len(logged) == 1, "失败路径恰好记一条 degraded"
+    assert logged[0]["reason"] == "llm_stream_interrupted"
+
+
+@pytest.mark.asyncio
+async def test_vector_store_failure_maps_to_vector_store_copy(monkeypatch):
+    """向量库不可用 ⇒ reason=vector_store_failed、文案=知识库暂不可用。"""
+    from src.config.const import SSEInteractionTexts
+    from src.infra.llm.request_context import RequestContext
+    from src.rag.errors import RetrievalUnavailableError
+
+    ctx = RequestContext(session_id="s-vs", kb_id="kb1")
+    manager = _Recorder()
+    partial: dict = {"text": "", "sources": []}
+    spy = _spy_degraded(monkeypatch)
+
+    with pytest.raises(RetrievalUnavailableError):
+        await _run(
+            manager,
+            ctx,
+            _FailingGraph(RetrievalUnavailableError("pg down")),
+            partial,
+        )
+
+    statuses = [p for t, p in manager.events if t == "status"]
+    assert (
+        statuses[0]["message"]
+        == SSEInteractionTexts.DEGRADATION_TEXTS["vector_store_failed"]
+    )
+    logged = spy.degraded()
+    assert len(logged) == 1, "失败路径恰好记一条 degraded"
+    assert logged[0]["reason"] == "vector_store_failed"
+
+
+@pytest.mark.asyncio
+async def test_error_event_carries_safe_copy_only_when_classified():
+    """终态 error 的载荷：已归类给表内文案；未归类留空（前端回落通用文案，不泄露内部文本）。"""
+    from src.config.const import SSEInteractionTexts
+    from src.infra.llm.request_context import RequestContext
+    from src.services.turn_runner import _run_with_finalize
+
+    class _StatusErr(Exception):
+        def __init__(self, code: int) -> None:
+            super().__init__(f"http {code}")
+            self.status_code = code
+
+    async def _drive(exc: BaseException) -> dict:
+        ctx = RequestContext(session_id="s-err")
+        manager = _Recorder()
+        svc = Mock()
+        svc.save_assistant_async = AsyncMock()
+        svc.chat_manager = Mock()
+        svc.chat_manager.add_message_async = AsyncMock()
+
+        async def builder() -> str:
+            raise exc
+
+        await _run_with_finalize(
+            svc,
+            "s-err",
+            "",
+            {"text": "", "sources": []},
+            builder,
+            manager,  # type: ignore[reportArgumentType]  # 运行时为最小替身 _Recorder
+            asyncio.Event(),
+            lambda: None,
+            ctx,
+        )
+        errors = [p for t, p in manager.events if t == "error"]
+        assert errors, "异常路径必须发 error 终态"
+        return errors[0]
+
+    forbidden = await _drive(_StatusErr(403))
+    assert (
+        forbidden["error"]
+        == SSEInteractionTexts.DEGRADATION_TEXTS["provider_unavailable"]
+    )
+    # 未归类：留空，前端回落通用文案（与改造前逐字一致，且不透出内部异常文本）
+    assert (await _drive(ValueError("secret internal detail")))["error"] == ""
+
+
+@pytest.mark.asyncio
+async def test_classified_failure_with_context_delivers_original(monkeypatch):
+    """已归类（403 ⇒ provider_unavailable）但已有检索结果 ⇒ 仍送原文、文案取 with_context。
+
+    规格裁定「有检索结果优先于按 reason 取文案」：`reason` 记录**原因**（供日志判据），
+    用户文案表达**交付产物** —— 两者在此**解耦**。
+    """
+    from src.config.const import SSEInteractionTexts
+    from src.infra.llm.request_context import RequestContext
+
+    ctx = RequestContext(session_id="s-cls-ctx", kb_id="kb1")
+    ctx.tool_contexts = [
+        RAGContext(
+            content="营业总收入 100 亿元",
+            source="年报.pdf",
+            page=3,
+            doc_id="d1",
+            chunk_id="c1",
+            score=0.9,
+        )
+    ]
+    manager = _Recorder()
+    partial: dict = {"text": "", "sources": []}
+    spy = _spy_degraded(monkeypatch)
+
+    with pytest.raises(_StatusErr):
+        await _run(manager, ctx, _FailingGraph(_StatusErr(403)), partial)
+
+    statuses = [p for t, p in manager.events if t == "status"]
+    assert statuses[0]["stage"] == SSEInteractionTexts.STAGE_DEGRADED
+    assert (
+        statuses[0]["message"]
+        == SSEInteractionTexts.DEGRADATION_TEXTS["llm_unavailable_with_context"]
+    )
+    tokens = [p["token"] for t, p in manager.events if t == "token"]
+    assert tokens, "已归类的失败在有检索结果时也必须送检索原文"
+    assert "营业总收入 100 亿元" in tokens[0]
+    assert partial["text"] == tokens[0]
+    citations = [p for t, p in manager.events if t == "citation"]
+    assert citations and citations[0]["source"] == "年报.pdf"
+    degraded = spy.degraded()
+    assert len(degraded) == 1, "失败路径恰好记一条 degraded"
+    assert degraded[0]["reason"] == "provider_unavailable", "reason 仍记录归类结果"
+
+
+@pytest.mark.asyncio
+async def test_classified_failure_without_context_gives_reason_copy(monkeypatch):
+    """已归类（403 ⇒ provider_unavailable）且无检索结果 ⇒ 文案按其 reason、不送 token。"""
+    from src.config.const import SSEInteractionTexts
+    from src.infra.llm.request_context import RequestContext
+
+    ctx = RequestContext(session_id="s-cls-noctx", kb_id="kb1")  # tool_contexts 为空
+    manager = _Recorder()
+    partial: dict = {"text": "", "sources": []}
+    spy = _spy_degraded(monkeypatch)
+
+    with pytest.raises(_StatusErr):
+        await _run(manager, ctx, _FailingGraph(_StatusErr(403)), partial)
+
+    statuses = [p for t, p in manager.events if t == "status"]
+    assert statuses[0]["stage"] == SSEInteractionTexts.STAGE_DEGRADED
+    assert (
+        statuses[0]["message"]
+        == SSEInteractionTexts.DEGRADATION_TEXTS["provider_unavailable"]
+    )
+    assert [t for t, _ in manager.events if t == "token"] == []
+    assert partial["text"] == ""
+    degraded = spy.degraded()
+    assert len(degraded) == 1, "失败路径恰好记一条 degraded"
+    assert degraded[0]["reason"] == "provider_unavailable"

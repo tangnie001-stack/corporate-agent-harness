@@ -50,30 +50,35 @@ SHALL NOT 复用 `CAPABILITY_DEGRADED`（其语义为 `/skills`、`/agents` 能�
 | LLM 首个 chunk 前失败（**已有检索结果**） | `llm_unavailable_with_context` | 是 | "模型服务暂不可用；以下为已检索到的原文" |
 | LLM 首个 chunk 前失败（**无检索结果**） | `llm_unavailable_no_context` | 是 | "模型服务暂不可用，请稍后再试" |
 | LLM 流中中断（已开始输出） | `llm_stream_interrupted` | 是 | "回答未生成完整，请重试" |
-| 上游可用性类 · **额度耗尽** | `provider_quota` | 是 | 明确"服务暂不可用"，**不得**出现"重试"类诱导 |
-| 上游可用性类 · **鉴权失败** | `provider_auth` | 是 | 同上 |
+| 上游**可用性类**（额度耗尽 / 鉴权失败**合并**） | `provider_unavailable` | 是 | 明确"服务暂不可用"，**不得**出现"重试"类诱导 |
 | 上游 **429 / 5xx 重试穷尽**（已达 attempts 上限） | `upstream_exhausted` | 是 | "服务繁忙，请稍后再试" —— 该类**可**提示重试（重试有意义） |
 | 生成任务静默（事件守护触发，**不中止**） | `generation_idle` | 是 | **过程**措辞（如"仍在处理中"）；SHALL NOT 用"已超时"这类**终态**措辞 —— 档 1 并不中止生成 |
 
-**判据（评审 I3 + 第三轮 I2）**：`provider_quota` 与 `provider_auth` **都可能以 403 出现** ⇒ 二者 SHALL 依据**响应体**区分，SHALL NOT 只看状态码。**该判据 SHALL 先取证再实现**：现仓内唯一证据只记录了 dashscope 的一个标识串、**未记载体所在层**（HTTP body / 异常 message / `.json()`），且无 deepseek 形状；又因异常经 `create_agent` / LangGraph 包装后原始 `response` 未必存活 ⇒ **实测两 provider 的 403 响应体并落表是本条的实施前置**。判据 SHOULD 按各 provider 的 **code 字段**匹配，而非全局关键词。**退化条款**：若实测证明二者**不可区分** ⇒ SHALL 降为**单一文案**并在本表标注，**MUST NOT** 保留无法触发的两行。
+**判据与取证归评测链（2026-10-16 用户裁定 + 跨 change 口径对齐）**：`401/403` 在本侧**一律不重试**（这条规则不变）；但**额度耗尽与鉴权失败都可能以 403 出现**，要**分开**就必须有响应体判据 —— 该**判别与取证整体交给在途 change `deepeval-bridge-eval`**（它已有可读状态码 / 响应体的 hooks 证据机制）。⇒ 本变更**按单一文案落地**（`provider_unavailable`）：**不再要求两行、也不要求在本变更内先做取证实测**。若将来评测链给出可复用判据，再拆两行并各自配文案（届时按本表"取值不得自造"的流程补登记）。
 
 **通道（评审 I2 + 第三轮 B1 —— 通道**在本规格内点名**，不留待实施自由发挥）**：本表「用户可见 = 是」的取值 SHALL 经**既有 `status` 事件 + 专用 `stage` 常量**送达（**SHALL NOT** 复用 `retrieve` / `web_search` 的 stage —— 会让前端触发正文/旁白重分类；与 `turn-provenance-observability` 的 `STAGE_*` 同构）。文案落 `src/config/const.py`，前端按 `stage` 分支呈现；前端 `error` 分支现**硬编码**文案、**不消费** `data.error`，须同步改造。
+
+**「有检索结果」优先于「按 `reason` 取文案」**：LLM 在首个 chunk 之前失败且本轮**已取得检索结果**时，无论 `reason` 是 `provider_unavailable` / `upstream_exhausted` / `vector_store_failed` / `llm_unavailable_no_context` 中的哪一个，用户可见文案 SHALL 取 `llm_unavailable_with_context` 一行，且 SHALL 附上检索原文；`reason` 字段 SHALL 仍记录**归类结果**（原因与文案在此**解耦**：`reason` 表达原因、文案表达交付产物）。**例外**：流已开始输出（`reason = llm_stream_interrupted`）时 SHALL NOT 附检索原文，文案取该行。
 
 #### Scenario: 取值不得自造
 - **WHEN** 任一降级发生
 - **THEN** 事件 `reason` 与用户可见文案均取自上表取值，不存在表外自造
 
 #### Scenario: 可用性类不得诱导重试
-- **WHEN** `reason ∈ {provider_quota, provider_auth}`
+- **WHEN** `reason = provider_unavailable`
 - **THEN** 用户文案不包含任何"重试"语义（该类错误重试必然再失败）
 
-#### Scenario: 额度与鉴权可区分
-- **WHEN** 上游以 **403** 失败
-- **THEN** 系统按**响应体**判定为 `provider_quota` 或 `provider_auth`（两者文案不同），SHALL NOT 仅凭状态码归为一类
+#### Scenario: 可用性类共用单一文案
+- **WHEN** 上游以 401 / 403（**无论额度耗尽还是鉴权失败**）
+- **THEN** 统一以 `provider_unavailable` 处置并给出**单一**文案；**SHALL NOT** 在本变更内自行发明额度 / 鉴权的细分判据 —— 该判别归评测链（见上）
 
 #### Scenario: 无"有文案无通道"的项
 - **WHEN** 检查本表「用户可见 = 是」的取值
 - **THEN** 每行都能指出其 SSE 通道与前端消费点，不存在"文案已定义但送不到用户"的项
+
+#### Scenario: 已归类的失败但已有检索结果
+- **WHEN** LLM 在首个 chunk 之前因上游可用性类错误（如 403）失败，且本轮已取得检索结果
+- **THEN** 用户 SHALL 收到检索原文与该行文案；`degraded` 事件的 `reason` SHALL 仍为该可用性类取值（不被文案改写）
 
 ### Requirement: 降级对用户可见，且不诱导无效重试
 

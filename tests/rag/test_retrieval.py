@@ -16,11 +16,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.config import TOP_K_RERANK
+from src.core.log_events import Event
 from src.infra.db.vector_store import VectorStore
 from src.infra.db.vector_store.types import ChunkResult
 from src.infra.llm.chat_message import ChatMessage
 from src.rag import retrieval
 from src.rag.context import RAGContext
+from src.rag.errors import RetrievalUnavailableError
 from src.rag.retrieval import _rerank_stats, rerank_results
 
 
@@ -172,10 +174,32 @@ class TestRerank:
         ]
         # r0 距离 0.9 → 分 0.1，r1 距离 0.5 → 分 0.5；分数降序下先 r1 后 r0
         results[1].distance = 0.5
-        with patch("src.rag.retrieval.with_retry", side_effect=lambda f, **kw: f):
+        with patch(
+            "src.rag.retrieval.retry_policy.call_with_retry",
+            side_effect=lambda f, *a, **kw: f(*a, **kw),
+        ):
             contexts = retrieval.rerank_results("query", results, reranker)
         assert len(contexts) == 2
         assert [c.score for c in contexts] == pytest.approx([0.5, 0.1])
+
+    def test_rerank_single_attempt_budget(self, monkeypatch):
+        """rerank 只做 1 次尝试（D13）：内层 5s 才是真实上界，不会被退避叠加撞穿外层。
+
+        既有 `test_rerank_outer_budget_exceeds_inner` 只比较两个 settings 数值、测不到
+        attempts；本用例截获真实传给 `retry_policy.call_with_retry` 的关键字参数做行为级断言。
+        若 attempts>1，每次尝试 5s 再叠加 1s/2s 退避，内层最坏 ≈18s 远超外层 6s ⇒
+        外层先放弃、`to_thread` 线程仍跑到底（D13 点名要避免的形态）。
+        """
+        seen: dict = {}
+
+        def _fake_call(fn, *args, **kwargs):
+            seen.update(kwargs)
+            return fn(*args)
+
+        monkeypatch.setattr(retrieval.retry_policy, "call_with_retry", _fake_call)
+        results = [_cr("a", cid="c1", doc_id="d1")]
+        rerank_results("q", results, _mock_reranker([0.9]))
+        assert seen["attempts"] == 1
 
     def test_kb_construction_assigns_tier_zero(self):
         """KB 构造点（rerank_results）显式产出 T0（内部文档）。"""
@@ -515,3 +539,117 @@ def test_rerank_dedup_logs_zero_drop(monkeypatch):
     assert len(dedup) == 1
     assert dedup[0]["dropped"] == 0
     assert dedup[0]["kept"] == 2
+
+
+# ==================== 单路失败降级与三态状态字段（timeout-and-degradation-hardening P2）====================
+
+
+@pytest.mark.asyncio
+async def test_hybrid_dense_failure_degrades_to_lexical_only(monkeypatch):
+    """稠密路失败 ⇒ 仍返回词法结果；状态字段区分 failed 与 ok，并留痕 degraded。"""
+
+    class _Store:
+        async def dense_search(self, kb_id, query, k):
+            raise RuntimeError("embedding endpoint down")
+
+        async def lexical_search(self, kb_id, query, k):
+            return [
+                ChunkResult(
+                    id="b", content="B", metadata={}, lexical_score=0.9, sparse_rank=0
+                )
+            ]
+
+    monkeypatch.setattr(retrieval, "HYBRID_SEARCH_ENABLED", True)
+    logged: list[tuple[Event, dict]] = []
+    monkeypatch.setattr(
+        retrieval, "log_event", lambda event, **fields: logged.append((event, fields))
+    )
+
+    results = await retrieval.search("资产负债率", "kb1", cast(VectorStore, _Store()))
+
+    # 词法结果必须被返回（修前：gather 无 return_exceptions ⇒ 整体抛错、结果丢失）
+    assert [r.id for r in results] == ["b"]
+    hybrid = [f for e, f in logged if e == Event.HYBRID_DONE]
+    assert len(hybrid) == 1
+    assert hybrid[0]["dense_status"] == "failed"
+    assert hybrid[0]["sparse_status"] == "ok"
+    assert hybrid[0]["dense_count"] == 0
+    degraded = [f for e, f in logged if e == Event.DEGRADED]
+    assert len(degraded) == 1
+    assert degraded[0]["reason"] == "embedding_failed"
+
+
+@pytest.mark.asyncio
+async def test_hybrid_sparse_failure_still_returns_dense(monkeypatch):
+    """词法路失败 ⇒ 仍返回稠密结果（对称场景，防只改了一半）。"""
+
+    class _Store:
+        async def dense_search(self, kb_id, query, k):
+            return [ChunkResult(id="a", content="A", metadata={}, distance=0.1)]
+
+        async def lexical_search(self, kb_id, query, k):
+            raise RuntimeError("pg fts down")
+
+    monkeypatch.setattr(retrieval, "HYBRID_SEARCH_ENABLED", True)
+    logged: list[tuple[Event, dict]] = []
+    monkeypatch.setattr(
+        retrieval, "log_event", lambda event, **fields: logged.append((event, fields))
+    )
+
+    results = await retrieval.search("资产负债率", "kb1", cast(VectorStore, _Store()))
+
+    assert [r.id for r in results] == ["a"]
+    hybrid = next(f for e, f in logged if e == Event.HYBRID_DONE)
+    assert hybrid["dense_status"] == "ok"
+    assert hybrid["sparse_status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_hybrid_success_but_empty_is_empty_not_failed(monkeypatch):
+    """成功但空结果 ⇒ empty（缺席），不得与 failed 混淆。"""
+
+    class _Store:
+        async def dense_search(self, kb_id, query, k):
+            return []
+
+        async def lexical_search(self, kb_id, query, k):
+            return []
+
+    monkeypatch.setattr(retrieval, "HYBRID_SEARCH_ENABLED", True)
+    logged: list[tuple[Event, dict]] = []
+    monkeypatch.setattr(
+        retrieval, "log_event", lambda event, **fields: logged.append((event, fields))
+    )
+
+    results = await retrieval.search("资产负债率", "kb1", cast(VectorStore, _Store()))
+
+    assert results == []
+    hybrid = next(f for e, f in logged if e == Event.HYBRID_DONE)
+    assert hybrid["dense_status"] == "empty"
+    assert hybrid["sparse_status"] == "empty"
+    assert not [f for e, f in logged if e == Event.DEGRADED]
+
+
+@pytest.mark.asyncio
+async def test_hybrid_both_paths_failed_raises_retrieval_unavailable(monkeypatch):
+    """两路皆失败 ⇒ 抛 RetriavalUnavailableError（按失败处置，不静默返回空）。"""
+
+    class _Store:
+        async def dense_search(self, kb_id, query, k):
+            raise RuntimeError("embedding down")
+
+        async def lexical_search(self, kb_id, query, k):
+            raise RuntimeError("pg down")
+
+    monkeypatch.setattr(retrieval, "HYBRID_SEARCH_ENABLED", True)
+    logged: list[tuple[Event, dict]] = []
+    monkeypatch.setattr(
+        retrieval, "log_event", lambda event, **fields: logged.append((event, fields))
+    )
+
+    with pytest.raises(RetrievalUnavailableError):
+        await retrieval.search("资产负债率", "kb1", cast(VectorStore, _Store()))
+
+    # 本层只抛不留痕：终态那条由上层（agent_service 的降级发射）记，避免同失败两处各记一次
+    assert not [f for e, f in logged if e == Event.DEGRADED]
+    assert not [f for e, f in logged if e == Event.HYBRID_DONE]

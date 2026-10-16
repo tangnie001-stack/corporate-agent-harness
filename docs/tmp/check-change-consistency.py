@@ -39,6 +39,15 @@
 归宿：本文件是**草稿工具**（`docs/tmp/` 是草稿区）。若要长期用，应作为**独立 change** 提升为
 `src/cli/check_change.py` 并接进 pre-commit —— 直接落 `src/cli/` 会形成"未进规格的闸门"，
 且跑通 `documentation-anti-rot` 的规格与测试是独立工作量。
+
+已知盲区
+--------
+只读**单个 change 目录** ⇒ 抓不到**跨 change 的口径矛盾**。真实一例（2026-10-16 拉 dev-wsl 时
+撞到）：生产侧写「429 可重试」，评测链侧写「429 不重试」—— 两条**各自成立**（评测链有 ragas
+框架层重试 ≤10 次，生产没有），但**都必须写明适用范围**，否则被读成矛盾。⇒ 跨 change 对账
+需另建检查：把待比对的两个 change 目录一起传进来、或先 `git merge` 拉平后人工核口径边界。
+（注：在途的 `deepeval-bridge-eval` 也有一个对账脚本，但查的是"**主规格 ↔ delta 的场景名**"，
+与本文件查的"**change 内跨工件**"互补、不重叠。）
 """
 
 from __future__ import annotations

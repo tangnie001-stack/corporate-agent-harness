@@ -230,10 +230,11 @@ LEXICAL_MIN_TOKEN_LEN = 2
 
 
 # ── 检索精排超时 ──
-# Reranker 精排总超时秒数：rerank 为同步 HTTP 调用（dashscope 无默认超时），
-# 在事件循环内直连会永久挂起阻塞整个 worker，故经 to_thread + wait_for 兜底；
-# 超时后降级为检索原始顺序（raw-order fallback），避免空结果触发 abstain
-RERANK_TIMEOUT = 5
+# 已迁至 `settings`（change timeout-and-degradation-hardening 的 P1）：
+#   内层 read 预算 `RERANK_TIMEOUT_READ`（5s，唯一预算，attempts=1 见 `RERANK_MAX_ATTEMPTS`）、
+#   外层 `wait_for` 兜底 `RERANK_OUTER_TIMEOUT`（6s，必须 > 内层）。
+# 原 `RERANK_TIMEOUT = 5` 已随该变更退役（P1 收口时清理）。
+# ⚠ 勿与事件枚举 `Event.RERANK_TIMEOUT`（"rerank timeout"）混淆 —— 那个仍在使用。
 
 
 # ── SSE 交互事件文案与 stage 标识 ──
@@ -287,6 +288,37 @@ class SSEInteractionTexts:
 
     # on_tool_end（retrieve_kb）→ SSEStatusEvent(STAGE_RETRIEVE)：检索完成
     AGENT_STATUS_RETRIEVED: str = "检索完成，正在分析..."
+
+    # ── 降级：用户可见通道与取值集合（timeout-and-degradation-hardening P2）──
+    # 降级告知专用 stage：SHALL NOT 复用 retrieve / web_search —— 前端 renderStatusTag
+    # 对这两者会触发"待定正文归为旁白"的重分类（与 STAGE_TURN_* 同因）
+    STAGE_DEGRADED: str = "degraded"
+
+    # reason 取值集合 —— 唯一来源：docs/openspec/specs/degradation-policy/spec.md 的
+    # 「降级原因与用户文案的取值集合」表；实现不得自造取值（含 P3 才消费的 generation_idle）
+    DEGRADATION_REASONS: tuple[str, ...] = (
+        "embedding_failed",
+        "vector_store_failed",
+        "llm_unavailable_with_context",
+        "llm_unavailable_no_context",
+        "llm_stream_interrupted",
+        "provider_unavailable",
+        "upstream_exhausted",
+        "generation_idle",
+    )
+
+    # 仅「用户可见 = 是」的取值入本表（其余在实现侧不送达用户）。
+    # provider_unavailable 的文案不得含"重试"语义：该类错误重试必然再失败。
+    # upstream_exhausted / llm_* 属可恢复或流中断，可提示重试。
+    DEGRADATION_TEXTS: ClassVar[dict[str, str]] = {
+        "vector_store_failed": "知识库暂不可用",
+        "llm_unavailable_with_context": "模型服务暂不可用；以下为已检索到的原文",
+        "llm_unavailable_no_context": "模型服务暂不可用，请稍后再试",
+        "llm_stream_interrupted": "回答未生成完整，请重试",
+        "provider_unavailable": "服务暂不可用，本次无法作答",
+        "upstream_exhausted": "服务繁忙，请稍后再试",
+        "generation_idle": "仍在处理中，请稍候",
+    }
 
     # ── SSE 错误事件文案 ──
     # SSEErrorEvent 统一错误前缀：_dual_stream（事件源异常）与 stream_chat（外层兜底）共用

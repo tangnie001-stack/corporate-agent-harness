@@ -116,9 +116,14 @@
 | **不可重试** | 立即失败 | 输入校验类（`ValueError` 等，且**失败耗时 ≈ 0s**）、鉴权/权限（401/403）、请求格式（400/422） |
 | **可重试** | 有界 + 退避 + jitter | 超时、连接错误、429、5xx |
 
-**判据细则（评审 I3 + 第三轮 I2）**：`401/403` 一律**不重试**（这点不变），但**要分文案就必须能区分二者** —— 403 既可能是鉴权失败、也可能是**额度耗尽**（历史冒烟实测即为 403 + `AllocationQuota.FreeTierOnly`）。⇒ 分类实现 SHALL 依据**响应体**，**SHALL NOT 只看状态码**。
+**适用范围（必须写明，否则与在途 change 的口径看起来互相矛盾 —— 拉 dev-wsl 时发现）**：本表只约束**生产链路**（`main` / `classify` / `summary` / `embedding` / `rerank`）。**评测链的 429 / 403 口径归 `deepeval-bridge-eval`，与生产相反且各自成立**（依据 D17 的真源声明）：
 
-**但该判据须先取证（第三轮 I2）**：仓内证据只到"dashscope 的一个标识串"，**未记它落在哪一层**（HTTP body / 异常 message / `.json()`），亦无 deepseek 形状；加之异常经 `create_agent` / LangGraph 包装后**原始 `response` 未必存活** ⇒ **实测两 provider 的 403 响应体并落表**是本条的实施前置（见 tasks）。判据 SHOULD 按 provider 的 **code 字段**匹配而非全局关键词；**若实测证明不可区分 ⇒ 降为单一文案**（取值表已写退化条款）。
+- **429**：评测链**不重试** —— ragas 框架层已对 `openai.RateLimitError`（= HTTP 429）重试 ≤10 次（`ragas/llms/base.py:325-335` 设 `exception_types`、`ragas/run_config.py:52` `max_retries=10`），外层再叠是 **10×3 放大**；而**生产链路没有框架层重试** ⇒ 必须由本层重试。
+- **403 额度类**：评测链**由外层重试**（ragas 不重试它，外层是**唯一**一层）；生产链路**不重试**（重试必然再失败 ⇒ 转降级 + 告知）。
+
+⇒ 两处**是分工、不是矛盾**。**本表与 `timeout-policy` 规格的措辞均不得被读作覆盖评测链**。
+
+**判据与取证归评测链（2026-10-16 用户裁定）**：`401/403` 在本侧**一律不重试**（规则不变）；但 403 既可能是鉴权失败、也可能是**额度耗尽**（历史冒烟实测即 403 + `AllocationQuota.FreeTierOnly`），**要分开就必须有响应体判据** —— 该**判别与取证整体交给 `deepeval-bridge-eval`**（它已有可读状态码 / 响应体的 hooks 证据机制）。⇒ 本变更**按单一文案落地**（`provider_unavailable`）：**不再要求在本变更内先做取证实测**，**也不保留两行**。
 
 **另补（第三轮 I2）**：**429 / 5xx 重试穷尽**也是降级的一种 —— 它需要自己的 reason 与文案（取值表已补 `upstream_exhausted`），此前漏了。
 
@@ -141,6 +146,8 @@
 - **事件** → `src/core/log_event_specs.py` 的 `EVENT_SPECS`（**唯一归属**，ADR-0024 决策 6 已确立此口径）。
 - **用户文案** → `src/config/const.py`（`SSEInteractionTexts` 等已在用，`src/rag/retrieval.py` 即引用）。
 - **取值集合**：`reason` 取值与用户文案**不得由实现自造** —— 清单已落进规格 `specs/degradation-policy/spec.md` 的「降级原因与用户文案的取值集合」表（架构评审 Q3：不允许实现层发明用户可见行为）。
+
+**原因与文案解耦**：`reason` 表达**原因**（日志判据用），文案表达**交付产物**；只要本轮**已取得检索结果**，无论 `reason` 是可用性类还是 `llm_unavailable_no_context`，用户文案一律取 `llm_unavailable_with_context` 并附检索原文（唯一例外：流已开始输出 ⇒ 不重放原文）。
 
 **⚠️ 不得复用 `CAPABILITY_DEGRADED`**：它的现有语义是"`/skills`、`/agents` 清单读失败"（`src/api/capabilities.py`，字段 `resource`/`reason`）。复用到"依赖降级"会污染能力面板的语义。要么新开事件（如 `dependency degraded`），要么在 spec 里显式扩展语义并区分 resource 取值域。
 
@@ -204,7 +211,7 @@
 
 **真正缺的两环（本次都需处理）**：
 
-1. **用户侧文案误导向**：额度耗尽 / 鉴权失败属"**重试必然再失败**"，而前端只给通用 `showError('连接异常，请重试')` ⇒ **在鼓励用户做无用的重试**。需按错误类别给可区分文案（类别判定见 D5 的异常分类）。
+1. **用户侧文案误导向**：额度耗尽 / 鉴权失败属"**重试必然再失败**"，而前端只给通用 `showError('连接异常，请重试')` ⇒ **在鼓励用户做无用的重试**。本变更**至少**要做到"该类错误不出现'请重试'语义"（单一文案即可满足）；**更细的类别文案**（额度 vs 鉴权）留待评测链给出可复用判据后再拆（见 D5）。
 2. **运维侧无告警触发源** ⇒ **D9-(A) 的前提"分钟级可介入"目前不成立**：本仓**无 metrics 端点**（`grep prometheus|/metrics` 无结果），应用侧**不发任何告警**；已存在的 `src/api/alerts.py` 是**入站**（接收阿里云告警并跑 Agent 分析），不是出站 ⇒ **没有人会被叫醒**。已实测 Langfuse v2 **也没有**可用的替代：`/metrics` = 404（无 Prometheus 端点）；`/api/public/metrics/daily` 存在但**天粒度**（只能做成本/用量趋势）；`/api/public/health` 无需鉴权但**只表示 Langfuse 自己活着**。⇒ 详见 **需求池 `H-12`**（含逐路径实测与后续方向：**阿里云 Grafana + 阿里云日志 SLS**，最小出站源 = `error_*.log` 接 SLS 日志告警）。**(A) 档须先补出站触发源，或明确接受"靠人主动发现"。**
 
 **本变更的范围边界（据此划）**：**不建告警系统**（那是运维接入，归 `H-12`：阿里云 Grafana + SLS）；本变更只保证**失败以结构化事件留痕**（字段名与取值可被判据匹配），使 SLS / 云监控侧**配得出规则**。⇒ 交付物 = **事件 + 字段口径**，不是告警通道。
@@ -240,6 +247,8 @@
 | `embedding`（**两档**）查询 / 入库 | read **15s** / **150s** | 查询：在线单条、失败可退词法，落点 `QueryEmbedder`；入库：离线批量。**入库侧落点 ≥3 处**（`pg_store.add_chunks`、`document_service`、`chunking/scorer`）—— 实施时须全量 `grep embed_documents` 核对，勿只改一处 |
 | `rerank` | 内层 **5s**（**唯一预算，attempts=1**）；外层 `wait_for` **6s** 作双保险 | 见 D13 修订：三个超时**必须嵌套**，否则外层先放弃、底层线程跑到底 |
 | 重试（仅可重试类） | attempts=3 / 初始 1s / ×2 / **±30% jitter** | D5 |
+
+> **超时必须同时以 `request_timeout` 传入**（2026-10-16 实测修正）：SDK 每次请求自带 `timeout` 参数、会**覆盖** httpx client 上的超时 ⇒ 只设 `http_client`/`http_async_client` 时本表数值**空转**（实测仅 client `read=0.001` 时首 chunk 仍 0.49s 到达、embeddings 0.42s 成功）。`build_chat` / `build_embeddings` 须把**同一个细粒度 `httpx.Timeout` 对象**也作为 `request_timeout` 传入（用标量虽也生效，但会把 connect/read/write/pool 压成同值，违反 ADR-0024）。
 
 #### 可观测：**范围收窄**（原表述"完整可观测"过宽）
 
@@ -331,6 +340,7 @@ grep "\[agent\] model turn" app_*.log | grep -o "latency_ms=[0-9]*" | cut -d= -f
 - **生产链路**（`main` / `classify` / `summary` / `embedding` / `rerank`）的超时与重试，真源是**本变更**；
 - **评测链**（`RAGAS_*` 族、judge）的真源是**它**；它把 `RAGAS_HTTP_TIMEOUT_*` 改嫁到 `ChatOpenAI` 属**评测链内部的承载点换位**，不改生产语义；
 - 两侧**不得**互相覆盖对方的取值族。
+- **已实测撞到一例（2026-10-16 拉 dev-wsl 时）**：评测链定「**429 不重试**、**403 额度类由外层重试**」，与生产口径**相反但各自成立**（评测链有 ragas 框架层重试 ≤10 次，生产没有）⇒ 已在 D5 与 `timeout-policy` 规格写明**适用范围**，避免被读成矛盾。**这属于跨 change 口径边界，本变更的机检（`docs/tmp/check-change-consistency.py`）读不到**（它只读单个 change 目录）。
 
 **定序（推荐：它先、本变更后）**：① 它正在收口，且会删掉本变更**并不依赖**的 `build_native_client`；② 本变更要新建 ADR，编号须排在它的新 ADR 之后（D9）；③ 同文件串行可避免合并冲突里"谁是当前形态"的歧义。
 ⇒ **开工前必须先重读 `src/infra/llm/provider/factory.py` 的当前形态** —— 本 design 的证据 E1 可能已过时。
@@ -351,7 +361,7 @@ grep "\[agent\] model turn" app_*.log | grep -o "latency_ms=[0-9]*" | cut -d= -f
 
 - 生产真实分位校准（D11 取值表的"待校准"项）与 idle 阈值的最终值；
 - **`read` 与 nginx 上限的关系（第三轮开放问题 3）**：若**思考档**首字节实测 p99 逼近 300s，则 `proxy_read_timeout=300s` **本身即瓶颈** ⇒ 需与 nginx 配置一并决策（放宽代理超时，或接受思考轮被截断），届时本表取值须随之修正；
-- **`provider_quota` / `provider_auth` 的 403 响应体实测（第三轮 I2）**：判据的实施前置；**不可区分时降为单一文案**（取值表已写退化条款）；
+- **403 的额度 / 鉴权判别**：**已裁定移出本变更**，归评测链（`deepeval-bridge-eval` 的 hooks 证据机制）⇒ **不再是本变更的未定项**；仅当它给出可复用判据后，才可能回来把 `provider_unavailable` 拆成两行；
 - `src/cli/symptom_metrics.py` 是否扩为耗时统计（见 tasks）；
 - 新 ADR 的**取号时机**（D9：排在 `deepeval-bridge-eval` 之后）。
 

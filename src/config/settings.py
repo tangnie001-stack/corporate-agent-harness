@@ -368,6 +368,64 @@ DELEGATE_TOTAL_TIMEOUT_THINKING_S: float = float(
 # 宁宽不宁紧；配合 `delegate skip` 的命中率观测，上线一版数据后再收紧。
 DELEGATE_MAX_PER_SESSION: int = int(os.getenv("DELEGATE_MAX_PER_SESSION", "50"))
 
+# ====== 生产链路角色级超时（自有键名；评测链用 RAGAS_* 族，两者不共享）======
+# 依据：change timeout-and-degradation-hardening 的 design D2/D11。
+# ⚠ 这些值待真实分位校准（D11 取值表标注"待校准"）；全部可被 .env 覆盖。
+HTTP_TIMEOUT_CONNECT: float = float(os.getenv("HTTP_TIMEOUT_CONNECT", "10"))
+HTTP_TIMEOUT_WRITE: float = float(os.getenv("HTTP_TIMEOUT_WRITE", "30"))
+HTTP_TIMEOUT_POOL: float = float(os.getenv("HTTP_TIMEOUT_POOL", "10"))
+# main 为流式：read 是「请求发出 → 字节到达」的**单一预算**（含首字节等待，D4）
+MAIN_TIMEOUT_READ: float = float(os.getenv("MAIN_TIMEOUT_READ", "180"))
+CLASSIFY_TIMEOUT_READ: float = float(os.getenv("CLASSIFY_TIMEOUT_READ", "60"))
+SUMMARY_TIMEOUT_READ: float = float(os.getenv("SUMMARY_TIMEOUT_READ", "60"))
+# embedding 两档：查询（在线、失败可退词法）要紧；入库（离线批量）可宽（D10 的唯一例外）
+EMBEDDING_TIMEOUT_READ_QUERY: float = float(
+    os.getenv("EMBEDDING_TIMEOUT_READ_QUERY", "15")
+)
+EMBEDDING_TIMEOUT_READ_INGEST: float = float(
+    os.getenv("EMBEDDING_TIMEOUT_READ_INGEST", "150")
+)
+# rerank：内层唯一预算（外层 wait_for 见 RERANK_OUTER_TIMEOUT，必须 > 内层，D13）
+RERANK_TIMEOUT_READ: float = float(os.getenv("RERANK_TIMEOUT_READ", "5"))
+RERANK_OUTER_TIMEOUT: float = float(os.getenv("RERANK_OUTER_TIMEOUT", "6"))
+# rerank 只做 1 次尝试：它是每轮检索都调的高频路径，重试一次 5s 同步调用收益很小；
+# 且必须让「内层唯一预算（5s）」成为真实上界，否则外层 6s 会先放弃、线程跑到底（D13）。
+RERANK_MAX_ATTEMPTS: int = int(os.getenv("RERANK_MAX_ATTEMPTS", "1"))
+# 按角色查表；judge **不在表内**（其真源归评测链，D17）
+ROLE_TIMEOUT_READ: dict[str, float] = {
+    "main": MAIN_TIMEOUT_READ,
+    "classify": CLASSIFY_TIMEOUT_READ,
+    "summary": SUMMARY_TIMEOUT_READ,
+    "embedding": EMBEDDING_TIMEOUT_READ_INGEST,
+    "rerank": RERANK_TIMEOUT_READ,
+}
+
+
+def validate_timeout_nesting() -> None:
+    """启动期 fail-fast：rerank 内层总预算必须**小于**外层 `wait_for`。
+
+    三层超时必须**嵌套**（D13）：内层是客户端 `request_timeout`，外层是
+    `asyncio.wait_for`。若内层总预算 ≥ 外层，外层会先放弃等待，而底层
+    `to_thread` 线程**不随 wait_for 取消**、仍跑到底 —— 表现为"看似降级成功、
+    实则线程堆积"。默认取值（1 × 5s = 5s < 6s）满足约束；一旦被 env 把
+    `RERANK_MAX_ATTEMPTS` 调大（如 3 ⇒ ≈18s），该复合超时会原样回归，故在此
+    启动期拦截（不随 `PROVIDER_VALIDATE` 开关跳过）。
+
+    Raises:
+        RuntimeError: 内层总预算 ≥ 外层超时。
+    """
+    budget = RERANK_MAX_ATTEMPTS * RERANK_TIMEOUT_READ
+    if budget >= RERANK_OUTER_TIMEOUT:
+        raise RuntimeError(
+            "rerank 三层超时未嵌套：内层总预算 "
+            f"RERANK_MAX_ATTEMPTS({RERANK_MAX_ATTEMPTS}) × "
+            f"RERANK_TIMEOUT_READ({RERANK_TIMEOUT_READ}s) = {budget}s "
+            f"必须小于外层 RERANK_OUTER_TIMEOUT({RERANK_OUTER_TIMEOUT}s)；"
+            "否则外层 wait_for 先放弃等待、底层线程仍跑到底（看似降级成功、"
+            "实则线程堆积）。请调小 RERANK_MAX_ATTEMPTS 或调大 RERANK_OUTER_TIMEOUT。"
+        )
+
+
 # ====== 重试策略 ======
 # 外部调用（DashScope / PostgreSQL / Redis）失败时的指数退避参数
 # 重试 3 次，初始间隔 1s，每次翻倍：1s → 2s → 4s

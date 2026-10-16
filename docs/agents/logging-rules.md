@@ -20,6 +20,7 @@
 | `[clarify]` | 澄清答案解析（services/clarify_service；事件：resolve miss / resolve already done / resolve raced / resolved） |
 | `[provider]` | 模型 provider 兼容层（infra/llm/provider；启动期定价 ensure 的无价告警与降级告警，均直调 logger，非 Event） |
 | `[alert]` | 阿里云告警接入（services/alert_service；入口载荷非法/去重丢弃/未配目标/回合繁忙/启动失败/超时/消费失败/空或异常回答/推送失败，均直调 logger，非 Event） |
+| `[degradation]` | 外部依赖降级留痕（事件：`degraded`；`reason` 取值集合见 spec 取值集合表，值域登记见下） |
 
 新语义面前缀：先登记 `src/core/log_events.py` 的 `LOG_PREFIXES` + 本表加一行后启用，不预建。
 
@@ -111,6 +112,13 @@ channel），业务不手写。channel 取值见 `src/config/const.py` 的 `Chan
   摘要覆盖到的消息条数、`tokens` 为摘要文本 token 数
 - `summary fallback`（session / warning）——摘要生成失败或未采用，回退纯裁剪；**不阻断
   用户流程**。`reason` 为降级原因、`err` 为底层错误信息
+- `hybrid done` 增 `dense_status` / `sparse_status`（retrieval / info）——两路**本次调用**状态，
+  取 ok（成功且有结果）/ empty（成功但空结果=缺席）/ failed（未成功=失败）；与 `dense_count` 配对
+  使用（`count=0` 本身分不出失败与缺席）
+- `degraded`（degradation / warning）——外部依赖降级留痕；`reason` 取 embedding_failed /
+  vector_store_failed / llm_unavailable_with_context / llm_unavailable_no_context /
+  llm_stream_interrupted / provider_unavailable / upstream_exhausted / generation_idle
+  （唯一来源：`docs/openspec/specs/degradation-policy/spec.md` 的取值集合表）
 
 **不再扩 `iteration done`**：其「消息数拆分」意图已由 `prompt messages` 在组装点承载，
 不重复记录同一事实（避免后人再提）。

@@ -2,7 +2,6 @@
 
 测试目标：
 - get_embeddings / get_llm / get_rerank：工厂函数创建正确的模型实例
-- with_retry：重试装饰器的成功 / 耗尽重试次数场景
 
 注意：DashScope SDK 在模型验证时会尝试导入 dashscope 包，
 因此需要在导入 src.models 之前先 mock 掉 dashscope 模块。
@@ -10,8 +9,6 @@
 
 import sys
 from unittest.mock import MagicMock
-
-import pytest
 
 from config.settings import EMBEDDING_MODEL
 
@@ -25,45 +22,7 @@ mock_dashscope.TextReRank.Models = MagicMock()
 mock_dashscope.TextReRank.Models.gte_rerank = "gte-rerank"
 sys.modules["dashscope"] = mock_dashscope
 
-from src.models import get_embeddings, get_llm, get_rerank, with_retry
-
-
-# ==================== with_retry 重试装饰器测试 ====================
-class TestWithRetry:
-    """测试 with_retry 装饰器的重试逻辑。"""
-
-    def test_retry_success(self):
-        """前两次失败、第三次成功：应返回结果且调用 3 次。"""
-        call_count = 0
-
-        def flaky():
-            """模拟不稳定的函数，前 2 次抛异常，第 3 次成功。"""
-            nonlocal call_count
-            call_count += 1
-            if call_count < 3:
-                raise ValueError("temporary error")
-            return "success"
-
-        wrapped = with_retry(flaky, max_attempts=5, initial_interval=0.01, backoff=1.0)
-        assert wrapped() == "success"
-        assert call_count == 3  # 第 3 次成功，不再重试
-
-    def test_retry_exhausted(self):
-        """始终失败：耗尽重试次数后抛出最后一次异常。"""
-        call_count = 0
-
-        def always_fails():
-            """模拟始终失败的函数。"""
-            nonlocal call_count
-            call_count += 1
-            raise ValueError("persistent error")
-
-        wrapped = with_retry(
-            always_fails, max_attempts=3, initial_interval=0.01, backoff=1.0
-        )
-        with pytest.raises(ValueError, match="persistent error"):
-            wrapped()
-        assert call_count == 3  # 重试 3 次后放弃
+from src.models import get_embeddings, get_llm, get_rerank
 
 
 # ==================== get_embeddings 嵌入模型测试 ====================
