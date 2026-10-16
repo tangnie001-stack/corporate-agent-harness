@@ -261,15 +261,18 @@ def test_build_behaviour_metrics_returns_three_in_fixed_order():
     ]
 
 
-def test_loop_detection_is_not_wired_to_the_judge():
-    """loop-detection 是纯 trace 分析：构造时不传裁判 ⇒ 其 `model` 为 `None`。
+def test_llm_backed_metrics_receive_the_judge_and_loop_detection_does_not():
+    """LLM 驱动的**两项**都必须拿到**同一个**裁判实例；loop-detection 是纯 trace、不接裁判。
 
     ⚠️ 该类**确实有** `model` 属性（基类声明并置 None），故**不能**断言 `hasattr` 为假。
+    断言用 `is judge`（身份）而非 `is not None`：后者在"工厂硬编码了别的模型"时也会通过。
     """
-    metrics = build_behaviour_metrics(_FakeDeepEvalLLM())
+    judge = _FakeDeepEvalLLM()
+    metrics = build_behaviour_metrics(judge)
 
-    assert metrics[2].model is None
-    assert metrics[0].model is not None
+    assert metrics[0].model is judge  # TaskCompletion
+    assert metrics[1].model is judge  # StepEfficiency（评审 Important：原测试漏了这项）
+    assert metrics[2].model is None  # AgentLoopDetection（纯 trace，不调 LLM）
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
