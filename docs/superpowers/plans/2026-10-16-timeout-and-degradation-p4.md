@@ -69,10 +69,13 @@ def test_rerank_done_carries_stage_latency(monkeypatch):
     """`rerank done` 必须带本阶段耗时 `latency_ms`（D11 待校准项要它来定值）。
 
     计时只在精排调用**周围**，与 `retrieve done` 的全链路合计相区分。
+    **注意**：`rerank_results` 在 `rerank done` **之后**还会落一条 `dedup done`
+    ⇒ 捕获必须收成**列表再按事件过滤**，不能用"最后一条覆盖"的 dict
+    （否则拿到的永远是 `dedup done` 的字段，断言必红）。
     """
-    captured: dict = {}
+    captured: list[tuple[Event, dict]] = []
     monkeypatch.setattr(
-        retrieval, "log_event", lambda event, **fields: captured.update(fields)
+        retrieval, "log_event", lambda event, **fields: captured.append((event, fields))
     )
     results = [
         ChunkResult(id="a", content="A", metadata={}, distance=0.1),
@@ -89,9 +92,11 @@ def test_rerank_done_carries_stage_latency(monkeypatch):
     contexts = retrieval.rerank_results("资产负债率", results, _ReRanker())
 
     assert len(contexts) == 2
-    assert "latency_ms" in captured, "rerank done 未带 latency_ms"
-    assert isinstance(captured["latency_ms"], int)
-    assert captured["latency_ms"] >= 0
+    rerank_done = [f for e, f in captured if e == Event.RERANK_DONE]
+    assert rerank_done, "未落 rerank done 事件"
+    assert "latency_ms" in rerank_done[0], "rerank done 未带 latency_ms"
+    assert isinstance(rerank_done[0]["latency_ms"], int)
+    assert rerank_done[0]["latency_ms"] >= 0
 ```
 
 - [ ] **Step 2: 跑测试确认红**
