@@ -49,15 +49,17 @@
 
 > 已由 1 题 spike 实测（2026-10-16）：只挂 `CallbackHandler` **不评分**（`metric.score=None`、`reason=''`）；分数落在 eval loop 内部（`copy_metrics()` 副本），**只能从 `test_run_*.json` 回读**：逐题分在 **`testCases[j].metricsData[k].score`**（`metricsScores` 是**按指标聚合**，只能作粗守卫）；且 `evals_iterator` 是 generator，**只有耗尽才落盘 JSON**。
 
-- [ ] 5.1 **异步可行性已在 change 起草期探测（2026-10-16，见 `docs/tmp/deepeval-poc/RESULTS.md`「Q1 探测」）**：外层 `asyncio.run` 内驱动 `evals_iterator`（默认 `run_async=True`）与 `AsyncConfig(run_async=False)` **两路均 WORKS**（1 题真调 judge、逐题分 1.0）；机制是 `get_or_create_event_loop()` 调 `nest_asyncio.apply()`，内层 `run_until_complete` 在**同一 loop** 重入。本项实施时**落一个回归测试**钉住该形态（勿新建第二个事件循环），并在代码注释写明 `nest_asyncio` 的进程级 monkeypatch 副作用。
-- [ ] 5.2 写失败测试：**只挂 handler、不驱动 `evals_iterator` 时取不到分**（防止回归到被否定的形态）。
-- [ ] 5.3 实现（两半缺一不可）：`EvaluationDataset(goldens=[Golden(input=<题面>, expected_output=<参考答案>)])` + `evals_iterator(metrics=[…], display_config=DisplayConfig(results_folder=<OUT>))` 驱动循环；循环体内执行 `graph.ainvoke(..., config={"callbacks": [CallbackHandler()]})`（**handler 不挂 metrics**）。
-- [ ] 5.4 实现：从 `<OUT>/test_run_*.json` 的 **`testCases[].metricsData`**（含 `name` / `score` / `success`）**回读逐题**行为分；`golden ↔ testCase ↔ trace_id` 以 `order`/`input` 映射；SHALL NOT 读调用方持有的 `metric.score`；SHALL NOT 把 `metricsScores`（按指标聚合）当逐题分。**每题新建独立 `CallbackHandler` 实例**（不得跨题复用，否则串 trace）。
-- [ ] 5.5 写失败测试 + 断言：**轨迹非空 且 已从 `test_run` 取到该指标的分**，否则 fail-loud（`agent_loop_detection` 无 trace 时源码直接置 0.0）；并覆盖**生成器未耗尽**路径——循环体抛异常/提前 `break` ⇒ 无 JSON ⇒ fail-loud（循环 SHALL 跑到耗尽）。
-- [ ] 5.6 **并发负向验证**：并发跑 2 题，断言两者的 trace 与分**不串**。
-- [ ] 5.7 选型并接入 ≤5 项 DeepEval 原生行为指标（候选：`TaskCompletion` / `StepEfficiency` / `AgentLoopDetection`）；**清单在本组内定稿并写回 design D6**（spec 已声明"实施期定稿"，不得与 design 互相推诿）。
-- [ ] 5.8 `summarize_trajectory` 保留，仅作报告诊断摘要；**不得**作为行为指标数据源。
-- [ ] 5.9 跑通并提交。
+> **组 5 实施差异（Phase 2 收口记，2026-10-17）**：5.1 未按原样落地（nest_asyncio 代码注释与专门回归测试未写），改为 main() 的 `hook_events > 0` 运行时断言 + D6/R9 写回 + 真链路冒烟守卫异步形态；5.6 并发负向验证未落地（仅有"每题独立 handler"前置断言，非并发跑 2 题）。
+
+- [ ] 5.1 **异步可行性已在 change 起草期探测（2026-10-16，见 `docs/tmp/deepeval-poc/RESULTS.md`「Q1 探测」）**：外层 `asyncio.run` 内驱动 `evals_iterator`（默认 `run_async=True`）与 `AsyncConfig(run_async=False)` **两路均 WORKS**（1 题真调 judge、逐题分 1.0）；机制是 `get_or_create_event_loop()` 调 `nest_asyncio.apply()`，内层 `run_until_complete` 在**同一 loop** 重入。本项实施时**落一个回归测试**钉住该形态（勿新建第二个事件循环），并在代码注释写明 `nest_asyncio` 的进程级 monkeypatch 副作用。**（未按原样落地：nest_asyncio 注释与专门回归测试未写；异步形态改由 `main()` 的 `hook_events > 0` 运行时断言守卫——见 `eval_ragas.py:1058`，机制见 D6/R9）**
+- [x] 5.2 写失败测试：**只挂 handler、不驱动 `evals_iterator` 时取不到分**（防止回归到被否定的形态）。
+- [x] 5.3 实现（两半缺一不可）：`EvaluationDataset(goldens=[Golden(input=<题面>, expected_output=<参考答案>)])` + `evals_iterator(metrics=[…], display_config=DisplayConfig(results_folder=<OUT>))` 驱动循环；循环体内执行 `graph.ainvoke(..., config={"callbacks": [CallbackHandler()]})`（**handler 不挂 metrics**）。
+- [x] 5.4 实现：从 `<OUT>/test_run_*.json` 的 **`testCases[].metricsData`**（含 `name` / `score` / `success`）**回读逐题**行为分；`golden ↔ testCase ↔ trace_id` 以 `order`/`input` 映射；SHALL NOT 读调用方持有的 `metric.score`；SHALL NOT 把 `metricsScores`（按指标聚合）当逐题分。**每题新建独立 `CallbackHandler` 实例**（不得跨题复用，否则串 trace）。
+- [x] 5.5 写失败测试 + 断言：**轨迹非空 且 已从 `test_run` 取到该指标的分**，否则 fail-loud（`agent_loop_detection` 无 trace 时源码直接置 0.0）；并覆盖**生成器未耗尽**路径——循环体抛异常/提前 `break` ⇒ 无 JSON ⇒ fail-loud（循环 SHALL 跑到耗尽）。
+- [ ] 5.6 **并发负向验证**：并发跑 2 题，断言两者的 trace 与分**不串**。**（未落地：仅有 `test_behaviour_driver.py` 的"每题独立 handler"断言作前置保障，非并发跑 2 题的负向验证）**
+- [x] 5.7 选型并接入 ≤5 项 DeepEval 原生行为指标（候选：`TaskCompletion` / `StepEfficiency` / `AgentLoopDetection`）；**清单在本组内定稿并写回 design D6**（spec 已声明"实施期定稿"，不得与 design 互相推诿）。
+- [x] 5.8 `summarize_trajectory` 保留，仅作报告诊断摘要；**不得**作为行为指标数据源。
+- [x] 5.9 跑通并提交。
 
 ## 6. 出题路下线（D8）
 

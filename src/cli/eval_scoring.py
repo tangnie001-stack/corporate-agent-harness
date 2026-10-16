@@ -171,6 +171,12 @@ def retrieval_coverage(sample_classes: list[str]) -> float:
 def summarize_trajectory(messages: list) -> dict:
     """生成轨迹诊断摘要：工具名 + 入参 + 迭代数；**不含工具输出正文**。
 
+    **仅作报告诊断摘要，SHALL NOT 作为行为指标的数据源**（tasks 5.8）：
+    行为分的唯一来源是 `test_run_*.json` 的 `testCases[].metricsData`（经
+    `read_behaviour_scores` 回读），本函数的"工具名 + 迭代数"只是给人看的
+    缩略轨迹，不是 DeepEval 行为指标（`StepEfficiency` / `AgentLoopDetection`）
+    所消费的轨迹对象。
+
     Args:
         messages: LangGraph 状态中的消息列表
 

@@ -150,6 +150,14 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
 
 - 候选：`task_completion` / `step_efficiency` / `plan_adherence` / `plan_quality` / `tool_correctness` / `argument_correctness` / **`agent_loop_detection`**（直接对口已登记的"Agent 打转、重复同一 query"）。
 - 选型约束：**指标总数控制在 ≤5**（DeepEval 官方 "Choosing Your Metrics" 建议），先上 2–3 个高价值项，其余按需再加。
+- **清单定稿（本组 tasks 5.7 定稿写回，2026-10-17）**：**≤5、先上 3**，顺序即评分与报告顺序：
+  1. `TaskCompletion` —— `TaskCompletionMetric(task=None)`，**逐题**从 test case 取任务（`deepeval/metrics/task_completion/task_completion.py:121`），三项可共用一个实例；
+  2. `StepEfficiency` —— 按轨迹算步骤效率，需裁判；
+  3. `AgentLoopDetection` —— **纯 trace 分析、不调 LLM**（构造器无 model 参数 ⇒ `model is None`）。
+  - 两条已验证性质 + 一条硬约束（`docs/tmp/deepeval-poc/RESULTS.md`「Phase 2 前置 spike」）：
+    - `AgentLoopDetection` **不调 LLM**；
+    - `TaskCompletionMetric(task=None)` **逐题取任务**（不必每题新建实例）；
+    - **行为轴必须走异步路径**：同步分支经 `.invoke()` 落到 langchain 同步 client，而桥裁判只挂 `http_async_client` ⇒ **`hook_events == 0`**（零可观测性、细粒度超时失效）；异步实测 `8`。⇒ 行为轴跑完 SHALL 断言 `hook_events > 0`。
 - **实测得到的唯一可用形态（两半缺一不可）**：
 
   ```python
