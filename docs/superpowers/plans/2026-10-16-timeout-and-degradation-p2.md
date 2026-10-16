@@ -1168,17 +1168,23 @@ function renderStatusTag(stage, message, detail) {
 
 - [ ] **Step 3: 加样式**
 
-在 `<style>` 段内 `.status-tag` 相关规则之后追加：
+该文件的配色统一走 `:root` 变量（第 13-31 行）。先在那里（`--shadow-lg` 一行之后）追加两个变量：
 
 ```css
-.status-tag-degraded {
-  border-color: #e6a23c;
-  color: #b88230;
-  background: rgba(230, 162, 60, 0.08);
-}
+    --degraded: #B45309;
+    --degraded-bg: #FEF3C7;
 ```
 
-（若该文件用 CSS 变量统一配色，则改用既有变量名并保持同族；以文件里相邻 `status-tag` 规则的实际写法为准。）
+再在 `.status-tag` 规则（第 542-547 行）**之后**追加：
+
+```css
+  .status-tag-degraded {
+    color: var(--degraded);
+    background: var(--degraded-bg);
+  }
+```
+
+（`.status-tag` 的 `align-self` / `font-size` / `border-radius` / `padding` / 动画由基类提供，此处只覆盖配色 —— 与文件既有"基类管布局、修饰类管配色"的写法一致。）
 
 - [ ] **Step 4: grep 断言（本任务唯一可自动化的验证）**
 
