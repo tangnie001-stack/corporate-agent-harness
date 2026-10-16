@@ -24,6 +24,12 @@
 
 理由（记明，避免后人误判）：0.01 是有意的工程折中——无限接近确定性，同时避开部分供应商对 `temperature=0` 的特殊逻辑；`answer_relevancy` 取 0.3 是因为该指标需要"生成多个多样化问题再取均值"，压到近 0 会使指标退化。
 
+#### Scenario: Sampling parameters are explicit
+
+- **WHEN** 构造裁判客户端
+- **THEN** 构造 SHALL NOT 传 `temperature`（温度由 ragas 决定，见上）、且 SHALL NOT 传 `top_p`
+  （**订正**：原场景 THEN 为"SHALL 传 `temperature=0`"，与本次口径冲突 ⇒ 场景随口径一并改写，SHALL NOT 静默删除。）
+
 #### Scenario: Every bridge metric is constructed with an explicit model
 
 - **WHEN** 构造任一桥度量（`RAGAS*Metric`）
@@ -65,6 +71,16 @@
 因此评测 SHALL：① 让三类 `NaN` 显式可见、在报告中**标记不同**（SHALL NOT 静默计入均分）；② 单独统计 **(c) 类 `NaN` 计数**并在报告中呈现；③ **以 (c) 类 `NaN`（而非 `except Exception`）为判据执行有界重试**——`RAGAS_METRIC_MAX_ATTEMPTS` 保留，但判据 SHALL NOT 沿用异常；(b) 类合法缺值 SHALL NOT 触发重试；**限流类 (c) SHALL NOT 触发外层重试**（ragas 框架层已对限流错误重试 ≤10 次，见「RAGAS dependency is pinned to the 0.3 line」的复用条款，外层再叠会乘法放大）；④ 裁判失败的留证 SHALL 由**框架内部请求级日志**承载，且该日志 SHALL 记**响应体摘要 + `finish_reason`**（主因失败是 HTTP 200 + 畸形响应体；**该日志同时充当③的分类依据**），SHALL NOT 依赖 `_judge_failure_note`。
 
 `NaN`（裁判故障）与样本类别 `empty`（未检索到材料）SHALL 被区分为**两种不同的跳过语义**。
+
+#### Scenario: A failed metric stays visible on its row
+
+- **WHEN** 某样本的某个指标调用失败
+- **THEN** 该样本行 SHALL 仍出现在报告中，且 SHALL 携带该失败的错误信息
+
+#### Scenario: No row is silently dropped
+
+- **WHEN** 评测 N 条样本
+- **THEN** 报告 SHALL 含 N 行（不因失败少行）
 
 #### Scenario: A bridge NaN stays visible and is counted
 
@@ -182,6 +198,11 @@
 
 - **WHEN** 前端经 `kb_eval` API 取最新评测报告
 - **THEN** 响应 SHALL NOT 含 `answer_correctness`
+
+#### Scenario: Pass threshold is defined once
+
+- **WHEN** 评测落库判定 `passed`、前端渲染通过/不通过
+- **THEN** 两者 SHALL 引用同一阈值常量
 
 #### Scenario: Thresholds are recalibrated, not inherited
 
