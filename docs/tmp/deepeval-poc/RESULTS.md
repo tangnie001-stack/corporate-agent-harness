@@ -180,3 +180,50 @@ faithfulness 序列: [0.0, 1.0, 0.0, 1.0]
 **探针自身的坑（供后人）**：`faithfulness_repeat.py` 里 judge 建在一个**随手丢弃的** `HookEvidence()` 上，逐题又传另一个 `ev` ⇒ 该探针打印的 `hooks=0` 是**构造错误**，不是产品缺陷。真实路径 `src/cli/eval_ragas.py:840-841/894` 里 `judge_evidence` 是**同一个对象**同时喂给 judge 与 `run_evaluation`，故 hooks 正常。但这暴露一个**静默失效耦合**：`score_rows(..., evidence=None)` 缺省即跳过 429 判定（`:418` 的 `evidence is not None` 守卫），且传了非 judge 所用的桶也照样静默零观测 —— 建议后续加一条断言（judge 的桶 is 传入的桶）。
 
 **脚本**：`/tmp/deepeval-poc-scripts/{phase1_smoke.py,faithfulness_repeat.py}`（按本仓先例**不入库**，否则 ruff/pyright 会拦）。
+
+---
+
+## faithfulness 非确定性根因（2026-10-16）：语言错配 ⇒ 被迫做亿↔billion 换算
+
+**接上一节**：`faithfulness` 实测二值抖动（`[0.0,1.0,0.0,1.0]`）。本节定位到机制，并验证两种修法。
+
+### 定位手段
+
+`/tmp/deepeval-poc-scripts/faithfulness_rootcause.py`：monkeypatch `ragas.metrics._faithfulness.Faithfulness._create_statements` / `_create_verdicts`（类级），dump 两段中间产物。同一进程、同一 judge、同一题连跑 6 次。
+
+**6 次抽出的陈述（全英文）**：
+```
+"Tencent's 2024 operating revenue was approximately 660.3 billion yuan."
+```
+**6 次 NLI 判定**（分数 `[1,1,1,1,1,0]`）—— 关键在判官给出的 `reason`：
+
+| iter | verdict | reason 摘要 |
+|---|---|---|
+| 0 | 1 | "1 billion is equal to 10 hundred million (10亿), 6603 hundred million equals 660.3 billion" |
+| 1 | 1 | "6603 billion yuan is equivalent to 660.3 * 10 = 6603 billion? **No, let's re-calculate carefully.**… 660.3 billion" |
+| 2 | 1 | "1 billion is equal to 100 million, and 1 亿 is 100 million, 6603 亿 equals 660.3 billion"（前提写错、结论对） |
+| 3 | 1 | "There is a discrepancy in the magnitude… **Wait, let me re-read carefully.**… This matches exactly." |
+| 4 | 1 | "6603 * 100,000,000 = 660,300,000,000 … 660.3 billion" |
+| 5 | **0** | "**a discrepancy by a factor of 10 (6603 vs 660.3)** … cannot be directly inferred" ← 把 `6603 亿元` 当成 `6603`（丢掉"亿"） |
+
+**机制**：陈述生成把中文答案**译成英文**并做了单位改写（`6603 亿元` → `660.3 billion yuan`）；NLI 段因此**必须做亿↔billion 换算**才能判定。`enable_thinking=False` 下该换算不稳（理由里能看到明显的自我纠错与偶发算错）⇒ verdict 在 0/1 之间跳。**1 句答案 ⇒ faithfulness 粒度就是 1/1 ⇒ 直接二值抖动。**
+
+排除项（均已核）：解析回退不是原因（解析失败会 `raise RagasOutputParserException` → 被 executor 吞成 `NaN`，而实测是 0.0/1.0 不是 NaN）；温度分档不是主因（`answer_relevancy` 温度档更高却稳定）；并发/状态串用不是（同一进程串行）。
+
+### 修法对照（`/tmp/deepeval-poc-scripts/faithfulness_fix_arms.py`，各臂 N=6）
+
+| 臂 | 设置 | scores | distinct | 抽出的陈述 |
+|---|---|---|---|---|
+| **A** 基线 | thinking 关 + ragas 英文默认提示词 | `[1,1,1,1,0,1]` | `{0,1}` 抖动 | 英文 `…660.3 billion yuan` |
+| **B** 开思考 | `RAGAS_JUDGE_THINKING=True`（提示词不变） | `[1,1,1,1,1,1]` | `{1.0}` 稳定 | **中文** `腾讯2024年营业收入约为6603亿元人民币` |
+| **C** 中文提示词 | thinking 关 + 换 `statement_generator_prompt`/`nli_statements_prompt` 为**强制中文、禁翻译禁单位换算** | `[1,1,1,1,1,1]` | `{1.0}` 稳定 | **中文** `腾讯2024营业收入约6603亿元` |
+
+**两个反直觉点**：① **B 臂用原英文提示词却吐出中文陈述** ⇒ `thinking=False` 时判官被英文提示词带跑做翻译，开思考才跟随答案语言；② 两臂的稳定**共同机制都是"语言对齐"**（中文陈述 ⇒ 无需单位换算），而非"思考更强"。
+
+**结论**：根因 = **判官把中文答案译成英文陈述，迫使 NLI 段做亿↔billion 换算，非思考模式下该换算偶发失败**。修法至少两条可行：语言对齐（C，需替换 ragas 提示词）或开思考（B，一行 env，且附带修掉推理能力）。
+
+**影响面（须评估）**：① 真实 21 题是中文语料 ⇒ `faithfulness` 系统性偏低且不可复现，直接影响主分、门禁与**跨轮台账比对**（组 10 阈值重标定会失真）；② **疑似同族问题**：`answer_relevancy` 在"问题对答案明显相关"的 toy 题上只有 **0.44**——该指标也是先生成问题再比相似度，若生成的是英文问题而原问题是中文，相似度会被系统性压低。**未验证，建议同法探针确认。**
+
+**N 的局限**：每臂 N=6，样本小；"稳定"是 6/6，不足以排除低频抖动。若据此改设计，建议先跑 N≥20。
+
+**脚本**：`/tmp/deepeval-poc-scripts/{faithfulness_rootcause.py,faithfulness_fix_arms.py}`（不入库）。

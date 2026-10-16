@@ -1486,7 +1486,11 @@ Agent 行为轴（组 5）· 出题入口硬护栏（组 6）· 逃生门可替�
 
 ### 挂账问题（下阶段开头就做）
 
-- **~~`faithfulness=0.0` 待证伪~~ → 已证伪，且结论与假设相反（2026-10-16 重跑）**：原假设是"判官严格"，实测证明是**调用级非确定**。证据：① 同一 toy 题重跑得 **1.0**（T12 记录的是 0.0）；② 逐字抄 context 的答案反而得 **0.0**；③ **同一进程同一 judge 连跑 4 次得 `[0.0, 1.0, 0.0, 1.0]`**。`context_precision`/`context_recall` 稳定 1.0 ⇒ 接线正常（`actual_output` 传递无误）。而 `answer_relevancy`（温度档更高 0.3）反而稳定在 0.44–0.47 ⇒ **温度分档不是主因**，更像 faithfulness 内部两段式流程（抽陈述 → NLI 判定）偶发翻转/解析回退。
-  - **须处置（Phase 2/4，不能当噪声）**：`faithfulness` 进主分，主分/门禁/跨轮台账比对都假设同输入可复现；二值抖动会让**阈值重标定与跨轮比对失真**。最小动作：把该题重复 N 次看抖动率、查 faithfulness 内部两段的中间产物（抽出的陈述集 / NLI 原始判定）定位是哪一段翻，再决定（换判官参数 / 换指标实现 / 报告里标注该指标不可复现）。
+- **~~`faithfulness=0.0` 待证伪~~ → 已证伪，且结论与假设相反（2026-10-16 重跑）**：原假设是"判官严格"，实测证明是**调用级非确定**。证据：① 同一 toy 题重跑得 **1.0**（T12 记录的是 0.0）；② 逐字抄 context 的答案反而得 **0.0**；③ **同一进程同一 judge 连跑 4 次得 `[0.0, 1.0, 0.0, 1.0]`**。`context_precision`/`context_recall` 稳定 1.0 ⇒ 接线正常（`actual_output` 传递无误）。而 `answer_relevancy`（温度档更高 0.3）反而稳定在 0.44–0.47 ⇒ **温度分档不是主因**（真因见下条，已定位）。
+  - **根因已定位（2026-10-16，全消）**：**不是**解析回退（解析失败会 raise → 吞成 `NaN`，而实测是 0.0/1.0）、**不是**温度分档、**不是**并发/状态串用。真因是**语言错配**：陈述生成把中文答案**译成英文**（`6603 亿元` → `660.3 billion yuan`），NLI 段被迫做**亿↔billion 换算**；`enable_thinking=False` 下该换算偶发失败 ⇒ verdict 在 0/1 跳（iter5 的 `reason` 原文即 "a discrepancy by a factor of 10 (6603 vs 660.3)"）。
+  - **两种修法已各实测（N=6）稳定**：**B** `RAGAS_JUDGE_THINKING=True`（一行 env；且用原英文提示词就吐中文陈述 ⇒ 开思考会跟随答案语言）`[1]*6`；**C** 把 `ragas.metrics.faithfulness` 的 `statement_generator_prompt`/`nli_statements_prompt` 换成**强制中文、禁翻译禁单位换算**（thinking 关）`[1]*6`。对照基线 A `[1,1,1,1,0,1]`。
+  - **须拍板（进 Phase 2 前）**：选 B（简单、附带修推理能力，但成本/延迟↑、与 design D3"接受 ragas 分档温度"的既有取舍需重新记录）还是 C（直击语言对齐，但需替换 ragas 模块级单例的提示词 = 新的一处"改第三方内部"耦合，须断言守护）。**两法都要先跑 N≥20 复核**（N=6 不足以定案）。
+  - **同族嫌疑（未验证）**：`answer_relevancy` 在明显相关的 toy 题上只有 **0.44** —— 它也"先生成问题再比相似度"，若生成的是英文问题而原问题是中文，相似度被系统性压低。建议同法探针。
+  - 证据：`docs/tmp/deepeval-poc/RESULTS.md`「faithfulness 非确定性根因」节；脚本 `/tmp/deepeval-poc-scripts/{faithfulness_rootcause.py,faithfulness_fix_arms.py}`。
   - 证据：`docs/tmp/deepeval-poc/RESULTS.md`「Phase 1 收口冒烟重跑」节；脚本 `/tmp/deepeval-poc-scripts/{phase1_smoke.py,faithfulness_repeat.py}`。
 - **证据留存教训**：T12 的原始报告随 SDD 工作区清理被删，导致"冒烟结论"一度只剩二手转述。以后**冒烟/探针的原始输出必须落进 `docs/tmp/**`（tracked）再清工作区**。
