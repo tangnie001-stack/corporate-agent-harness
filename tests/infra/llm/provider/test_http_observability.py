@@ -1,5 +1,6 @@
 import httpx
 import pytest
+from loguru import logger
 
 from src.infra.llm.provider.http_observability import HookEvidence, make_logging_client
 
@@ -47,3 +48,24 @@ async def test_non_2xx_and_malformed_body_are_abnormal():
     assert ev.non_2xx is True
     assert ev.abnormal is True
     assert ev.events[-1]["json_ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_response_hook_warns_on_non_2xx_and_on_unreadable_body():
+    ev = HookEvidence()
+    messages: list[str] = []
+    sink_id = logger.add(lambda m: messages.append(m), level="WARNING")
+    try:
+        for resp in (
+            httpx.Response(503),
+            httpx.Response(200, content=b"not-json"),
+        ):
+            client = _client_with(ev, lambda req, r=resp: r)
+            async with client:
+                await client.post("https://example.invalid/v1/chat/completions")
+    finally:
+        logger.remove(sink_id)
+
+    joined = "".join(messages)
+    assert "bridge judge http non-2xx" in joined
+    assert "bridge judge http body unreadable" in joined
