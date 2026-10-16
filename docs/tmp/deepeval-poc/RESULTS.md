@@ -227,3 +227,44 @@ faithfulness 序列: [0.0, 1.0, 0.0, 1.0]
 **N 的局限**：每臂 N=6，样本小；"稳定"是 6/6，不足以排除低频抖动。若据此改设计，建议先跑 N≥20。
 
 **脚本**：`/tmp/deepeval-poc-scripts/{faithfulness_rootcause.py,faithfulness_fix_arms.py}`（不入库）。
+
+---
+
+## answer_relevancy 0.44 根因（2026-10-16）：答案不自包含 ⇒ 生成器猜错主体（**玩具题假象**）
+
+**背景**：冒烟里 `answer_relevancy` 在"问题对答案明显相关"的 toy 题上只有 0.44，疑与 faithfulness 同为语言错配。
+
+**链路（ragas 0.3.9 `ResponseRelevancy`）**：答案 →（LLM，`strictness=3`）生成 3 个问题 → 与**原问题**算余弦相似度 → 均值 ×(1−全 noncommittal)。**注意：问题生成器只看答案，看不到 context。**
+
+### 探针 `answer_relevancy_rootcause.py`（三臂，各 N=6）
+
+| 臂 | scores | 生成的问题样例 |
+|---|---|---|
+| **A** 基线（thinking 关 + 英文提示词） | `[0.4404,0.4188,0.4511,0.4313,0.4173,0.4490]`（**稳，非抖动**） | `中国的GDP是多少？` / `What is the approximate amount in billions of yuan?` / `某公司的市值是多少？` |
+| **B** 开思考（`thinking=True`） | **空 —— 6 次全 HTTP 400** | — |
+| **C** 中文问题生成提示词（thinking 关） | `[0.4526,0.4767,0.4573,0.4549,0.4496,0.4460]`（≈0.45，几乎没变） | `2023年中国国内生产总值（GDP）大约是多少？`（**主体仍猜错**） |
+
+**B 臂的报错（关键约束）**：
+```
+BadRequestError(400): InternalError.Algo.InvalidParameter:
+The n parameter must be 1 when enable_thinking is true
+```
+`answer_relevancy` 请求 `n=strictness=3` ⇒ **DashScope 在 `enable_thinking=true` 时拒绝 n>1** ⇒ 该指标在开思考下直接不可用（错误被 ragas 吞成 NaN）。
+
+### 对照：残句 vs 自包含答案（`answer_relevancy_selfcontained.py`，同一问题/context，thinking 关）
+
+| 答案 | scores | 生成的问题 |
+|---|---|---|
+| **F 残句**「约 6603 亿元」（**无主体**） | `0.42–0.44` | `中国的GDP是多少？` / `某公司的市值是多少？` |
+| **S 自包含**「腾讯控股 2024 年营业收入约为 6603 亿元。」 | **`[0.9656,0.8769,0.9164,0.9640,0.9655,0.9190]`** | `腾讯控股 2024 年的营业收入是多少？` |
+
+**结论**：0.44 **不是**语言问题（C 臂只升到 0.45；英文生成问题也能拿 0.82–0.96，说明该 embedding 跨语言相似度足够），**也不是**判官问题，而是**答案不自包含**：生成器只看答案，残句没有主体 ⇒ 凭空猜主体（猜成"中国 GDP"）⇒ 与原问题相似度低。**这是 ragas 按设计惩罚"不完整答案"**（其 docstring：*"Answers with incomplete, redundant or unnecessary information is penalized"*）。**⇒ 0.44 是玩具题假象，管线无需为此改动。**
+
+**但两条对 change 有效的发现**：
+
+1. **`enable_thinking=True` 与 `answer_relevancy` 不兼容**（DashScope 下 `n>1` 被拒）。故上一节 faithfulness 修法 **B（开思考）不能全局采用** —— 单一 judge 跨指标共享，一开思考 `answer_relevancy` 即失效。⇒ **faithfulness 应选 C（语言对齐，thinking 保持关）**；若确要用 B，须给 `answer_relevancy` 单独配 thinking 关的 judge，或把 `strictness` 降到 1（改口径），两者都更重。
+2. **口径提示（供组 10 阈值重标定）**：`answer_relevancy` 实质在测"答案能否自洽地反推问题"。若 agent 真实答案偏残句/多跳拼接，该指标会系统性偏低——**这是指标语义，不是故障**；重标定阈值时须按此理解取值。
+
+**局限**：仍基于单题（1 个 toy 题）；`answer_relevancy` 在真实 21 题上的分布未测。若要据此改设计，建议在真实集上抽样复核。
+
+**脚本**：`/tmp/deepeval-poc-scripts/{answer_relevancy_rootcause.py,answer_relevancy_selfcontained.py}`（不入库）。
