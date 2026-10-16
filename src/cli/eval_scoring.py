@@ -295,3 +295,28 @@ def read_behaviour_scores(results_folder: str) -> list[dict]:
         }
         rows.append({"q_index": idx, "input": tc.get("input", ""), "metrics": metrics})
     return rows
+
+
+def assert_behaviour_scores_complete(
+    questions: list[str], rows: list[dict], trajectories: list[dict]
+) -> None:
+    """行为轴 fail-loud：题数对齐 + 每题至少一个非 None 分 + 轨迹非空。
+
+    为什么必须 fail-loud：`AgentLoopDetection` 在**无 trace 时源码直接置 0.0**
+    （静默假分数）；若 JSON 缺失或循环提前结束，回读会得到空表 ⇒ 必须炸掉而不是
+    把"没测到"当成"行为良好"。
+    """
+    if len(rows) != len(questions):
+        raise RuntimeError(
+            f"行为分题数不齐：questions={len(questions)} rows={len(rows)}（JSON 缺失或循环未耗尽）"
+        )
+    for r in rows:
+        if not any(v is not None for v in (r.get("metrics") or {}).values()):
+            raise RuntimeError(
+                f"第 {r.get('q_index')} 题没有任何行为分（行为分不可信）"
+            )
+    for i, t in enumerate(trajectories):
+        if not (t or {}).get("tool_calls") and not (t or {}).get("iterations"):
+            raise RuntimeError(
+                f"第 {i} 题轨迹为空（行为指标无 trace 时源码直接置 0.0）"
+            )
