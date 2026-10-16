@@ -54,3 +54,6 @@ Thumbs.db
 
 # Firecrawl CLI artifacts（多 URL 抓取时会落盘）
 .firecrawl/
+
+# DeepEval 运行时产物（每次评测在 CWD 落 .latest_run_full.json / .latest_test_run.json）
+.deepeval/
