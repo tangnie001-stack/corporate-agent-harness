@@ -334,16 +334,11 @@ def test_idle_thresholds_follow_thinking_tier():
 Run: `.venv/bin/python -m pytest tests/services/test_idle_guard.py -q`
 Expected: FAIL —— `AttributeError: module 'src.services.agent_service' has no attribute '_idle_guard'`（新函数未建）。
 
-- [ ] **Step 3: 删掉临时取证埋点块**
+- [ ] **Step 3: 本步只新增，不删任何东西（重要：删旧机制归 T3）**
 
-在 `src/services/agent_service.py` 里**整块删除**：
+在 `_record_event` 之后、`@observe` 的 `_run_generation` 之前**追加**：Step 4 的两个函数。
 
-- 注释块 `# ─────────── 临时取证埋点（systematic-debugging 走 A：…）───────────`（含其 3 行说明）
-- `_SILENCE_WATCH_INTERVAL_S` / `_SILENCE_WATCH_THRESHOLD_S` 两个模块常量
-- `def _dump_task_stacks() -> str:` 整个函数
-- `async def _silence_watchdog(...)` 整个函数
-
-（`import time` 保留 —— 新守卫仍用 `time.monotonic()`。）
+**为什么这步不删旧机制**（本计划预检扫描抓到的跨任务冲突）：`_SILENCE_WATCH_INTERVAL_S` / `_SILENCE_WATCH_THRESHOLD_S` 被 `_run_generation` 的**创建段引用**、`_silence_watchdog` 同样被引用 ⇒ 若在本任务删掉它们，**任何调用 `_run_generation` 的用例都会 `NameError`**（`tests/services/test_agent_service.py` 里有一批），而 T2 的 Step 5 正要跑 `tests/services/` ⇒ 自相矛盾。⇒ **禁止在本任务删除**：`_SILENCE_WATCH_*` / `_dump_task_stacks` / `_silence_watchdog` 全部**留到 T3 与接线一次完成**（那时的提交信息已写明"删临时取证埋点"）。本任务结束后，旧看门狗仍在跑（只打栈、无害），新守卫已存在但尚未被调用。
 
 - [ ] **Step 4: 新增 `_idle_thresholds` 与 `_idle_guard`**
 
@@ -448,10 +443,10 @@ Expected: 零新增。
 
 ```bash
 git add src/services/agent_service.py tests/services/test_idle_guard.py
-git commit -m "feat(agent): 把静默看门狗转正为 idle 守卫（档 1：只记录不中止，P3）" -m "- 删临时取证埋点（_SILENCE_WATCH_* / _dump_task_stacks / _silence_watchdog）
-- 新增 _idle_thresholds（按思考档位取两档）+ _idle_guard（同一机制两档阈值，D15）
-- 判据改为按 seq 判活跃（免疫缓冲头部裁剪）；本层自己的通知记入 last_seq 吸收，每个静默段只发一条
-- 档 1 动作：degraded(reason=generation_idle, idle_s, tier) + status(STAGE_DEGRADED) 文案；不动控制流"
+git commit -m "feat(agent): 新增业务层 idle 守卫 _idle_guard（档 1：只记录不中止，P3）" -m "- 新增 _idle_thresholds（按思考档位取两档）+ _idle_guard（同一机制两档阈值，D15）
+- 判据按 seq 判活跃（免疫缓冲头部裁剪）；本层自己的通知记入 last_seq 吸收，每个静默段只发一条；缓冲被清理即退出
+- 档 1 动作：degraded(reason=generation_idle, idle_s, tier) + status(STAGE_DEGRADED) 文案；不动控制流
+- 本任务不删旧看门狗（它仍被 _run_generation 引用），替换与删除归 T3"
 ```
 
 ---
@@ -560,14 +555,53 @@ from src.infra.llm.request_context import RequestContext
 
 （`_Recorder` 与 `_chat_model_stream_item` 该文件**已有**（分别在第 1570 行与第 49 行附近），直接复用，不要重复定义。）
 
+**必须扩展 `_Recorder`（本计划预检扫描抓到，否则用例会以 `TypeError` 静默失败）**：守卫要调用 `manager` 的**三个**方法（`get_events_since` / `buffer_exists` / `add_event`），而 `_Recorder` 现在**只实现 `add_event` 且返回 `None`** ⇒ `last_seq = manager.add_event(...)` 会变成 `None`，下一轮 `get_events_since(sid, None)` 里 `e[0] > None` 直接 `TypeError`（该异常会被 `finally` 的 `gather(..., return_exceptions=True)` 吞掉，表现为"通知没发出"这种难查的失败）。
+
+**扩展时不得改变既有 `events` 的形状** —— P2 留下的一批用例按 `(etype, payload)` 二元组读它。做法：**另开一个带 seq 的内部列表**：
+
+```python
+class _Recorder:
+    """StreamingRunManager 的最小替身：收 add_event，并满足 idle 守卫的三方法契约。"""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []  # 既有形状，勿动（P2 用例依赖）
+        self._seq_events: list[tuple[int, str, dict]] = []  # 守卫判活跃用（含 seq）
+
+    def add_event(self, session_id: str, etype: str, payload: dict) -> int:
+        self.events.append((etype, payload))
+        seq = len(self._seq_events) + 1
+        self._seq_events.append((seq, etype, payload))
+        return seq
+
+    def get_events_since(self, session_id: str, after_seq: int) -> list:
+        return [e for e in self._seq_events if e[0] > after_seq]
+
+    def buffer_exists(self, session_id: str) -> bool:
+        return True
+
+    def unregister_if_current(self, session_id: str, task) -> None:
+        return None
+```
+
+（T2 的 `tests/services/test_idle_guard.py` 用自己的 `_FakeBuffer`，与本类无关。）
+
 - [ ] **Step 2: 跑测试确认全红**
 
 Run: `.venv/bin/python -m pytest tests/services/test_agent_service.py -q -k "idle_guard_notifies_without_aborting or p3_does_not_change"`
 Expected: FAIL —— 第一条断言 `notices` 为空（守卫**还没接线**，`_run_generation` 仍不启动它）；第二条应已 PASS（订阅层本就没被动过，属防回归）。
 
-- [ ] **Step 3: `_run_generation` 接线**
+- [ ] **Step 3: `_run_generation` 接线（并在此刻删除旧看门狗整块）**
 
-把创建段：
+先**整块删除**临时取证埋点（T2 刻意留着，因为此前它仍被创建段引用）：
+
+- 注释块 `# ─────────── 临时取证埋点（systematic-debugging 走 A：…）───────────`（含其 3 行说明）
+- `_SILENCE_WATCH_INTERVAL_S` / `_SILENCE_WATCH_THRESHOLD_S` 两个模块常量
+- `def _dump_task_stacks() -> str:` 整个函数
+- `async def _silence_watchdog(...)` 整个函数
+
+（`import time` **保留** —— 新守卫仍用 `time.monotonic()`；已核实全文件 `time.` 的 4 处都在守卫里。）
+
+然后把创建段：
 
 ```python
     # 临时取证埋点：静默看门狗（定位完成后删除）
