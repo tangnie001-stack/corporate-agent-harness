@@ -362,65 +362,62 @@ class TestGenerateAnswers:
 
 
 class _FakeMetric:
-    """伪造的现代指标实例：`ascore` 返回固定 value，供 `run_evaluation` 单测。"""
+    """伪造的桥指标实例：`measure` 返回固定 value，供 `run_evaluation` 单测。"""
 
     def __init__(self, value: float = 1.0) -> None:
         """保存固定返回值。
 
         Args:
-            value: `ascore` 结果携带的分数。
+            value: `measure` 返回的分数。
         """
         self._value = value
 
-    async def ascore(self, **kwargs):
-        """返回带 `value` 属性的结果对象（不发起真实网络调用）。"""
-        metric = self
+    def measure(self, test_case) -> float:
+        """返回固定分数（不发起真实网络调用）。
 
-        class _Result:
-            value = metric._value
-
-        return _Result()
+        Args:
+            test_case: `_bridge_test_case` 组装的 LLMTestCase，此处忽略。
+        """
+        return self._value
 
 
 def _fake_metrics() -> dict:
-    """构造五指标假实例表（顺序与 `eval_scoring.build_metrics` 一致）。"""
+    """构造四指标假实例表（顺序与 `eval_scoring.build_metrics` 一致）。"""
     return {
         "faithfulness": _FakeMetric(),
         "answer_relevancy": _FakeMetric(),
         "context_precision": _FakeMetric(),
         "context_recall": _FakeMetric(),
-        "answer_correctness": _FakeMetric(),
     }
 
 
 class TestRunEvaluation:
-    """RAGAS 评估流程测试（现代栈，传假 metrics）。"""
+    """RAGAS 评估流程测试（桥，传假 metrics）。"""
 
     def test_evaluation_runs(self) -> None:
-        """评估流程应逐行产出五项指标分数。"""
+        """评估流程应逐行产出四项指标分数，行序与输入一致。"""
         from src.cli.eval_ragas import run_evaluation
 
         result = run_evaluation(
-            ["Q1"],
-            ["GT1"],
-            ["A1"],
-            [["ctx1"]],
+            ["Q1", "Q2"],
+            ["GT1", "GT2"],
+            ["A1", "A2"],
+            [["ctx1"], ["ctx2"]],
             _fake_metrics(),
-            ["trace_1"],
+            ["trace_1", "trace_2"],
         )
 
         df = result.to_pandas()
-        assert len(df) == 1
-        assert list(df["q_index"]) == [0]
+        assert len(df) == 2
+        assert list(df["q_index"]) == [0, 1]
         for col in (
             "faithfulness",
             "answer_relevancy",
             "context_precision",
             "context_recall",
-            "answer_correctness",
         ):
-            assert df.loc[0, col] == 1.0
-        assert df.loc[0, "error"] == ""
+            assert list(df[col]) == [1.0, 1.0]
+        assert list(df["error"]) == ["", ""]
 
     def test_evaluation_empty_contexts(self) -> None:
         """空上下文列表不应导致崩溃。"""
