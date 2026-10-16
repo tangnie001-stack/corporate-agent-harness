@@ -232,3 +232,27 @@ def write_scores(
                     name,
                     exc,
                 )
+
+
+def build_behaviour_metrics(judge):
+    """构造 DeepEval 原生行为指标（design D6；本阶段定稿为 3 项）。
+
+    顺序即评分与报告顺序。三点实测依据（docs/tmp/deepeval-poc/RESULTS.md）：
+    - `TaskCompletionMetric(task=None)`：**逐题**从 test case 取任务
+      （deepeval `metrics/task_completion/task_completion.py:121`），故不必每题新建实例；
+    - `StepEfficiencyMetric`：按轨迹算步骤效率，需裁判；
+    - `AgentLoopDetectionMetric`：**纯 trace 分析、不调 LLM**（构造器无 model 参数）。
+
+    `threshold=0.5` 只影响 JSON 里的 `success` 字段；行为轴**不进主分/门禁**。
+    """
+    from deepeval.metrics import (
+        AgentLoopDetectionMetric,
+        StepEfficiencyMetric,
+        TaskCompletionMetric,
+    )
+
+    return [
+        TaskCompletionMetric(model=judge, threshold=0.5),
+        StepEfficiencyMetric(model=judge, threshold=0.5),
+        AgentLoopDetectionMetric(threshold=0.5),
+    ]
