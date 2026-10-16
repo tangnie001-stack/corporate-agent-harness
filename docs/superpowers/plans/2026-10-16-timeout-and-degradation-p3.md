@@ -167,7 +167,7 @@ git commit -m "feat(config): 四档业务层 idle 阈值 + 启动期断言（P3�
 4. **每静默段最多一条** —— 外部新事件到达才清 `notified`。
 
 **Files:**
-- Modify: `src/services/agent_service.py`（删临时埋点块，新增两个函数）
+- Modify: `src/services/agent_service.py`（**只新增**两个函数；删临时埋点块归 T3）
 - Test: `tests/services/test_idle_guard.py`（**新建**）
 
 **Interfaces:**
@@ -390,7 +390,10 @@ async def _idle_guard(
     """
     first_threshold, gap_threshold = _idle_thresholds(deep_thinking)
     existing = manager.get_events_since(session_id, 0)
-    last_seq = existing[-1][0] if existing else 0
+    if existing:
+        last_seq = existing[-1][0]
+    else:
+        last_seq = 0
     last_change = time.monotonic()
     first_event_seen = False
     notified = False
