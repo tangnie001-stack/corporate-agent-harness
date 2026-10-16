@@ -116,3 +116,25 @@ DEEPEVAL_DISABLE_DOTENV=1 DEEPEVAL_TELEMETRY_OPT_OUT=1 /tmp/deepeval-poc/.venv/b
 **结论**：spec 里"行为轴 SHALL 由 `evals_iterator` 驱动"**写成 SHALL 是可验收的**（D1 回滚触发条件② 不成立）。
 
 **附带注意（落地时要写进代码注释）**：`nest_asyncio.apply()` 会**全局 monkeypatch 当前 asyncio**（进程级副作用）；本次评测 CLI 是短进程、可接受，但不得在长驻服务里顺手调用。
+
+---
+
+## Hook 冒烟（2026-10-16）：hooks 挂 `http_async_client` 会触发、挂 `http_client` 零触发
+
+**问题**：`deepeval-bridge-eval` 把"框架内部请求级日志"写成 SHALL，但挂载字段一度写成 `http_client`。源码结论是 langchain 的 `http_client` **只喂同步 client**（`chat_models/base.py:806`；异步用 `:1273` 的 `http_async_client`），而 ragas 的裁判调用走异步 ⇒ 挂错字段 hooks 一条都不响。本轮做实测确认（此前只有源码级结论）。
+
+**做法**：`/tmp/deepeval-poc-scripts/q_hook_smoke.py`（**脚本不入库**，与 K1–K6 / Q1 探针同例），两臂各跑一次真调裁判的 `RAGASFaithfulnessMetric.measure()`（judge 经项目 `build_chat("judge", …)` 构造）：
+
+- **A（正确接线）**：`http_async_client=httpx.AsyncClient(timeout=…, event_hooks=(async hooks))`
+- **B（错误接线）**：只传 `http_client=httpx.Client(timeout=…, event_hooks=(sync hook))`
+
+**结果**：
+
+| 臂 | judge 上的 client 字段 | hooks 事件数 | 明细 | 指标分 |
+|---|---|---|---|---|
+| A `http_async_client` | `http_async_client=set` / `http_client=None` | **4** | 2×request + 2×response（faithfulness 内两次调用）；response 均 `status=200`、`json_ok=True`、`n_choices=1`、`finish_reason=['stop']`、body 471 / 754 字节 | 1.0 |
+| B 仅 `http_client` | `http_client=set` / `http_async_client=None` | **0** | 无任何事件 | 1.0（分数照出，只是**零可观测性**） |
+
+**结论**：① 挂 `http_async_client` 时 hook **确实触发**，且能 `await response.aread()` + `json.loads` 拿到 `finish_reason`（失败留证与"429 识别"的观测前提成立）；② 挂 `http_client` 时 **0 触发**——错误接线**不会报错、只是静默失去全部可观测性与细粒度超时**（这正是它一路没被发现的原因）。⇒ 已把"响应 hook 触发数 > 0"与"只挂同步字段时 == 0"两条**互为反向的冒烟断言**写进 tasks 3.3。
+
+**顺带实测**：`build_chat("judge", thinking=…, max_tokens=…, max_retries=0, http_async_client=…)` 经 provider 层透传后，judge 实例上 `http_async_client` 已置、`http_client` 为 `None`（即字段确实按名路由）。
