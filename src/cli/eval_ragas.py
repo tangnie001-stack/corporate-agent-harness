@@ -36,6 +36,7 @@ from src.cli.eval_scoring import (
     build_metrics,
     classify_sample,
     main_score_means,
+    nan_cell_stats,
     retrieval_coverage,
     summarize_trajectory,
     write_scores,
@@ -674,6 +675,18 @@ def check_gate(df: pd.DataFrame, questions: list[str]) -> None:
         print(
             f"  gate FAIL: retrieval coverage {cov:.2f} < {EVAL_RETRIEVAL_COVERAGE_MIN}"
         )
+        sys.exit(1)
+
+    stats = nan_cell_stats(df)
+    rate = stats["nan_rate"]
+    from src.config.const import EVAL_NAN_RATE_MAX
+
+    print(
+        f"  NaN: {stats['nan_cells']}/{stats['denominator_cells']} 格 "
+        f"({rate:.2%}) 阈值 {EVAL_NAN_RATE_MAX:.0%}"
+    )
+    if rate > EVAL_NAN_RATE_MAX:
+        print("  gate FAIL: NaN 率超阈值 —— 建议启用逃生门（见 design D10）")
         sys.exit(1)
 
     means = main_score_means(df)
