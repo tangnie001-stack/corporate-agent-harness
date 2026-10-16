@@ -122,3 +122,27 @@ def test_acall_with_retry_uses_async_sleep():
     )
     assert result == "ok"
     assert len(calls) == 2
+
+
+def _dashscope_error_cls(name: str):
+    """取 `dashscope.common.error` 的异常类；缺包或缺类则 skip（不引入硬依赖）。"""
+    try:
+        from dashscope.common import error as dashscope_error
+    except ImportError:  # pragma: no cover - 本环境装了就走到下一行
+        pytest.skip("未安装 dashscope")
+    cls = getattr(dashscope_error, name, None)
+    if cls is None:  # pragma: no cover - 版本差异兜底
+        pytest.skip(f"dashscope.common.error 缺少 {name}")
+    return cls
+
+
+def test_dashscope_service_unavailable_retryable():
+    """DashScope 服务不可用属可用性类故障 ⇒ 可重试（rerank 的主要瞬时失败源）。"""
+    cls = _dashscope_error_cls("ServiceUnavailableError")
+    assert retry_policy.is_retryable(cls("service unavailable")) is True
+
+
+def test_dashscope_invalid_parameter_not_retryable():
+    """DashScope 参数错误属请求格式类 ⇒ 不可重试（重试不会改变结果）。"""
+    cls = _dashscope_error_cls("InvalidParameter")
+    assert retry_policy.is_retryable(cls("bad param")) is False

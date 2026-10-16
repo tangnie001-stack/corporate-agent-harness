@@ -9,7 +9,8 @@
 分类判据（D5，按"重试是否会改变结果"）：
 - **不可重试**：输入校验类（`ValueError` / `TypeError`，特征为失败耗时 ≈ 0）、
   鉴权 / 权限类、请求格式类（400/422）；
-- **可重试**：超时、连接错误、429、5xx；
+- **可重试**：超时、连接错误、429、5xx（含 openai / dashscope SDK 对应的
+  超时与可用性类异常）；
 - **未列出的异常默认不重试** —— 保守选择：不拿未知错误去放大调用次数。
 """
 
@@ -57,14 +58,34 @@ _OPENAI_NON_RETRYABLE = (
     "UnprocessableEntityError",
 )
 
+# dashscope SDK 的可用性类异常名（Rerank 走 DashScope ⇒ 其传输/服务端故障应可重试；
+# 该包可能未安装或版本不同 ⇒ 按名取、缺则跳过。**不含** blanket RuntimeError：
+# 那会退回「重试一切」，违反 D5。）
+_DASHSCOPE_RETRYABLE = (
+    "TimeoutException",
+    "ServiceUnavailableError",
+    "RequestFailure",
+)
+
 
 @lru_cache(maxsize=1)
 def _tables() -> tuple[
     tuple[type[BaseException], ...], tuple[type[BaseException], ...]
 ]:
-    """合并基础表与 openai 异常类（进程内缓存一次）。"""
+    """合并基础表与 openai / dashscope 异常类（进程内缓存一次）。"""
     retryable: list[type[BaseException]] = list(_RETRYABLE_BASE)
     non_retryable: list[type[BaseException]] = list(_NON_RETRYABLE)
+    # dashscope 先并入：其故障是 rerank 的主要瞬时失败源，且必须独立于 openai
+    # （下方 openai 缺包时会提前 return，若放其后会被跳过）。
+    try:
+        from dashscope.common import error as dashscope_error
+    except Exception:  # noqa: BLE001 - 缺依赖时跳过 dashscope 表
+        dashscope_error = None
+    if dashscope_error is not None:
+        for name in _DASHSCOPE_RETRYABLE:
+            cls = getattr(dashscope_error, name, None)
+            if isinstance(cls, type) and issubclass(cls, BaseException):
+                retryable.append(cls)
     try:
         import openai
     except Exception:  # noqa: BLE001 - 缺依赖时只用基础表
