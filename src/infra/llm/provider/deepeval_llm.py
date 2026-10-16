@@ -13,24 +13,36 @@ from __future__ import annotations
 from typing import Any
 
 from deepeval.models import DeepEvalBaseLLM
+from langchain_core.messages import BaseMessage
 
 
 class BridgeDeepEvalLLM(DeepEvalBaseLLM):
-    """把 langchain `BaseChatModel`（provider 层裁判）适配成 DeepEval LLM。"""
+    """把 langchain `BaseChatModel`（provider 层裁判）适配成 DeepEval LLM。
+
+    `super().__init__()` 必须调用：基类会执行 `self.model = self.load_model()`
+    并设置 `self.name`；不调用则任何读 `.name` / `.model` 的 DeepEval 代码会
+    `AttributeError`（评审 Important）。
+    """
 
     def __init__(self, chat: Any) -> None:
         self._chat = chat
+        super().__init__()  # 基类据 load_model() 置 self.model / self.name
 
     def load_model(self) -> Any:
         return self._chat
 
     def get_model_name(self) -> str:
-        return getattr(self._chat, "model_name", "bridge-judge")
+        # 显式类型检查，而非 `getattr(x, "attr", default)` 隐式兜底
+        # （CLAUDE.md：类型不确定的值不做隐式兜底）——评审 Important
+        name = self._chat.model_name
+        return name if isinstance(name, str) else "bridge-judge"
+
+    @staticmethod
+    def _content(msg: Any) -> str:
+        return str(msg.content) if isinstance(msg, BaseMessage) else str(msg)
 
     def generate(self, prompt: str, **kwargs: Any) -> str:
-        msg = self._chat.invoke(prompt)
-        return getattr(msg, "content", str(msg))
+        return self._content(self._chat.invoke(prompt))
 
     async def a_generate(self, prompt: str, **kwargs: Any) -> str:
-        msg = await self._chat.ainvoke(prompt)
-        return getattr(msg, "content", str(msg))
+        return self._content(await self._chat.ainvoke(prompt))
