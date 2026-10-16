@@ -295,10 +295,14 @@ class HookEvidence:
 
     @property
     def abnormal(self) -> bool:
-        """异常调用：非 2xx / 响应体非合法 JSON / finish_reason 非 stop / 请求异常。"""
+        """响应侧异常：非 2xx / 响应体非合法 JSON / `finish_reason` 非 stop。
+
+        **不覆盖传输层失败**：httpx 0.28.1 只派发 `request` / `response` 两个 hook，
+        没有异常 hook；连接/池/DNS 失败会在响应 hook 循环**之前**抛出 ⇒ 表现为
+        「有 request 事件、无 response 事件」（观测缺口）。靠本属性判"没事"是错的，
+        调用方若要区分，须显式检查"该格是否有 response 事件"。
+        """
         for e in self.events:
-            if e.get("phase") == "request_error":
-                return True
             if e.get("phase") != "response":
                 continue
             if not (200 <= e["status"] < 300):
@@ -329,6 +333,10 @@ def make_logging_client(
 
     async def on_response(response: httpx.Response) -> None:
         rec: dict = {"phase": "response", "status": response.status_code}
+        if not (200 <= response.status_code < 300):
+            logger.warning(
+                "[provider] bridge judge http non-2xx status={}", response.status_code
+            )
         try:
             body = await response.aread()
             parsed = json.loads(body)
@@ -339,6 +347,11 @@ def make_logging_client(
         except Exception as exc:  # noqa: BLE001  # 观测旁路，失败不影响主流程
             rec["json_ok"] = False
             rec["body_exc"] = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "[provider] bridge judge http body unreadable status={} err={}",
+                response.status_code,
+                rec["body_exc"],
+            )
         evidence.append(rec)
 
     logger.debug("[provider] bridge judge http logging hooks attached")
