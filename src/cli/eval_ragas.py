@@ -954,7 +954,6 @@ def main() -> None:
             output_path,
             retrieval_details,
             sample_classes,
-            report_meta=report_meta,
         )
 
         # 观测旁路回写：排在落库之后、门禁之前（失败只记 warning，见 write_scores）
@@ -1074,7 +1073,6 @@ def _save_eval_report(
     output_path: str,
     retrieval_details: list[list[dict]] | None = None,
     sample_classes: list[str] | None = None,
-    report_meta: dict | None = None,
 ) -> None:
     """把评估结果持久化到 eval_report 表。
 
@@ -1091,8 +1089,6 @@ def _save_eval_report(
         retrieval_details: 每 query 的检索明细（与 detail 数组按 q_index 对齐），
             传入后并入对应 detail_json 条目，供低分 query 下钻检索环节
         sample_classes: 每题的样本类别；传入后先掩码再算主分与明细
-        report_meta: 报告元数据（见 build_report_meta），传入后随 detail_json
-            一并落库（形如 {"meta": …, "items": […] }）
     """
     try:
         from src.cli import eval_scoring
@@ -1102,14 +1098,6 @@ def _save_eval_report(
         if sample_classes is not None:
             df = eval_scoring.apply_sample_masks(df, sample_classes)
         detail, _avg = _build_eval_detail(df, qa_count, retrieval_details)
-        # 台账条目携带口径元数据（口径版本/温度档/NaN 计数/版本），使跨轮比对
-        # 可知「哪把尺子产出的数」；无 report_meta 时保持 detail_json 为纯列表
-        # （向后兼容既有调用方与断言）。
-        detail_json: Any = (
-            {"meta": report_meta, "items": detail}
-            if report_meta is not None
-            else detail
-        )
 
         means = eval_scoring.main_score_means(df)
         present = [v for v in means.values() if pd.notna(v)]
@@ -1129,7 +1117,7 @@ def _save_eval_report(
                 passed=overall is not None and overall >= EVAL_PASS_THRESHOLD,
                 report_path=output_path,
                 triggered_by=None,
-                detail_json=detail_json,
+                detail_json=detail,
             )
             await svc.insert_eval_report(entity)
 
