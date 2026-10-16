@@ -1156,17 +1156,50 @@ function renderStatusTag(stage, message, detail) {
   }
   const div = buildStatusTag(stage, message, detail);
   // 降级告知（后端 reason 取值集合的可见项）：只作提示，不标记 toolCallSeen、
-  // 不触发正文/旁白重分类（与 retrieve/web_search 的区别），后续可能仍有
-  // 检索原文正文到达
+  // 不触发正文/旁白重分类（与 retrieve/web_search 的区别）
   if (stage === 'degraded') {
     div.classList.add('status-tag-degraded');
+    // 降级告知**之后**到达的 token 是本轮交付的正文（检索原文），不是旁白待定区内容
+    degradedNoticeSeen = true;
   }
   currentStatusGroup.appendChild(div);
   scrollToBottom();
 }
 ```
 
-- [ ] **Step 3: 加样式**
+- [ ] **Step 3: 让"降级之后的 token"直接进正文（否则终态 error 会把原文丢掉）**
+
+**为什么必须做这一步（已实测的跨层缺陷）**：`renderAiAnswerStream` 在 `!toolCallSeen` 时把 token 塞进 `pendingTokens` 并渲染成**旁白预览**（`updatePendingPreview` → `<p class="narration">`）。而降级路径下 `toolCallSeen` 恒为 false（我们**有意不设**它），于是 T3 送来的检索原文会落进待定区；终态 `error` 分支又会 `dropPendingPreview()`（移除该节点并清空 `pendingTokens`）⇒ **检索原文在最后一跳被丢弃，用户什么也看不到**，spec 的"已有检索结果 ⇒ 用户 SHALL 收到检索原文"落空。
+
+**为什么不能改成"error 分支也合并待定区"**：那会**顺带改变** `llm_stream_interrupted`（流中途断）的既有行为 —— 该情形下待定区里是模型已产出的旁白，现有语义是**丢弃**（`error` 分支的注释明写"不走 done 的待定区合并，清理预览避免旁白样式残留"）；而本变更**不得**改变该情形的处置。
+
+⇒ 用**专用标记**把"降级之后的 token"识别出来：
+
+1. 变量声明处（第 1202-1204 行那一片）追加：
+
+```js
+let degradedNoticeSeen = false; // 本轮是否已收到降级告知（其后 token = 交付正文，不进旁白待定区）
+```
+
+2. `resetProcessRenderState()`（第 1209-1215 行）里追加复位（与 `toolCallSeen = false;` 并列）：
+
+```js
+  degradedNoticeSeen = false;
+```
+
+3. `renderAiAnswerStream`（第 1366 行起）的首个判断改为：
+
+```js
+  if (!toolCallSeen && !degradedNoticeSeen) {
+    pendingTokens.push(text);
+    updatePendingPreview();
+    return;
+  }
+```
+
+**为什么这样不会影响流中断情形**：`llm_stream_interrupted` 的 token 是在降级告知**之前**产出的（已进待定区），而该情形下 T3 **不会**在告知之后再送任何 token ⇒ 待定区内容不受本改动影响，终态依旧被丢弃，**行为逐字不变**。
+
+- [ ] **Step 4: 加样式**
 
 该文件的配色统一走 `:root` 变量（第 13-31 行）。先在那里（`--shadow-lg` 一行之后）追加两个变量：
 
@@ -1186,18 +1219,21 @@ function renderStatusTag(stage, message, detail) {
 
 （`.status-tag` 的 `align-self` / `font-size` / `border-radius` / `padding` / 动画由基类提供，此处只覆盖配色 —— 与文件既有"基类管布局、修饰类管配色"的写法一致。）
 
-- [ ] **Step 4: grep 断言（本任务唯一可自动化的验证）**
+- [ ] **Step 5: grep 断言（本任务唯一可自动化的验证）**
 
 Run:
 ```bash
 grep -n "showError(data.error || '连接异常，请重试')" deploy/nginx/html/chat.html \
  && grep -n "status-tag-degraded" deploy/nginx/html/chat.html \
  && grep -n "stage === 'degraded'" deploy/nginx/html/chat.html \
+ && grep -n "degradedNoticeSeen = true" deploy/nginx/html/chat.html \
+ && grep -n "degradedNoticeSeen = false" deploy/nginx/html/chat.html \
+ && grep -n "if (!toolCallSeen && !degradedNoticeSeen)" deploy/nginx/html/chat.html \
  && ! grep -n "showError('连接异常，请重试');" deploy/nginx/html/chat.html
 ```
-Expected: 前三条各命中至少 1 行，最后一条 `!` 命中（即旧硬编码行已不存在）；整体退出码 0。
+Expected: 前六条各命中至少 1 行（`degradedNoticeSeen = false` 应命中复位处那 1 行），最后一条 `!` 命中（旧硬编码行已不存在）；整体退出码 0。
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
 git add deploy/nginx/html/chat.html
