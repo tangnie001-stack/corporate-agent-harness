@@ -412,4 +412,8 @@ EVENT_SPECS: dict[str, EventSpec] = {
     "agent domain mismatch": EventSpec(
         "agent domain mismatch", "session", "info", ("agent", "domain")
     ),
+    # 主链路 LLM 本层有界重试（首个 chunk 之前才重试；每次重试记 role/attempt/err）
+    "model retry": EventSpec(
+        "model retry", "agent", "warning", ("role", "attempt", "err")
+    ),
 }

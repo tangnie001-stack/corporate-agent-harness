@@ -221,6 +221,10 @@ class Event(str, Enum):
     # [session] 预设与知识库领域不一致（用户自选行为，记日志但不阻断）
     AGENT_DOMAIN_MISMATCH = "agent domain mismatch"
 
+    # [agent] 主链路 LLM 本层有界重试留痕（timeout-and-degradation-hardening D16：
+    # 首个 chunk 之前才重试，每次重试记 role/attempt/err）
+    MODEL_RETRY = "model retry"
+
 
 @dataclass(frozen=True)
 class ReplayEvent:

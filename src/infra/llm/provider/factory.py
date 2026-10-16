@@ -11,9 +11,9 @@ from openai import AsyncOpenAI
 from pydantic import SecretStr
 
 from src.config import settings
-from src.infra.llm.provider.chat import ReasoningPreservingChat
 from src.infra.llm.provider.spec import ProviderSpec, load_registry, resolve_role
 from src.infra.llm.provider.thinking import thinking_extra_body
+from src.infra.llm.retrying_chat import RetryingReasoningChat
 
 _REGISTRY: dict[str, ProviderSpec] | None = None
 
@@ -85,11 +85,17 @@ def build_chat(
         extra_kwargs.setdefault("http_async_client", httpx.AsyncClient(timeout=tout))
         # spec：SDK 自动重试必须关闭（不得被 env / 调用方打开）
         extra_kwargs["max_retries"] = 0
-    return ReasoningPreservingChat(
+    # 本层有界重试（D16）：只在首个 chunk 之前重试 ⇒ return 换成 RetryingReasoningChat；
+    # 阈值由本层从 settings 注入，子类不读环境
+    return RetryingReasoningChat(
         model=model or resolved.model,
         api_key=SecretStr(resolved.api_key),
         base_url=resolved.base_url,
         reasoning_field=resolved.provider.reasoning_field,
+        model_retry_attempts=settings.RETRY_MAX_ATTEMPTS,
+        model_retry_initial_interval=settings.RETRY_INITIAL_INTERVAL,
+        model_retry_backoff=settings.RETRY_BACKOFF_FACTOR,
+        model_retry_role=role,
         **extra_kwargs,
     )
 
