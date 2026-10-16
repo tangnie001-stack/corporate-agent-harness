@@ -12,6 +12,7 @@ from pydantic import SecretStr
 
 from src.config import settings
 from src.infra.llm.provider.chat import ReasoningPreservingChat
+from src.infra.llm.provider.http_observability import HookEvidence, make_logging_client
 from src.infra.llm.provider.spec import ProviderSpec, load_registry, resolve_role
 from src.infra.llm.provider.thinking import thinking_extra_body
 
@@ -65,6 +66,42 @@ def build_chat(
         base_url=resolved.base_url,
         reasoning_field=resolved.provider.reasoning_field,
         **extra_kwargs,
+    )
+
+
+def build_bridge_judge(*, evidence: HookEvidence) -> ChatOpenAI:
+    """构造 DeepEval RAGAS 桥用的裁判（langchain `BaseChatModel`）。
+
+    与 `build_ragas_judge()`（现代 `InstructorBaseRagasLLM`）的区别：桥要的是
+    langchain chat model，故走 `build_chat`；同时把**细粒度超时**与**请求级观测**
+    落在 `http_async_client` 上——ragas 的裁判调用走异步，`http_client` 只喂同步
+    client（langchain `chat_models/base.py:806`）。
+
+    Args:
+        evidence: 请求级观测证据桶（挂到 hooks 上）。
+
+    Returns:
+        ChatOpenAI（`ReasoningPreservingChat`）：`http_async_client` 已置，
+        `max_retries=0`，未传 `temperature` / `top_p`（温度由 ragas 分档决定）。
+    """
+    from src.config import settings
+
+    timeout = httpx.Timeout(
+        connect=settings.RAGAS_HTTP_TIMEOUT_CONNECT,
+        read=settings.RAGAS_HTTP_TIMEOUT_READ,
+        write=settings.RAGAS_HTTP_TIMEOUT_WRITE,
+        pool=settings.RAGAS_HTTP_TIMEOUT_POOL,
+    )
+    client = make_logging_client(
+        timeout=timeout,
+        evidence=evidence,
+    )
+    return build_chat(
+        "judge",
+        thinking=settings.RAGAS_JUDGE_THINKING,
+        max_tokens=settings.RAGAS_JUDGE_MAX_TOKENS,
+        http_async_client=client,
+        max_retries=settings.RAGAS_HTTP_MAX_RETRIES,
     )
 
 
