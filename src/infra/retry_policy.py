@@ -196,6 +196,10 @@ def _find_status_code(exc: BaseException, max_depth: int = 5) -> int | None:
     上游框架（langgraph / langchain）会把 provider 异常包装后再抛，
     直接看最外层拿不到 `status_code`，故必须上溯。
 
+    状态码的两种携带形态都读：优先自身 `status_code`（openai SDK 异常），
+    其次 `response.status_code`（`httpx.HTTPStatusError` 无 `status_code` 属性，
+    码挂在 `.response` 上）；两者都不是 `int` 才继续上溯。
+
     Args:
         exc: 起始异常
         max_depth: 最大上溯层数（防御异常链成环）
@@ -213,6 +217,11 @@ def _find_status_code(exc: BaseException, max_depth: int = 5) -> int | None:
         code = getattr(cur, "status_code", None)
         if isinstance(code, int):
             return code
+        response = getattr(cur, "response", None)
+        if response is not None:
+            resp_code = getattr(response, "status_code", None)
+            if isinstance(resp_code, int):
+                return resp_code
         cur = cur.__cause__ or cur.__context__
         depth += 1
     return None

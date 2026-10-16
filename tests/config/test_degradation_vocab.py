@@ -1,7 +1,8 @@
 """降级词表守卫（P2）：取值/文案唯一来源 + 失败分类原语。
 
 守卫的意义：spec 的「降级原因与用户文案的取值集合」表是唯一来源，
-实现不得自造取值；本文件把"实现里的取值 ⊆ 规格表"这件事变成可执行断言。
+实现不得自造取值；本文件把"实现里的取值与规格表**逐一相等**（既不少也不多）"
+这件事变成可执行断言。
 """
 
 from src.config.const import SSEInteractionTexts
@@ -12,11 +13,26 @@ from src.rag.errors import RetrievalUnavailableError
 
 
 class _StatusErr(Exception):
-    """带 HTTP 状态码的异常替身（openai / httpx 的失败都带 status_code）。"""
+    """带 HTTP 状态码的异常替身（openai 的失败带 status_code 属性）。"""
 
     def __init__(self, status_code: int) -> None:
         super().__init__(f"http {status_code}")
         self.status_code = status_code
+
+
+class _FakeResponse:
+    """`httpx.Response` 的最小替身（只带 status_code）。"""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+class _HttpxStatusErr(Exception):
+    """`httpx.HTTPStatusError` 形态的替身：**无** status_code，码在 `.response` 上。"""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"httpx http {status_code}")
+        self.response = _FakeResponse(status_code)
 
 
 def test_degraded_event_registered_with_reason_field():
@@ -26,7 +42,7 @@ def test_degraded_event_registered_with_reason_field():
 
 
 def test_reason_vocabulary_covers_spec_table():
-    """取值集合覆盖 spec 表（含 P3 才会消费的 generation_idle）。"""
+    """取值集合与 spec 表逐一相等（既不少也不多，含 P3 才会消费的 generation_idle）。"""
     required = {
         "embedding_failed",
         "vector_store_failed",
@@ -37,14 +53,21 @@ def test_reason_vocabulary_covers_spec_table():
         "upstream_exhausted",
         "generation_idle",
     }
-    assert required <= set(SSEInteractionTexts.DEGRADATION_REASONS)
+    assert set(SSEInteractionTexts.DEGRADATION_REASONS) == required
 
 
 def test_visible_texts_stay_inside_reason_vocabulary():
-    """文案表的 key 必须都是已登记取值（防自造）。"""
-    assert set(SSEInteractionTexts.DEGRADATION_TEXTS) <= set(
-        SSEInteractionTexts.DEGRADATION_REASONS
-    )
+    """文案表的 key 必须与 spec 表「用户可见 = 是」的取值逐一相等（防自造、防漏配）。"""
+    visible = {
+        "vector_store_failed",
+        "llm_unavailable_with_context",
+        "llm_unavailable_no_context",
+        "llm_stream_interrupted",
+        "provider_unavailable",
+        "upstream_exhausted",
+        "generation_idle",
+    }
+    assert set(SSEInteractionTexts.DEGRADATION_TEXTS) == visible
 
 
 def test_stage_degraded_is_dedicated():
@@ -72,6 +95,12 @@ def test_classify_failure_reads_wrapped_cause_chain():
     wrapped = RuntimeError("langgraph wrapped")
     wrapped.__cause__ = _StatusErr(503)
     assert classify_failure(wrapped) == "upstream_exhausted"
+
+
+def test_classify_failure_reads_httpx_response_status_code():
+    """httpx.HTTPStatusError 无 status_code 属性，码在 `.response.status_code` 上。"""
+    assert classify_failure(_HttpxStatusErr(503)) == "upstream_exhausted"
+    assert classify_failure(_HttpxStatusErr(403)) == "provider_unavailable"
 
 
 def test_classify_failure_vector_store_marker():
