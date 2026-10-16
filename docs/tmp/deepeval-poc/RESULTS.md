@@ -93,3 +93,26 @@ DEEPEVAL_DISABLE_DOTENV=1 DEEPEVAL_TELEMETRY_OPT_OUT=1 /tmp/deepeval-poc/.venv/b
 - K4：`deepeval/telemetry/client.py:55 telemetry_opt_out()`、`:119 get_backend()`（opt-out→`NoopBackend`）、`:92 from posthog import Posthog`；`deepeval/config/settings.py:929 DEEPEVAL_TELEMETRY_OPT_OUT`。
 - K5：`deepeval/__init__.py:12 autoload_dotenv()`；`deepeval/config/settings.py:268 if parse_bool(os.getenv("DEEPEVAL_DISABLE_DOTENV"), default=False): return`。
 - K2：`deepeval/metrics/ragas.py:72`（字符串→`OpenAIModel(model=str).load_model()`）、`deepeval/models/llms/openai_model.py:476 load_model()` 返回裸 `openai.OpenAI`。
+
+---
+
+## Q1 探测（2026-10-16）：`evals_iterator` 能否与 `asyncio.run` + `graph.ainvoke` 共存？
+
+**问题**：本 change 的行为轴要求「`EvaluationDataset.evals_iterator` 驱动 + 循环体内 `graph.ainvoke(...)`」，而项目把空库检查 + 跑图放在**一个** `asyncio.run(...)` 内（引擎连接池不可跨事件循环复用）⇒ 是否撞 nested-loop？
+
+**做法**：`/tmp/deepeval-poc-scripts/q1_probe_evals_iterator_async.py`（**脚本不入库**，与既有 K1–K6 探针同例，仅留本记录），两种走法各 1 题（玩具 async agent + `TaskCompletionMetric`，真调 judge）：
+- A：外层 `asyncio.run(main())`，`evals_iterator` **默认**（`AsyncConfig(run_async=True)`），循环体 `await graph.ainvoke(..., config={"callbacks":[CallbackHandler()]})`
+- B：同上但 `AsyncConfig(run_async=False)`（纯同步驱动）
+
+**结果（两路均 WORKS）**：
+
+| 走法 | 异常 | 消费 golden | `test_run_*.json` | 逐题分 |
+|---|---|---|---|---|
+| A（run_async=True，嵌套在 asyncio.run 内） | 无 | 1 | 已落盘 `test_run_20261016_155435.json` | `testCases[0].metricsData[0].score = 1.0` |
+| B（run_async=False） | 无 | 1 | 已落盘 `test_run_20261016_155533.json` | 同上 `1.0` |
+
+**机制（源码）**：`deepeval/utils.py:209 get_or_create_event_loop()` —— 当 `loop.is_running()` 为真时 **调 `nest_asyncio.apply()`**（`nest_asyncio` 是 `deepeval` 的硬依赖，METADATA 已列）⇒ 内层 `loop.run_until_complete(...)` 在**同一个**运行中的 loop 上重入执行，**不新建第二个 loop** ⇒ 项目"单事件循环 + 引擎连接池"假设**不被破坏**。`run_async=False` 的分支（`evaluate/execute/loop.py:149-507`）**零 `asyncio` 引用**，是纯同步驱动。
+
+**结论**：spec 里"行为轴 SHALL 由 `evals_iterator` 驱动"**写成 SHALL 是可验收的**（D1 回滚触发条件② 不成立）。
+
+**附带注意（落地时要写进代码注释）**：`nest_asyncio.apply()` 会**全局 monkeypatch 当前 asyncio**（进程级副作用）；本次评测 CLI 是短进程、可接受，但不得在长驻服务里顺手调用。
