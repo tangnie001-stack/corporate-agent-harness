@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from src.cli.eval_scoring import read_behaviour_scores
+
+_FIXTURE = {
+    "testCases": [
+        {
+            "input": "Q0",
+            "metricsData": [
+                {"name": "Task Completion", "score": 1.0, "success": True},
+                {"name": "Step Efficiency", "score": 0.5, "success": True},
+            ],
+        },
+        {
+            "input": "Q1",
+            "metricsData": [
+                {"name": "Task Completion", "score": 0.0, "success": False},
+            ],
+        },
+    ]
+}
+
+
+def test_reads_per_question_scores_in_order(tmp_path):
+    (tmp_path / "test_run_20261017_000000.json").write_text(
+        json.dumps(_FIXTURE), encoding="utf-8"
+    )
+
+    rows = read_behaviour_scores(str(tmp_path))
+
+    assert [r["q_index"] for r in rows] == [0, 1]
+    assert [r["input"] for r in rows] == ["Q0", "Q1"]
+    assert rows[0]["metrics"]["Task Completion"] == 1.0
+    assert rows[1]["metrics"]["Task Completion"] == 0.0
+
+
+def test_picks_the_newest_test_run_file(tmp_path):
+    (tmp_path / "test_run_20260101_000000.json").write_text(
+        json.dumps({"testCases": [{"input": "OLD", "metricsData": []}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "test_run_20261017_000000.json").write_text(
+        json.dumps(_FIXTURE), encoding="utf-8"
+    )
+
+    rows = read_behaviour_scores(str(tmp_path))
+
+    assert rows[0]["input"] == "Q0"
+
+
+def test_missing_json_fails_loud(tmp_path):
+    with pytest.raises(RuntimeError, match="test_run"):
+        read_behaviour_scores(str(tmp_path))

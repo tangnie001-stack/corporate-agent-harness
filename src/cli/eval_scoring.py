@@ -5,6 +5,8 @@
 CLI 编排（跑图、读写报告文件）留在 eval_ragas.py。
 """
 
+from pathlib import Path
+
 import pandas as pd
 from langchain_core.messages import AIMessage
 from loguru import logger
@@ -256,3 +258,39 @@ def build_behaviour_metrics(judge):
         StepEfficiencyMetric(model=judge, threshold=0.5),
         AgentLoopDetectionMetric(threshold=0.5),
     ]
+
+
+def read_behaviour_scores(results_folder: str) -> list[dict]:
+    """从 `<results_folder>/test_run_*.json` 回读**逐题**行为分。
+
+    为什么必须回读文件：DeepEval 的 eval loop 用 `copy_metrics()` 的副本打分
+    ⇒ 调用方持有的 `metric.score` 恒为 `None`（见 design D6）。
+    逐题分在 `testCases[j].metricsData[k]`（含 `name`/`score`/`success`）；
+    `metricsScores` 是**按指标聚合**，不作逐题分。
+
+    Args:
+        results_folder: `DisplayConfig(results_folder=…)` 指定的目录。
+
+    Returns:
+        按题序的 `[{"q_index", "input", "metrics": {name: score}}, …]`。
+
+    Raises:
+        RuntimeError: 目录下没有 `test_run_*.json`（生成器未耗尽 ⇒ 行为分不可信）。
+    """
+    import glob
+    import json
+
+    files = sorted(glob.glob(str(Path(results_folder) / "test_run_*.json")))
+    if not files:
+        raise RuntimeError(
+            f"{results_folder} 下没有 test_run_*.json："
+            "evals_iterator 未耗尽（或循环提前结束），行为分不可信"
+        )
+    raw = json.loads(Path(files[-1]).read_text(encoding="utf-8"))
+    rows: list[dict] = []
+    for idx, tc in enumerate(raw.get("testCases") or []):
+        metrics = {
+            md.get("name"): md.get("score") for md in (tc.get("metricsData") or [])
+        }
+        rows.append({"q_index": idx, "input": tc.get("input", ""), "metrics": metrics})
+    return rows
