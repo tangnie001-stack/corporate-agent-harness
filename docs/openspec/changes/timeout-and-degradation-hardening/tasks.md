@@ -10,7 +10,10 @@
 - [ ] 0.2 **验收边界**：worktree 内只跑**非 DB 单测 + `ruff` + `pyright`**；DB 用例与端到端回主工作区（worktree 缺 gitignored `data/`，`tests/parsers` 会环境性失败，不是回归）。
 - [ ] 0.3 **对照实测载体**：**本地真实发起调用**取分位（本机 `.env` 已走真实 provider）；**本机日志不可用**（stub 流量，`latency_ms=0~1`）；**不在生产做对照**。
 - [ ] 0.4 每阶段收尾走 ⑥ 两道闸门（`verification-before-completion` + `requesting-code-review`）；本 change 属**纯代码任务为主**，无破坏性操作。
-- [ ] 0.5 **定序与开工前置断言（D17）**：排在 `deepeval-bridge-eval`（先收口，且会删掉本变更**不依赖**的 `build_native_client`）与 `turn-provenance-observability`（同在 `agent_service.py` / `log_events.py` / `log_event_specs.py` / `const.py`）之后。**三条断言未全部成立前不得开工**（责任人 = 本 change 实施者）：① **生产自有键与 `RAGAS_*` 族无交集**（D2「键名归属」—— 本侧可自证，不再依赖"对方别改"；第三轮 I6）；② `build_native_client` 去留已定，且不影响本变更对 `build_*` 的改动；③ 它那条取代 ADR-0024 的新 ADR **编号已落**。**超时策略真源**：生产链路归本变更、评测链（`RAGAS_*` 族、含 `judge`）归它，两侧不互相覆盖。
+- [ ] 0.5 **定序与开工前置断言（D17）**：`deepeval-bridge-eval` 的在途改动**已收口**（2026-10-16 拉入 `b8ca89ae`，脚本/机检可复跑）；仍与 `turn-provenance-observability` 共享 `agent_service.py` / `log_events.py` / `log_event_specs.py` / `const.py` ⇒ **动这四个文件前**先看它是否在途。**断言按阻塞面分开，不再一律卡住开工**：
+  - **阻塞 P1/P2/P3 代码的（两条）**：① **生产自有键与 `RAGAS_*` 族无交集**（D2「键名归属」，本侧可自证）；② 对方仍计划删 `build_native_client`（"核引用后删"）⇒ **动 `factory.py` 前重读其当前形态**，且本变更不引用该函数。
+  - **只阻塞「建本变更的 ADR」的（一条）**：③ 对方那条取代 ADR-0024 的新 ADR **编号已落**（截至 2026-10-16 `docs/adr` 最大仍是 `0024`）—— 本变更 ADR 序号要排在它之后 ⇒ **不阻塞任何代码任务**，只影响建档时机。
+  **超时策略真源**：生产链路归本变更、评测链（`RAGAS_*` 族、含 `judge`）归它，两侧不互相覆盖。
 - [ ] 0.6 **提交 / 开工前跑一致性机检**：`python docs/tmp/check-change-consistency.py docs/openspec/changes/timeout-and-degradation-hardening`（应 **0 命中**）。它兜的是本 change 连过三轮评审反复出现的那一类缺陷 —— **修正只改了一半 / 只改了一处**（design 改了 spec 没改、spec 改了 tasks 没改）。检查项、四类误报的调参记录与灵敏度验证结果见脚本头部 docstring。
 
 ## 1. P1 底座：重试原语 + 显式超时 + 关 SDK 重试（可独立交付）
@@ -35,13 +38,13 @@
 - [ ] 2.1 混合检索路级失败降级：并发取数改为「任一路失败仍返回另一路」，并**区分「失败」与「缺席」**（`hybrid-retrieval` delta；现状 `asyncio.gather(…)` 未带 `return_exceptions`）。**状态字段挂在既有混合检索事件上、不改 `search()` 返回签名** —— 改签名会波及 `api_contract.md` + 工具 + 评测 CLI。
 - [ ] 2.2 降级动作矩阵落地（D6）：rerank（已实现，对齐即可）/ embedding 查询 → 仅词法路 / 向量库 → "知识库暂不可用" / LLM → **已有检索结果时返回检索原文 + 明确告知；无检索结果时仅明确告知**（D9 收窄，评审 Q4）。
 - [ ] 2.3 两个出口收敛：事件进 `log_event_specs.EVENT_SPECS`（**不复用 `CAPABILITY_DEGRADED`**）；用户文案进 `src/config/const.py`。**`reason` 取值与文案一律取自规格 `specs/degradation-policy/spec.md` 的「降级原因与用户文案的取值集合」表，不得自造**。⚠ rerank 两行的**原因由既有事件名表达**（`rerank failed` / `rerank timeout`，两者字段均无 `reason`）⇒ **不新增事件、不给它们加 `reason`**（评审 I5）。
-- [ ] 2.4 上游**可用性类错误**识别为不可重试类并驱动**可区分**文案：`401/403` 一律不重试，但 `provider_quota` 与 `provider_auth` 必须**按响应体区分**（403 也可能是额度耗尽 —— 历史实测即 403 + `AllocationQuota.FreeTierOnly`），**不得只看状态码**（D5/D9）。**⚠ 先取证（第三轮 I2）**：实测**两 provider（dashscope / deepseek）的 403 响应体并落表** —— 含标识落在**哪一层**（HTTP body / 异常 message / `.json()`）；注意异常经 `create_agent` / LangGraph 包装后**原始 `response` 未必存活**。判据按 provider **code 字段**匹配；**不可区分时降为单一文案**。另补 **429/5xx 重试穷尽** 的 `upstream_exhausted` 文案（此项此前漏了）。
+- [ ] 2.4 上游**可用性类错误**（401 / 403）识别为不可重试类并驱动**单一**文案 `provider_unavailable`：**不区分额度与鉴权** —— 该判别与响应体取证**已裁定移出本变更**、归评测链 `deepeval-bridge-eval`（它有可读状态码/响应体的 hooks 证据机制，见 D5）。另补 **429 / 5xx 重试穷尽** 的 `upstream_exhausted`（与可用性类**不同**：该类**可**提示重试）。
 - [ ] 2.5 **前端消费链同步**：`deploy/nginx/html/chat.html` 的 `error` 分支改为**消费后端文案**（现硬编码 `showError('连接异常，请重试')`、**不消费** `data.error`）。**通道已在规格内点名（第三轮 B1）**：用户可见的降级文案 SHALL 走**既有 `status` 事件 + 专用 `stage` 常量**（**不复用** `retrieve` / `web_search` 的 stage —— 会让前端触发正文/旁白重分类；与 `turn-provenance` 的 `STAGE_*` 同构）⇒ 本项含"**新增 stage 常量 + 前端按 stage 分支呈现**"。
 
 **验收**
 - [ ] 2.6 稠密路失败而词法路可用时，检索**返回词法结果**且降级可观测（状态字段为 `failed`，**非** `empty`）。
 - [ ] 2.7 LLM 首个 chunk 前失败**且已有检索结果** → 用户收到检索原文 + 告知；**无检索结果** → 明确告知，且**不落"空内容 + complete"**。
-- [ ] 2.8 可用性类错误的文案**不诱导重试**；且 `provider_quota` / `provider_auth` 两类**各自的判据都能被实际触发**。
+- [ ] 2.8 可用性类错误的文案**不诱导重试**；401 / 403 走**同一** `provider_unavailable` 路径（**不再要求触发两类判据** —— 判别已移出本变更、归评测链）；`upstream_exhausted`（429/5xx 穷尽）**可**提示重试。
 - [ ] 2.9 降级事件字段可被判据**唯一匹配**（供 SLS / 云监控侧配规则；告警通道本身不属本变更，见 `H-12`）。
 - [ ] 2.10 **不存在"文案已定义但无通道送达"的项**：每个「用户可见 = 是」的取值都有明确的 SSE 通道 + 前端消费点（与 2.5 配套）。
 
@@ -69,3 +72,4 @@
 - [ ] 5.2 `embedding` 客户端**复用**（每次 `get_embeddings()` 新建实例、连接池不复用）
 - [ ] 5.3 **告警出口** → 已登记需求池 `H-12`（方向：阿里云 Grafana + 阿里云日志 SLS）
 - [ ] 5.4 `src/cli/symptom_metrics.py` 是否扩为耗时统计（现只统计 iteration limit / 检索次数 / `answer_len`）
+- [ ] 5.5 **403 的额度 / 鉴权判别（含响应体取证）** → 归评测链 `deepeval-bridge-eval`（其 hooks 证据机制可读状态码/响应体）；本变更按**单一文案** `provider_unavailable` 落地；若它给出**可复用判据**，再回来把该行拆成两行并各自配文案
