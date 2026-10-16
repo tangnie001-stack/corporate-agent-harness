@@ -653,3 +653,40 @@ async def test_hybrid_both_paths_failed_raises_retrieval_unavailable(monkeypatch
     # 本层只抛不留痕：终态那条由上层（agent_service 的降级发射）记，避免同失败两处各记一次
     assert not [f for e, f in logged if e == Event.DEGRADED]
     assert not [f for e, f in logged if e == Event.HYBRID_DONE]
+
+
+# ==================== 单阶段耗时（timeout-and-degradation-hardening P4）====================
+
+
+def test_rerank_done_carries_stage_latency(monkeypatch):
+    """`rerank done` 必须带本阶段耗时 `latency_ms`（D11 待校准项要它来定值）。
+
+    计时只在精排调用**周围**，与 `retrieve done` 的全链路合计相区分。
+    **注意**：`rerank_results` 在 `rerank done` **之后**还会落一条 `dedup done`
+    ⇒ 捕获必须收成**列表再按事件过滤**，不能用"最后一条覆盖"的 dict
+    （否则拿到的永远是 `dedup done` 的字段，断言必红）。
+    """
+    captured: list[tuple[Event, dict]] = []
+    monkeypatch.setattr(
+        retrieval, "log_event", lambda event, **fields: captured.append((event, fields))
+    )
+    results = [
+        ChunkResult(id="a", content="A", metadata={}, distance=0.1),
+        ChunkResult(id="b", content="B", metadata={}, distance=0.2),
+    ]
+
+    class _ReRanker:
+        def rerank(self, docs, query):
+            return [
+                {"index": 0, "relevance_score": 0.9},
+                {"index": 1, "relevance_score": 0.1},
+            ]
+
+    contexts = retrieval.rerank_results("资产负债率", results, _ReRanker())
+
+    assert len(contexts) == 2
+    rerank_done = [f for e, f in captured if e == Event.RERANK_DONE]
+    assert rerank_done, "未落 rerank done 事件"
+    assert "latency_ms" in rerank_done[0], "rerank done 未带 latency_ms"
+    assert isinstance(rerank_done[0]["latency_ms"], int)
+    assert rerank_done[0]["latency_ms"] >= 0

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -159,7 +160,9 @@ class PgVectorStore:
             按余弦距离升序的 ChunkResult；每项 distance 有值、dense_rank 为 0 起的名次
         """
         effective_k = min(k, MAX_QUERY_K)
+        embed_start = time.monotonic()
         query_vec = await asyncio.to_thread(self._embed_fn.embed_query, query)
+        embedding_ms = int((time.monotonic() - embed_start) * 1000)
         pairs = await self._repo.search_dense(kb_id, query_vec, effective_k)
         results = [
             row_to_chunk_result(row, distance=distance, dense_rank=rank)
@@ -170,6 +173,7 @@ class PgVectorStore:
             kb_id=kb_id,
             query_len=len(query),
             result_count=len(results),
+            embedding_ms=embedding_ms,
             model=EMBEDDING_MODEL,
         )
         logger.debug(
