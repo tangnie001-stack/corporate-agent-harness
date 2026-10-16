@@ -1,12 +1,11 @@
 """RAGAS 评估脚本 — 对 RAG 系统的检索和生成质量进行标准化评估.
 
-本脚本使用 RAGAS 库计算五个核心指标（报告 / stdout / 门禁统一采用「主分」口径，
+本脚本使用 RAGAS 库计算四个核心指标（报告 / stdout / 门禁统一采用「主分」口径，
 即仅纯 KB 样本的指标均值；含联网或无检索的样本不计入主分）：
   - faithfulness: 回答是否忠实于检索到的上下文（有无幻觉）
   - answer_relevancy: 回答与问题的相关性
   - context_recall: 检索到的上下文是否覆盖了参考答案所需的信息
   - context_precision: 检索到的上下文中有多少是真正有用的
-  - answer_correctness: 回答与参考答案的事实/语义一致性
 
 运行方式：
   python -m src.cli.eval_ragas --kb-id <kb-uuid>                          # 评估（最新测试集）
@@ -1015,7 +1014,7 @@ def _save_eval_report(
 ) -> None:
     """把评估结果持久化到 eval_report 表。
 
-    `overall_score` 统一到**主分口径**（纯 KB 五项均值，design D11），替换原先
+    `overall_score` 统一到**主分口径**（纯 KB 四项均值，design D11），替换原先
     「四项加权、未掩码」的旧口径；`passed` 取常量 `EVAL_PASS_THRESHOLD`。
     传入 `sample_classes` 时先按样本类别掩码，使落库的逐题明细与各指标均值
     同为主分口径。

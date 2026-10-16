@@ -1,6 +1,23 @@
 from src.cli.eval_scoring import build_metrics
 
 
+def test_metric_columns_drop_answer_correctness():
+    """answer_correctness 已退出评测：RAGAS 白名单收窄到经典四项。"""
+    from src.config.const import CONTEXT_METRIC_COLUMNS, RAGAS_METRIC_COLUMNS
+
+    assert RAGAS_METRIC_COLUMNS == (
+        "faithfulness",
+        "answer_relevancy",
+        "context_precision",
+        "context_recall",
+    )
+    assert CONTEXT_METRIC_COLUMNS == (
+        "faithfulness",
+        "context_precision",
+        "context_recall",
+    )
+
+
 class _FakeJudge:
     pass
 

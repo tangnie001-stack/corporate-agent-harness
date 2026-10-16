@@ -493,7 +493,7 @@ WECOM_EVENT_FEEDBACK: Final[str] = "feedback_event"
 SAMPLE_CLASS_PURE_KB: str = "pure_kb"  # 检索材料全部来自知识库
 SAMPLE_CLASS_WEB: str = "web"  # 检索材料含联网块（降级联网）
 SAMPLE_CLASS_EMPTY: str = "empty"  # 未检索到任何材料
-# 依赖 contexts 的指标列（无材料样本上跳过；answer_relevancy/answer_correctness 不在此列）
+# 依赖 contexts 的指标列（无材料样本上跳过；answer_relevancy 不在此列）
 CONTEXT_METRIC_COLUMNS: tuple[str, ...] = (
     "faithfulness",
     "context_precision",
@@ -506,7 +506,6 @@ RAGAS_METRIC_COLUMNS: tuple[str, ...] = (
     "answer_relevancy",
     "context_precision",
     "context_recall",
-    "answer_correctness",
 )
 # 门禁：检索覆盖率下限（低于此值判失败，杜绝"不检索即跳空 context 指标"的规避）
 EVAL_RETRIEVAL_COVERAGE_MIN: float = 0.5
@@ -517,7 +516,7 @@ RAGAS_EVAL_CONCURRENCY: int = 5
 # 10% 为**经验初值**（依据仅换尺子前 21 题 1 例 ≈4.8%，样本薄），首轮全量后复核定稿。
 EVAL_NAN_RATE_MAX: float = 0.10
 # 评测「通过」阈值（单一来源：落库 passed 与 kb_eval API 下发同用此值）。
-# 口径已由旧「四项加权、未掩码」改为「纯 KB 五项均值」，新口径系统性偏低
+# 口径已由旧「四项加权、未掩码」改为「纯 KB 四项均值」，新口径系统性偏低
 # 0.03~0.13（实测 n=7，区间 0.68~0.92）——此值**待标定**，暂沿用 0.70。
 EVAL_PASS_THRESHOLD: float = 0.70
 

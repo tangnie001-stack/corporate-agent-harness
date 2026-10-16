@@ -443,7 +443,7 @@ class TestSaveResults:
     """结果保存测试。"""
 
     def test_save_csv(self) -> None:
-        """CSV 应含掩码新列（sample_class/skipped）、answer_correctness 与轨迹列。"""
+        """CSV 应含掩码新列（sample_class/skipped）与轨迹列。"""
         import pandas as pd
 
         from src.cli.eval_ragas import save_results_csv
@@ -455,7 +455,6 @@ class TestSaveResults:
                 "answer_relevancy": [0.88, 0.86],
                 "context_recall": [0.92, 0.88],
                 "context_precision": [0.85, 0.83],
-                "answer_correctness": [0.91, 0.89],
             }
         )
         mock_result = MagicMock()
@@ -485,7 +484,6 @@ class TestSaveResults:
                 content = f.read()
 
             assert "faithfulness" in content
-            assert "answer_correctness" in content
             assert "sample_class" in content
             assert "skipped" in content
             assert "trajectory" in content
@@ -531,7 +529,7 @@ class TestSaveResults:
             os.unlink(tmp_path)
 
     def test_save_markdown_report_includes_new_columns(self) -> None:
-        """MD 报告应含 answer_correctness、sample_class、skipped、trajectory 列。"""
+        """MD 报告应含 sample_class、skipped、trajectory 列，且不含已退出的 answer_correctness。"""
         import pandas as pd
 
         from src.cli.eval_ragas import save_markdown_report
@@ -543,7 +541,6 @@ class TestSaveResults:
                 "answer_relevancy": [0.88, 0.86],
                 "context_recall": [0.92, 0.88],
                 "context_precision": [0.85, 0.83],
-                "answer_correctness": [0.91, 0.89],
             }
         )
         mock_result = MagicMock()
@@ -568,7 +565,7 @@ class TestSaveResults:
             with open(md_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-            assert "answer_correctness" in content
+            assert "answer_correctness" not in content
             assert "sample_class" in content
             assert "skipped" in content
             assert "trajectory" in content
@@ -641,7 +638,6 @@ def test_print_metric_averages_only_whitelist_metrics(capsys) -> None:
             "answer_relevancy": [0.88],
             "context_precision": [0.85],
             "context_recall": [0.92],
-            "answer_correctness": [0.91],
             "chunk_size": [512],
         }
     )
@@ -651,10 +647,10 @@ def test_print_metric_averages_only_whitelist_metrics(capsys) -> None:
     out = capsys.readouterr().out
 
     metric_lines = [ln for ln in out.splitlines() if ln.strip()]
-    # 每指标一行、只剩 5 个白名单指标
-    assert len(metric_lines) == 5
+    # 每指标一行、只剩 4 个白名单指标
+    assert len(metric_lines) == 4
     assert "faithfulness: 0.9500" in out
-    assert "answer_correctness: 0.9100" in out
+    assert "answer_correctness" not in out
     assert "chunk_size" not in out
 
 
