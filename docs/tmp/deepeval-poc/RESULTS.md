@@ -270,3 +270,47 @@ The n parameter must be 1 when enable_thinking is true
 **脚本**：`/tmp/deepeval-poc-scripts/{answer_relevancy_rootcause.py,answer_relevancy_selfcontained.py}`（不入库）。
 
 **影响范围（已核源码）**：四项里**只有 `answer_relevancy` 会请求 `n>1`**（`strictness=3`，`_answer_relevance.py:142`）。`faithfulness`、`context_precision`、`context_recall` 的 `generate_multiple()`/`generate()` **均不传 `n`（默认 1）**（`_faithfulness.py:158/174`、`_context_precision.py:151`、`_context_recall.py:137`）⇒ **`enable_thinking=True` 恰好只打断 `answer_relevancy` 一个指标**。若将来确要开思考，最小代价路径是给该指标单独配 thinking 关的 judge（或把 `strictness` 降到 1，属改口径）。
+
+---
+
+## faithfulness 修法 C 的 N≥20 复核（2026-10-16）：**不通过** —— 暴露出第二个病因
+
+**做法**：`/tmp/deepeval-poc-scripts/faithfulness_n20.py` —— **2 案例 × N=10 × 2 臂**（A 基线英文提示词 / C 中文提示词），共 40 次调用。第二个案例用于检验 T 案例结论能否泛化。
+
+| 案例 | A 基线（英文提示词） | C 中文提示词 |
+|---|---|---|
+| **T 腾讯营收**（答案 `约 6603 亿元`，context `…营业收入 6603 亿元。`） | 判 0 **1/10** | 判 0 **0/10** ✅ |
+| **M 茅台净利润**（答案 `约 857 亿元`，context `…归属于上市公司股东的净利润约 857 亿元。`） | 判 0 **10/10**（不是抖动，**确定性判错**） | 判 0 **6/10** ❌ |
+
+**结论**：**修法 C 只治了"单位换算"那一类，治不了 M 那一类** ⇒ 不通过复核。
+
+### M 案例的中间产物（`faithfulness_moutai_dump.py`，A/C 各 N=6）
+
+**A 臂（英文提示词）—— 6/6 稳定判 0，病因是"NLI 段读错 context 的数值"**：
+```
+抽出陈述: "The net profit of Kweichow Moutai in 2024 is approximately 85.7 billion yuan."   ← 这句本身是对的（857 亿 = 85.7 billion）
+NLI 理由: "The context states the net profit ... is approximately 857 billion yuan (857 亿元).
+          The statement claims it is 85.7 billion yuan, which is a numerical discrepancy
+          (off by a factor of 10)."                                                        ← 判官把 context 的「857 亿元」读成「857 billion」
+```
+⇒ 抽陈述那步正确，**是 NLI 段把中文 context 的数值读错**（丢了"亿"），再拿它去比 ⇒ 稳定判 0。
+
+**C 臂（中文提示词）—— 陈述已正确，但暴露第二个病因：语义严格性摇摆**：
+```
+抽出陈述: "贵州茅台2024年净利润约为857亿元。"   ← 单位问题已消失
+NLI 理由: "上下文指出'归属于上市公司股东的净利润'，而陈述仅称'净利润'…
+          前者是后者的子集…然而更常见的判断标准是看核心事实是否被支持…"
+```
+⇒ 判官在 **"归母净利润" vs "净利润" 的限定词省略**上反复自我辩解，3/6 判 1、3/6 判 0。
+
+### 补充：D 臂（`thinking=True` + 英文默认提示词）实测**两类都治好**
+
+`faithfulness_moutai_thinking.py`（M 案例，N=6）：scores = **[1.0]*6**；且抽出的陈述自动为**中文**（`贵州茅台2024年净利润约为857亿元。`），理由不再纠结单位或限定词。结合先前 T 案例 B 臂 `[1]*6` ⇒ **D 在两类案例上共 12/12 稳定**。
+
+### 修正后的综合结论
+
+1. **`faithfulness` 在本判官下有至少两个独立病因**，且**都与"答案是对 context 的缩写/改写"有关**：① 中文数值的单位换算（T）；② 限定词省略 + NLI 读错 context 数值（M）。**换成中文提示词只能治 ①**。
+2. **`thinking=True` 两类都治**（判官推理能力足够时，单位换算与限定词判断都稳），但**被 `answer_relevancy` 的 `n>1` 硬约束阻挡**（见上一节）。
+3. **另一个统一视角**：M 的失败与 `answer_relevancy` 的 0.44 同源——**答案不是 context 的忠实长句而是缩写**。在真实 21 题上，若 agent 答案偏长/完整，严重度可能低于这两个玩具案例；**但任何"数值 + 限定词"型事实都会命中**。⇒ 需在真实集上抽样确认严重度。
+
+**脚本**：`/tmp/deepeval-poc-scripts/{faithfulness_n20.py,faithfulness_moutai_dump.py,faithfulness_moutai_thinking.py}`（不入库）。
