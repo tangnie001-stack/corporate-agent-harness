@@ -1463,3 +1463,27 @@ git commit -m "docs(openspec): deepeval-bridge-eval Phase 1 收口（勾选 1.1�
 - Agent 行为轴（`evals_iterator` + `CallbackHandler` + `test_run_*.json` 逐题回读）——**Phase 2**；
 - `--generate` 硬护栏与出题路标注、逃生门可替换边界、Langfuse 回写口径（score 后缀 / NaN 不写）、`build_ragas_judge` / `build_ragas_embeddings` / `build_native_client` 的**删除**、`RAGAS_EVAL_CONCURRENCY` 处置、新 ADR——**Phase 3**；
 - 活体全量 21 题、阈值重标定、NaN 阈值复核、台账新增 `bridge-0.3.9 / v5` 行——**Phase 4**。
+
+---
+
+## Phase 1 执行记录与交接（2026-10-16 完成）
+
+**状态：12/12 任务完成，最终整支评审已过（一轮修波后两处 Important 均 ADDRESSED）。**
+
+- 交付分支 `feat/deepeval-bridge-eval`（worktree `/root/code/corporate_rag-deepeval-bridge`），基点 `5db37588`。
+- 验收证据：`tests/cli tests/config tests/infra/llm/provider tests/api` = **457 passed / 1 skipped / 0 failed**；`ruff check`/`format`、`pyright`、`openspec validate --strict`、`check_docs`（0 error）全绿；**1 题真实链路冒烟：四指标均有值，请求级 hook `hook_events = 13`（>0）** —— 即 D13 的 hooks 确实挂在 ragas 走的异步路径上。
+- 唯一 skip：`test_generate_transforms.py::test_build_transforms_contains_themes_and_cosine`（ragas 0.3.9 无 `default_transforms_for_prechunked`；出题路保留未调用，处置属后续 change）。
+
+### 本阶段未做（属 Phase 2–4，勿误当遗漏）
+
+Agent 行为轴（组 5）· 出题入口硬护栏（组 6）· 逃生门可替换边界（组 7）· Langfuse 回写口径（组 8）· `build_ragas_judge`/`build_ragas_embeddings`/`build_native_client` 删除 + `RAGAS_EVAL_CONCURRENCY` 处置 + 新 ADR（组 9）· 全量活体 + 阈值重标定 + NaN 率复核 + 台账 `bridge-0.3.9 / v5` 行（组 10）。
+
+### 遗留 minor（最终评审已 triage：**无一项需在合并前修**；除下面第一条已在本阶段修掉）
+
+- ✅ 已修：`measure()` 抛异常 → 捕获转 NaN → 重试、且错误串带异常链这条路径**曾有覆盖回归**，已在最终修波补测（`tests/cli/test_eval_bridge_retry.py`）。
+- ✅ 已修：评测路径曾用 `get_judge_llm()`（内含 `temperature=0`）只为取 `model_name`，与"裁判不带温度"的口径相矛盾，且报告的 `judge_model` 与真正的评分对象不是同一个 ⇒ 已改为统一用桥裁判的 `model_name`。
+- 下阶段留意（按优先级）：① `src/infra/llm/provider/factory.py:169 build_ragas_judge()` 仍硬写 `temperature=0`（组 9 删除目标）；② 429 证据按**行**累积（非按格）⇒ 同行内会"少重试"，保守但值得收窄；③ `docs/agents/ragas-eval-ledger.md:19` 的"并发=5（行级）"与 `src/config/const.py:512-514` 的注释已与实际串行不符（随 `RAGAS_EVAL_CONCURRENCY` 处置一起改）；④ `factory.py:209` docstring 仍提 `answer_correctness`；⑤ T4 缺 `m.embeddings is embeddings` 断言（钉 spec 的 SHALL）；⑥ `nan_cell_stats` 的裸 `-> dict` 与零分母守卫无测；⑦ `test_eval_bridge_meta.py` 无法钉住"版本来自 `importlib.metadata`"；⑧ T11 删除现代栈测试后 `build_ragas_judge`/`build_ragas_embeddings` 与 `RAGAS_EVAL_CONCURRENCY` 失去断言；⑨ 若干风格项（注释写变更史、测试未关 client、丢类型注解、CRLF 全文件、mock 里死列）。
+
+### 挂账问题（下阶段开头就做）
+
+- **`faithfulness=0.0` 待证伪**：冒烟那题（答案「约 6603 亿元」对 context「…营业收入 6603 亿元」）判 0。终审认为 context 侧已由 `context_precision`/`context_recall` = 1.0 证明送达，但**未排除 `actual_output` 字段的接线问题**。⇒ Phase 2/4 开头做一个**逐字答案**探针（答案直接抄 context）:若回到 ~1.0 即判官严格，若仍 0.0 须回头查 `actual_output` 的传递。
