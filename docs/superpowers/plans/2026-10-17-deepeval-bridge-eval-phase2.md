@@ -984,3 +984,44 @@ git commit -m "docs(openspec): deepeval-bridge-eval Phase 2 收口（D6 清单�
 
 - `--generate` 硬护栏与出题路标注（组 6）；逃生门可替换边界（组 7）；Langfuse 回写口径含行为分（组 8）；`build_ragas_judge` / `build_ragas_embeddings` / `build_native_client` 的**删除** + `RAGAS_EVAL_CONCURRENCY` 处置 + 新 ADR（组 9）。
 - 全量活体、阈值重标定、NaN 率复核、台账记 `bridge-0.3.9` 行（组 10）——**须待新题集**（design R11）。
+
+---
+
+## Phase 2 执行记录与交接（2026-10-17 完成）
+
+**状态：8/8 任务完成。最终整支评审判 "Ready to merge"；评审提出的 1 Important + 1 spec 强制 Minor 已做收尾修波，其中 Important 的首次修法被复核推翻并已按裁决回退（见下）。**
+
+- 交付分支 `feat/deepeval-bridge-eval`，基点 `854ddeac`，共 **22 个提交**，工作区干净。
+- **验收证据**：`tests/cli tests/config tests/infra/llm/provider tests/api` = **497 passed / 1 skipped / 0 failed**；`ruff check`/`format --check`、`pyright`、`openspec validate --strict`、`check_docs`（0 error）全绿。
+- **1 题活体冒烟**（真裁判、`generate_answers_and_contexts_with_behaviour`）：三指标各 **1.0**、`test_run_*.json` 落盘、`hook_events = 8`。
+
+### 交付物
+
+| 文件 | 内容 |
+|---|---|
+| `src/infra/llm/provider/deepeval_llm.py` | `BridgeDeepEvalLLM(DeepEvalBaseLLM)` —— 把 provider 层裁判接进 DeepEval 原生指标 |
+| `src/cli/eval_scoring.py` | `build_behaviour_metrics`（三项定稿）/ `read_behaviour_scores`（逐题回读）/ `assert_behaviour_scores_complete`（两条 fail-loud） |
+| `src/cli/eval_ragas.py` | 跑图循环改由 `evals_iterator` 驱动（每题独立 handler）/ `main()` 接线 / 报告「Agent 行为轴」段 / hooks 触发断言 |
+
+### 关键裁决与偏离（判错即需返工处）
+
+1. **计划自查 + 执行期共发现 3 处计划自相矛盾**，均已"先改计划、再施工"：T1 的 `_content`（`isinstance(BaseMessage)`）与假消息类不匹配；T4 的 `config=None` 写法会破坏既有 mock、以及假 dataset 应实现 `evals_iterator` 而非 `__iter__`。三处实现均比计划原稿更正确。
+2. **T7 哨兵改写**：原哨兵只断言构造默认值却在 docstring 声称钉住"不驱动 iterator ⇒ 不评分"（声称大于证据）⇒ 改为两条**实测**事实（未驱动⇒无分；**无 trace 时 loop-detection 静默 0.0 且不报错**）。
+3. **最终评审的 Important 经复核推翻并回退**：为让行为轴判官调用可 `trace_id` 归因，曾加逐题 `judge_evidence.mark()`；复核读 DeepEval 源码证明**行为指标在 `evals_iterator` 耗尽后才评分**（异步路径 `_a_evaluate_traces`），单槽证据桶届时只剩**最后一题**的 id ⇒ 会把所有行为轴判官调用盖成最后一题（**比 `None` 更糟**）⇒ 已回退，并把该边界写进 design **R9**，延后 Phase 3（组 8，可观测性/Langfuse 口径）。**注**：这一误判起于"评分随生成器推进发生"的心智模型 —— 那是**同步**路径的行为，本阶段明确走异步。
+4. **冒烟的 `hook_events = 8` 是混合计数**（玩具 SUT 也建在同一 judge 上）⇒ 已在 `docs/tmp/deepeval-poc/RESULTS.md` 订正：判官走异步的**依据是"判官驱动的两项拿到分"**，不是事件计数。生产路径 SUT(`get_llm`) 与 judge(`build_bridge_judge`) 本就隔离。
+
+### 本阶段**未**证明（勿误当已验）
+
+- **真实 agent 的行为分分布/阈值/NaN 行为**：冒烟用的是**玩具图**（无 KB/检索/精排）⇒ 真 SUT 的全量分布属 Phase 3–4（组 10）。
+- **"单一事件循环 + DB 连接池不跨 loop"在真引擎上的成立**：仅由 Q1 探测（玩具）支撑，真库验证留 Phase 4。
+- **行为轴判官调用的逐题 `trace_id` 归因**：本阶段做不到（见上第 3 条），R9 已记，延后 Phase 3。
+
+### 未勾选（诚实保留）
+
+- **5.1（部分）**：`nest_asyncio` 注释**已补**；但"专门回归测试钉住异步事件循环形态"**未写** —— 异步形态改由运行时 `hook_events > 0` 断言守卫。
+- **5.6**：并发负向验证**未做** —— 且当前**无并发可验**（行为轴循环是串行的）；将来若并行化该循环，须补此测试。
+
+### 遗留 minor（最终评审判定：**无一项需在合并前修**；转交 Phase 3）
+
+T1 `self.name=None`（被 override 掩盖）/ `"bridge-judge"` 字面量未入 `src/config/` / 非 `BaseMessage` 兜底分支无测；T2 `build_behaviour_metrics` 缺 `-> list`；T4 两个新参数缺 Args 文档、`list`/`tuple` 注解偏松；T5 一条用例 fixture 形状、非拒绝边界无测；T6 报告测试未断言分值、hooks 断言只看相位、`_handlers` 未用；T8 5.2 字面形态未单独测、`summarize_trajectory` 未更新 `api_contract.md`（判定 docstring 即恰当归属）、D6 一处措辞。
+另：`generate_answers_and_contexts` 现为**生产死代码**（仅测试用），建议 Phase 3 在文件头注明，避免"哪个是真入口"的困惑。
