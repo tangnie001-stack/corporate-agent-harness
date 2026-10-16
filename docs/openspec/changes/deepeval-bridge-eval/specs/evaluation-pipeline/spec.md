@@ -8,6 +8,8 @@
 
 裁判 SHALL **经项目既有 provider 层构造**（`build_chat("judge", …)`，其 `**overrides` 透传给 `ChatOpenAI`），SHALL NOT 在 `src/` 内直写 `ChatOpenAI` 并硬编码端点 / 密钥。**可核验方式**：审阅裁判构造处，provider 解析（`judge` 角色 → `RAGAS_PROVIDER` / `RAGAS_LLM_MODEL`）SHALL 生效，且无硬编码 base_url / api_key。
 
+**裁判的 HTTP client SHALL 经 `http_async_client` 传入**（含细粒度超时与请求级 hooks），SHALL NOT 只传 `http_client`——ragas 的裁判调用走**异步**，而 langchain 的 `http_client` **只喂同步 client**（`langchain_openai/chat_models/base.py:806`；异步用 `:1273`）⇒ 只传同步字段会让超时与 hooks 双双失效。**可核验方式**：审阅构造实参含 `http_async_client=`。
+
 **思考开关 SHALL 经 `thinking=` 传入**（由 `thinking_extra_body` 按 provider 归一化，`src/infra/llm/provider/thinking.py:8`），SHALL NOT 硬写 provider 专有键（如 `extra_body={"enable_thinking": …}`）——硬写会在非 dashscope 判官上静默失效或 400。
 
 裁判构造 SHALL NOT 传入 `temperature`（温度由 ragas 决定，见下）；报告 SHALL NOT 出现"裁判 temperature=0"的表述。
@@ -45,6 +47,11 @@
 - **WHEN** 审阅裁判构造处
 - **THEN** SHALL 经 `build_chat("judge", …)`（或等效 provider 层入口）构造，且 `src/` 内 SHALL NOT 出现硬编码的裁判端点 / 密钥
 
+#### Scenario: Judge client is bound on the async side
+
+- **WHEN** 审阅裁判构造实参
+- **THEN** SHALL 含 `http_async_client=`（`httpx.AsyncClient`，带 `httpx.Timeout` 与 event hooks），SHALL NOT 只传 `http_client`
+
 #### Scenario: Judge selection is backed by live evidence
 
 - **WHEN** 为 `judge` 角色选定模型
@@ -56,21 +63,18 @@
 
 评测 SHALL NOT 因单个指标失败而丢弃该样本行；SHALL NOT 以 `NaN` 静默代替失败（须与「正常计算出的值」可区分）。
 
-**桥特有条款（`NaN` 分三类，SHALL NOT 混为一谈）**：
+**桥特有条款（`NaN` 只分「掩码」与「非掩码」；**SHALL NOT 设计可归因的子分类**）**：
 
-- **(a) 掩码跳过型**：`empty` 样本的 context 指标被项目主动掩码为 `NaN`（`src/cli/eval_scoring.py:86-89`）。**天然落在 NaN 率分母之外**（`empty` 不属于纯 KB 样本）。
-- **(b) 合法缺值型**：输入合法、指标本身无定义 ⇒ ragas 合法返回 `NaN`，例如 `faithfulness` 在答案**无可校验陈述**（`statements == []`）时（`ragas/metrics/_faithfulness.py:186-192/211`）。
-- **(c) 裁判失败型**：桥调 `ragas.evaluate(...)` 时**未传 `raise_exceptions`**，而 ragas 该参数**默认 `False`**（`ragas/evaluation.py:68/344`），`ragas/executor.py:64-84` 对**任何** `Exception` 都 `return np.nan` ⇒ **超时 / 限流 / 403 / 连接失败 / 输出不可解析**被吞成 `NaN`，且**桥不向上抛异常**。**注意**：`answer_relevancy` 的"生成问题全空"分支（`_answer_relevance.py:118-127`，ragas 自记 `Invalid JSON response…`）属**本类**（输出畸形），**不是** (b)。
+- **(a) 掩码跳过型**：`empty` 样本的 context 指标被项目主动掩码为 `NaN`（`src/cli/eval_scoring.py:86-89`）。**天然不在纯 KB 分母里**（`empty` 不属于纯 KB 样本）⇒ 无需任何归因即被排除。
+- **(b) 指标产出型（合法缺值 **与** 裁判失败混在一起，出口不可区分）**：一方面 ragas 会**合法**返回 `NaN`（`faithfulness` 在答案无可校验陈述时，`ragas/metrics/_faithfulness.py:186-192/211`；`answer_relevancy` 在"生成问题全空"时，`_answer_relevance.py:118-127`）；另一方面桥调 `ragas.evaluate(...)` 时**未传 `raise_exceptions`**、ragas 该参数**默认 `False`**（`ragas/evaluation.py:68/344`），`ragas/executor.py:64-84` 对**任何** `Exception` 都 `return np.nan` ⇒ **超时 / 429 / 403 / 连接失败 / 输出不可解析**等失败也被吞成 `NaN`，且**桥不向上抛异常**。
 
-**(b) 与 (c) 的分类判据 SHALL 显式给定（不可依赖桥返回值）**：桥把每个指标压成**一个 `float`**（`deepeval/metrics/ragas.py:92-97` 的 `scores[name][0]`），(b)/(c) 在该出口**同为 `np.nan`**。故分类 SHALL 依据**框架内部请求级日志**（裁判 `http_client` 上的 event hooks，见「Framework-internal LLM calls are observable by trace id」）：
+**SHALL NOT 依据请求级日志把 (b) 再切成"合法缺值"与"裁判失败"（前稿方案已否决）**：桥把每个指标压成**一个 `float`**（`deepeval/metrics/ragas.py:92-97` 的 `scores[name][0]`），返回值不可判别；而唯一的旁证——HTTP 200 的 OpenAI envelope——**永远是合法 JSON**，主因失败（截断 / 垃圾内容）与"生成问题全空"在 HTTP 层与正常完成**同形**（2xx + `finish_reason=stop`）⇒ 该分类**不可实现**，做了只会把主因失败误判为"合法缺值"而放过（正是本次整改要根除的错）。
 
-- **判为 (c)** ⇔ 该样本该指标的评过程中 hooks 观察到**任一异常调用**（非 2xx、响应体非合法 JSON / 为空、`finish_reason ∉ {stop}`、请求异常），**或**该指标**完全未被 hooks 捕获到任何调用**（观测不可用）。
-- **判为 (b)** ⇔ 至少捕获到**一次正常调用**（2xx + 响应体可解析 + `finish_reason=stop`）且无任何异常证据，而指标仍返回 `NaN`。
-- **无证据时默认归 (c)**：宁可触发重试与计数，也不静默把失败当"合法缺值"（ADR-0024 决策 3/6 的教训）。
+因此评测 SHALL：① 让 `NaN` 显式可见、且**掩码 / 非掩码在报告中标记不同**（SHALL NOT 静默计入均分）；② **单独统计非掩码 `NaN` 计数**并在报告中呈现；③ **以「非掩码 `NaN`」为判据执行有界重试**（`RAGAS_METRIC_MAX_ATTEMPTS` 保留；判据 SHALL NOT 沿用 `except Exception` —— 桥下它永不触发）；**唯一例外：限流类（= HTTP 429 / `openai.RateLimitError`）SHALL NOT 触发外层重试**（ragas 框架层已对该类重试 ≤10 次，见「RAGAS dependency is pinned to the 0.3 line」的复用条款，外层再叠会 10×3 放大；429 可由 hooks 的状态码判定；**403 额度类不属该列**，`openai/_client.py:694/706`，仍由外层重试）；④ 失败留证 SHALL 由**框架内部请求级日志**承载，且该日志 SHALL 记**响应体摘要 + `finish_reason`**（主因失败是 HTTP 200 + 畸形响应体）；**该日志只做留证，SHALL NOT 被当作分类依据**；⑤ 若该日志完全不可用，报告 SHALL **显式标注"请求级日志不可用"**（NaN 率统计不依赖它，故门禁仍可判，但归因能力下降须可见）。
 
-因此评测 SHALL：① 让三类 `NaN` 显式可见、在报告中**标记不同**（SHALL NOT 静默计入均分）；② 单独统计 **(c) 类 `NaN` 计数**并在报告中呈现；③ **以 (c) 类 `NaN`（而非 `except Exception`）为判据执行有界重试**——`RAGAS_METRIC_MAX_ATTEMPTS` 保留，但判据 SHALL NOT 沿用异常；(b) 类合法缺值 SHALL NOT 触发重试；**限流类 (c)（= HTTP 429 / `openai.RateLimitError`，可用 hooks 的状态码判定）SHALL NOT 触发外层重试**（ragas 框架层已对该类重试 ≤10 次，见「RAGAS dependency is pinned to the 0.3 line」的复用条款，外层再叠会 10×3 放大）；**其余 (c)（超时 / 畸形响应 / 403 额度类 / 连接失败）SHALL 由外层重试**（403 额度类**不**属 `RateLimitError`，ragas 不会重试它，故外层重试是唯一一层）；④ 裁判失败的留证 SHALL 由**框架内部请求级日志**承载，且该日志 SHALL 记**响应体摘要 + `finish_reason`**（主因失败是 HTTP 200 + 畸形响应体；**该日志同时充当③的分类依据**），SHALL NOT 依赖 `_judge_failure_note`。
+**接受的代价（明写，勿当 bug）**：合法缺值型 `NaN`（典型为 `faithfulness` 无陈述）会被计入分子、并触发一次有界重试（对该情形是**无收益的浪费**，不是错误）。阈值 10%（76 格允许 7 格）即为吸收该水位而设；首轮全量 SHALL 以实测分布复核该假设。
 
-`NaN`（裁判故障）与样本类别 `empty`（未检索到材料）SHALL 被区分为**两种不同的跳过语义**。
+`NaN`（指标出不来值）与样本类别 `empty`（未检索到材料）SHALL 被区分为**两种不同的跳过语义**。
 
 #### Scenario: A failed metric stays visible on its row
 
@@ -84,28 +88,35 @@
 
 #### Scenario: A bridge NaN stays visible and is counted
 
-- **WHEN** 某样本的某个桥度量因**裁判失败**（（c）类）返回 `NaN`
-- **THEN** 该行 SHALL 携带该失败信息，(c) 类 `NaN` SHALL 被计数，且该值 SHALL NOT 参与主分均值
+- **WHEN** 某纯 KB 样本的某个桥度量返回 `NaN`
+- **THEN** 该行 SHALL 携带该失败信息，该非掩码 `NaN` SHALL 被计数，且该值 SHALL NOT 参与主分均值
 
-#### Scenario: Legal NaN and masked NaN are not counted as judge failures
+#### Scenario: Masked NaN is excluded by the denominator
 
-- **WHEN** 某题 `faithfulness` 因"答案无可校验陈述"返回 `NaN`（（b）类，且有正常调用证据），或某 `empty` 样本的 context 指标被掩码为 `NaN`（（a）类）
-- **THEN** 二者 SHALL NOT 计入 (c) 类 `NaN` 计数，且 SHALL NOT 触发重试
+- **WHEN** 某 `empty` 样本的 context 指标被掩码为 `NaN`
+- **THEN** 该格 SHALL NOT 计入 NaN 率分子/分母（`empty` 不属于纯 KB），且 SHALL 在报告中以**掩码**语义标记（与非掩码 NaN 不同）
+
+#### Scenario: No sub-classification of non-masked NaN is attempted
+
+- **WHEN** 审阅实现
+- **THEN** SHALL NOT 出现"按请求级日志把 NaN 分为合法缺值与裁判失败"的逻辑（该分类不可实现，见上）；非掩码 `NaN` SHALL 一律计入分子并按③重试（429 除外）
 
 #### Scenario: Judge failure and empty sample are distinguishable
 
-- **WHEN** 一行因裁判故障为 `NaN`、另一行因未检索到材料被跳过
+#### Scenario: Judge failure and empty sample are distinguishable
+
+- **WHEN** 一行因指标出不了值（非掩码 `NaN`）、另一行因未检索到材料被掩码
 - **THEN** 两者 SHALL 以不同的标记出现在报告中
 
-#### Scenario: Retry is keyed on the judge-failure NaN
+#### Scenario: Retry is keyed on the non-masked NaN
 
-- **WHEN** 某题某指标首次返回 (c) 类 `NaN`（且非限流类）
-- **THEN** 评测 SHALL 按 `RAGAS_METRIC_MAX_ATTEMPTS` 重试该指标（判据为 (c) 类 `NaN`），SHALL NOT 因"没有异常"而跳过重试
+- **WHEN** 某题某指标首次返回非掩码 `NaN`（且不是限流类 429）
+- **THEN** 评测 SHALL 按 `RAGAS_METRIC_MAX_ATTEMPTS` 重试该指标（判据为非掩码 `NaN`），SHALL NOT 因"没有异常"而跳过重试
 
-#### Scenario: A NaN without hook evidence is treated as a judge failure
+#### Scenario: Rate-limit failure is not retried by the outer layer
 
-- **WHEN** 某题某指标返回 `NaN`，且 hooks **未捕获到任何调用**（观测不可用）
-- **THEN** 该 `NaN` SHALL 归为 (c) 类（计入分子、按需重试），SHALL NOT 被当作 (b) 类合法缺值静默放过
+- **WHEN** 某格的失败证据是 HTTP 429（∈ `openai.RateLimitError`）
+- **THEN** 外层 SHALL NOT 重试该格（ragas 框架层已重试该类 ≤10 次），SHALL NOT 形成 10×3 放大
 
 ### Requirement: Evaluation captures retrieval material with source kind
 
@@ -441,7 +452,8 @@
 
 弃用 0.4.x 时，为现代栈而写的代码与配置 SHALL 被**逐项处置**（复用 / 删除 / 改写），SHALL NOT 留下悬空引用或失义配置。
 
-- **复用**：`RAGAS_JUDGE_MAX_TOKENS` / `RAGAS_JUDGE_THINKING` SHALL 改嫁到 **provider 层 `build_chat("judge", max_tokens=…, thinking=…)`**（`thinking` 经 `thinking_extra_body` 按 provider 归一化），SHALL NOT 硬写 `extra_body={"enable_thinking": …}` 等 provider 专有键；`RAGAS_METRIC_MAX_ATTEMPTS` SHALL 保留（桥无内置重试，判据见「Metric failures」）；`RAGAS_HTTP_TIMEOUT_{CONNECT,READ,WRITE,POOL}` 与 `RAGAS_HTTP_MAX_RETRIES` SHALL 经 `ChatOpenAI` 的 `http_client`（细粒度 `httpx.Timeout`）与 `max_retries=0` 保留——SHALL NOT 因换入口而退化为单值超时或重新打开 **SDK** 重试。
+- **复用**：`RAGAS_JUDGE_MAX_TOKENS` / `RAGAS_JUDGE_THINKING` SHALL 改嫁到 **provider 层 `build_chat("judge", max_tokens=…, thinking=…)`**（`thinking` 经 `thinking_extra_body` 按 provider 归一化），SHALL NOT 硬写 `extra_body={"enable_thinking": …}` 等 provider 专有键；`RAGAS_METRIC_MAX_ATTEMPTS` SHALL 保留（桥无内置重试，判据见「Metric failures」）；`RAGAS_HTTP_TIMEOUT_{CONNECT,READ,WRITE,POOL}` 与 `RAGAS_HTTP_MAX_RETRIES` SHALL 经 **`http_async_client`（`httpx.AsyncClient(timeout=httpx.Timeout(...))`）+ `max_retries=0`** 保留——**SHALL NOT 只传 `http_client`**（ragas 走异步，同步字段不生效，见「Judge client…」条款），SHALL NOT 因换入口而退化为单值超时或重新打开 **SDK** 重试。
+  - **细粒度超时的有效性说明**：超时由该 `AsyncClient` **自带**保证；**SHALL NOT 依赖** ragas 的 `request_timeout` 赋值——它在**构造之后**写 `self.langchain_llm.request_timeout`（`ragas/llms/base.py:337`），而 langchain 的 client 在**构造期**建好（`validate_environment` 是 `@model_validator(mode="after")`，`chat_models/base.py:1140/1154`）⇒ 该赋值对已建 client **无效**。
   - **⚠️ 重试维度的边界（订正，SHALL 如实记录）**：`max_retries=0` **只关掉 OpenAI SDK 的重试**；**ragas 框架层自带重试**——`ragas/llms/base.py:113` 用 `add_async_retry` 包裹每次生成，`ragas/run_config.py:52` 默认 `max_retries=10`（`:89/:110 stop_after_attempt`），且其重试**只针对 `openai.RateLimitError`（= HTTP 429）**（`ragas/llms/base.py:325-335` 的 `set_run_config` 把 `exception_types` 设为 `RateLimitError`）；**桥不暴露 `RunConfig`**（与 `bypass_temperature` "开关存在却无法置真"**同型**）。⇒ SHALL **登记为接受的偏离**，SHALL NOT 在本规格或设计里声称"重试维度已完整保住"；防倍增效的口径见「Metric failures」③（**429 / `RateLimitError` 不触发外层重试**，其余失败类别仍由外层重试）。
 - **删除**：`build_ragas_judge()` / `build_ragas_embeddings()` SHALL 被删除；`build_native_client()` 在确认无其他消费方后 SHALL 被删除。
 - **改写**：`@experiment()` 编排与 `src/cli/eval_scoring.py` 的现代 `build_metrics()` SHALL 被替换；`judge call` / `metric retry` 日志事件的口径 SHALL 随埋点位置变化而重述。
@@ -506,13 +518,13 @@
 
 **分子/分母 SHALL 精确定义（单位是"格"，不是"题"——否则门禁误判）**：
 
-- **分母** = **纯 KB 样本 × 四项指标**（格数）。实测有效纯 KB = **19** 题 ⇒ 分母 **76 格**；`>10%` 即 **>7.6 格 ⇒ ≥8 格**判失败。（**订正**：原稿写"21 题下允许 ≤2 题"，与分母定义**单位不一致**，差约 4 倍，已按格数重述。）
-- **分子** = **仅 (c) 类（裁判失败）**。(a) 掩码类**由分母天然排除**（`empty` 不属于纯 KB）；(b) 合法缺值类**计入分母但不计入分子**。
-- **分类判据**见「Metric failures are explicit, not silently dropped」（**依据框架内部请求级日志的证据**；**无证据默认归 (c)**）。
+- **分母** = **纯 KB 样本 × 四项指标**（格数）。实测有效纯 KB = **19** 题 ⇒ 分母 **76 格**；`>10%` 即 **>7.6 格 ⇒ ≥8 格**判失败。（**订正**：更早一稿写"21 题下允许 ≤2 题"，与分母定义**单位不一致**，差约 4 倍，已按格数重述。）
+- **分子** = **纯 KB 格里的全部 `NaN`**。(a) 掩码类**由分母天然排除**（`empty` 不属于纯 KB）；合法缺值型与裁判失败型**一并计入**——二者在桥出口**不可区分**，`SHALL NOT` 依赖请求级日志做子分类（见「Metric failures are explicit, not silently dropped」）。
+- **接受的代价**：合法缺值型 `NaN` 会被计入分子并触发一次无收益的有界重试；阈值 10% 即为吸收该水位而设，首轮 SHALL 以实测复核。
 
 NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提示；**是否启用由人决定**，启用 SHALL 在台账记录原因与生效轮次。
 
-理由（记明，避免后人"修回"）：阈值过严会让门禁常态失败、过松则失去意义；此条补上风险 R1 里"NaN 进发布门禁无法判定"那个洞。**但依据单薄这一点必须写进规格**，避免后人把"10%"当作经实测标定的数字。**且 `NaN` 并非只有"裁判失败"一种来源**（样本掩码、ragas 合法缺值都会产出 NaN）⇒ 必须按上述口径只统计 (c) 类；三类 NaN SHALL 在报告中可区分，**重试 SHALL 只对 (c) 类触发**（见「Metric failures are explicit」）。
+理由（记明，避免后人"修回"）：阈值过严会让门禁常态失败、过松则失去意义；此条补上风险 R1 里"NaN 进发布门禁无法判定"那个洞。**但依据单薄这一点必须写进规格**，避免后人把"10%"当作经实测标定的数字。**且 `NaN` 的来源不止一种**（掩码 / 合法缺值 / 裁判失败）⇒ 口径按上述"格"定义执行；掩码与非掩码 SHALL 在报告中可区分，**重试 SHALL 对全部非掩码 `NaN` 触发**（429 类除外，见「Metric failures are explicit」）。
 
 #### Scenario: NaN rate within threshold does not fail the gate
 
@@ -565,25 +577,31 @@ NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提�
 
 评测 SHALL 使**框架内部的 LLM 调用**（ragas 桥内部的重试、`answer_relevancy` 的多次生成、DeepEval 行为指标的 judge 调用）在日志中可按该题的 `trace_id` 追溯。
 
-实现手段 SHALL 为：在裁判 `ChatOpenAI` 的 `http_client` 上挂**请求级日志**（httpx event hooks，记录模型 / 耗时 / 状态码 / 请求体摘要 / **响应体摘要 + `finish_reason`**）。`http_client` 本已因细粒度超时而传入（见 D11），故 SHALL 复用它、SHALL NOT 为此另建客户端。**响应体必须记**：主因失败是 HTTP 200 + 畸形响应体，只记请求与状态码会**看不到它**（原 `_judge_failure_note` 正是靠 `finish_reason` / 输出片段区分"空结构"与"截断"）。
+实现手段 SHALL 为：在裁判的 **`http_async_client`**（`httpx.AsyncClient`）上挂**请求级日志**（httpx event hooks，记录模型 / 耗时 / 状态码 / 请求体摘要 / **响应体摘要 + `finish_reason`**）。**SHALL 挂在 `http_async_client` 而非 `http_client`**——ragas 的裁判调用走**异步**，而 langchain 的 `http_client` **只喂同步 client**（`langchain_openai/chat_models/base.py:806`；异步用 `:1273` 的 `http_async_client`）⇒ 挂错字段 hooks **一条都不会响**。该 client 本已因细粒度超时而传入（见 D11 与「0.4.x-era evaluation artifacts」的复用条款），故 SHALL 复用它、SHALL NOT 为此另建客户端。
 
-`trace_id` SHALL 经**显式闭包**绑定进 event hook，SHALL NOT 依赖 contextvar 传递。**理由**：即便 `asyncio.to_thread` 会复制 contextvar，**ragas `evaluate` 内部还会用自己的 `Executor`（线程池）**分发，其 worker 线程**不保证**携带我们的 contextvar ⇒ 深处 hooks 可能读到 `trace_id=None`。
+**hook SHALL 为 `async def` 且以 `await response.aread()` 读体**：异步 client 调用 hook 的形式是 `await hook(response)`（`httpx/_client.py:1697`；同步 client 才是 `hook(response)`，`:982`），传同步 hook 会抛 `TypeError`；同步 `read()` 在异步流上抛 `RuntimeError`（`httpx/_models.py:944`）。
+
+**响应体必须记**：主因失败是 HTTP 200 + 畸形响应体，只记请求与状态码会**看不到它**（原 `_judge_failure_note` 正是靠 `finish_reason` / 输出片段区分"空结构"与"截断"）。
+
+**该日志只做留证**：SHALL NOT 被当作 `NaN` 子分类的依据（该分类不可实现，见「Metric failures are explicit, not silently dropped」）。若该日志不可用，报告 SHALL 显式标注。
+
+`trace_id` SHALL 经**显式闭包**绑定进 event hook（`async def` 内闭包照常成立），SHALL NOT 依赖 contextvar 传递。**理由**：即便 `asyncio.to_thread` 会复制 contextvar，**ragas `evaluate` 内部还会用自己的 `Executor`（线程池）**分发，其 worker 线程**不保证**携带我们的 contextvar ⇒ 深处 hooks 可能读到 `trace_id=None`。**且**裁判 client 是每轮构造一次、跨样本复用 ⇒ 闭包 SHALL 绑到**可变证据桶**而非固定 `trace_id`（评分已串行，并发=1，形态安全）。
 
 评测 SHALL NOT 以"框架内部调用不可见"为可接受状态——本次整改的根因（退化输出、超时、NaN）正发生在该层。
 
-**验收范围（明写）**：本条只覆盖**经我们提供的 `http_client` 发出的 LLM 请求**；SHALL NOT 声称覆盖框架内更深、不经该 client 的调用。行为指标的 **DeepEval span 树**仍不进日志（见 design D9 边界①）。
+**验收范围（明写）**：本条只覆盖**经我们提供的 `http_async_client` 发出的 LLM 请求**；SHALL NOT 声称覆盖框架内更深、不经该 client 的调用。行为指标的 **DeepEval span 树**仍不进日志（见 design D9 边界①）。
 
 #### Scenario: Internal calls carry the question's trace id
 
 - **WHEN** 某题的裁判调用在框架内部发生（含重试与多次生成）
 - **THEN** 对应日志行 SHALL 携带该题的 `trace_id`
 
-#### Scenario: The logging hook rides on the existing http client
+#### Scenario: The logging hook rides on the async client used for the timeout
 
 - **WHEN** 审阅裁判客户端构造处
-- **THEN** 请求级日志 SHALL 挂在用于细粒度超时的同一个 `http_client` 上
+- **THEN** 请求级日志 SHALL 挂在用于细粒度超时的**同一个 `http_async_client`**（`httpx.AsyncClient`）上，且 hook SHALL 为 `async def`；SHALL NOT 只挂在 `http_client`（同步路径，ragas 走异步、hooks 不会触发）
 
 #### Scenario: A malformed 200 response is diagnosable from the logs
 
 - **WHEN** 裁判返回 HTTP 200 但响应体畸形（空结构 / 截断）
-- **THEN** 请求级日志 SHALL 含**响应体摘要与 `finish_reason`**，使该失败模式可从日志定位（SHALL NOT 只记请求体 / 状态码）
+- **THEN** 请求级日志 SHALL 含**响应体摘要与 `finish_reason`**，使该失败模式可从日志定位（SHALL NOT 只记请求体 / 状态码）；**该日志仅用于定位**，SHALL NOT 被用来把该 `NaN` 归成"合法缺值"
