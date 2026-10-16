@@ -73,11 +73,11 @@
 
 ## 4. 可观测与文档同步
 
-- [ ] 4.1 补 `embedding` / `rerank` **单阶段耗时**（现有 `retrieve done` 只有合计，无法为二者单独定值）；请求级总耗时可选。
+- [x] 4.1 补 `embedding` / `rerank` **单阶段耗时**（现有 `retrieve done` 只有合计，无法为二者单独定值）；请求级总耗时可选。
 - [x] 4.2 **对照实测**：本地真实调用 20~50 次取分位，回填 `design.md` D11 取值表的「待校准」项。
 
 > **P4 4.2 实测结论（2026-10-16，控制方自跑；原始记录见 `.superpowers/sdd/2026-10-16-timeout-and-degradation-p4/p4-measurement.md`）**：本机 30 次真实请求（10 次开思考）已取分位并回填 D11 —— **结论是「维持现值」**，因此 D11 的「待校准」被替换为「本机实测余量表 + 生产分位仍待」，而**不是**收紧数值。最要紧的三个余量：流间隔档约 2.2 倍（非思考最大 13.7 秒 vs 30 秒；思考最大 26.71 秒 vs 60 秒）、精排内层约 2.3 倍（p99 2177 毫秒 vs 5 秒，且**含重试预算**）、embedding 查询档约 42 倍（p99 360 毫秒 vs 15 秒）。**仍无实测支撑的项已如实标注**：`classify` / `summary`（`model turn` 不带 role，且二者都不落该事件 ⇒ 本机测不出，保留保守值）、`embedding` 入库档（本机未入库）。**口径局限**：首字节由「首事件延迟」近似（非整轮）、流间隔由**日志时间戳相减**得到（墙钟口径，WSL 有偶发前推墙钟 ⇒ 只作下界参考）、且本机为**单机 idle 无并发**（生产只会更大）。
-- [ ] 4.3 文档同步：`best-practices.md` §11 四行状态；`requirements_pool.md` A-03 / A-05 收尾；若新增 env ⇒ **两份模板都要改**（`.env.template` + `.env.example`）；`deploy-runbook.md` 若涉及运维动作。**另须登记 `docs/agents/logging-rules.md` 的「非代码可读的值域」**（先例：`agent resolved` 的 `source`、`rerank done` 的 `scored`）：`dense_status` / `sparse_status`（`ok`/`empty`/`failed`）与各降级 `reason` 取值集合（第三轮 I3 —— 此前漏登记）。
+- [x] 4.3 文档同步：`best-practices.md` §11 四行状态；`requirements_pool.md` A-03 / A-05 收尾；若新增 env ⇒ **两份模板都要改**（`.env.template` + `.env.example`）；`deploy-runbook.md` 若涉及运维动作。**另须登记 `docs/agents/logging-rules.md` 的「非代码可读的值域」**（先例：`agent resolved` 的 `source`、`rerank done` 的 `scored`）：`dense_status` / `sparse_status`（`ok`/`empty`/`failed`）与各降级 `reason` 取值集合（第三轮 I3 —— 此前漏登记）。
 - [ ] 4.4 **新 ADR 建档**：在 `deepeval-bridge-eval` 之后取得可用编号（它已计划用新 ADR 取代 ADR-0024），且须与 `docs/adr/README.md` 索引**同一提交**（`check_adr` 要求编号连续）。
 
 ## 5. 遗留登记（不属本变更，须登记不丢）
@@ -87,3 +87,5 @@
 - [ ] 5.3 **告警出口** → 已登记需求池 `H-12`（方向：阿里云 Grafana + 阿里云日志 SLS）
 - [ ] 5.4 `src/cli/symptom_metrics.py` 是否扩为耗时统计（现只统计 iteration limit / 检索次数 / `answer_len`）
 - [ ] 5.5 **403 的额度 / 鉴权判别（含响应体取证）** → 归评测链 `deepeval-bridge-eval`（其 hooks 证据机制可读状态码/响应体）；本变更按**单一文案** `provider_unavailable` 落地；若它给出**可复用判据**，再回来把该行拆成两行并各自配文案
+
+- [ ] 5.6 **两份 env 模板的存量缺口**（**不属本变更**，2026-10-16 用差集实测出来）：`src/config/settings.py` 引用 **124** 个 env 键，而 `.env.template` 只出现 89 个（缺 **67**）、`.env.example` 只出现 84 个（缺 **73**）—— 缺的多数**有内置默认**（故不影响启动），但会让人以为「这些键不存在」。本变更只补了**自己新增的 16 个键**（两份模板各 +1 段），**存量缺口未动**（那会带来 60+ 键的未评审 diff）。⇒ 建议单开一次「模板与 settings 对齐」的清理。
