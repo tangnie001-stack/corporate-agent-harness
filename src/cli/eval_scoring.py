@@ -21,29 +21,39 @@ from src.rag.context import RAGContext
 
 
 def build_metrics(judge, embeddings) -> dict:
-    """构造现代 collections 五指标实例（口径与 legacy 对齐，design D3）。
+    """构造 DeepEval RAGAS 桥的**经典四项**（design D2）。
+
+    只用单项、不用聚合：聚合 `RagasMetric` 在源码里是 5 项算术平均（含
+    `ContextualEntitiesRecall`），与官方文档写四项不一致 ⇒ 口径不可控。
 
     Args:
-        judge: 现代裁判 LLM（`llm_factory` 产物）
-        embeddings: 现代 embeddings（`embedding_factory` 产物）
+        judge: langchain `BaseChatModel`（桥要求）
+        embeddings: langchain Embeddings（`answer_relevancy` 唯一需要）
 
     Returns:
-        指标名 -> 指标实例（顺序即评估顺序）
+        指标名 -> 桥度量实例；**顺序即串行评分顺序**
     """
-    from ragas.metrics.collections import (
-        AnswerCorrectness,
-        AnswerRelevancy,
-        ContextPrecision,
-        ContextRecall,
-        Faithfulness,
+    # 确保 DEEPEVAL_* 兜底先于 deepeval 被 import（顺序即语义，故禁用 isort 重排）
+    # isort: off
+    import src.config.settings  # noqa: F401
+    from deepeval.metrics.ragas import (
+        RAGASAnswerRelevancyMetric,
+        RAGASContextualPrecisionMetric,
+        RAGASContextualRecallMetric,
+        RAGASFaithfulnessMetric,
     )
+    # isort: on
+
+    if embeddings is None:
+        raise AssertionError("answer_relevancy 需要显式 embeddings（不得为 None）")
 
     return {
-        "faithfulness": Faithfulness(llm=judge),
-        "answer_relevancy": AnswerRelevancy(llm=judge, embeddings=embeddings),
-        "context_precision": ContextPrecision(llm=judge),
-        "context_recall": ContextRecall(llm=judge),
-        "answer_correctness": AnswerCorrectness(llm=judge, embeddings=embeddings),
+        "faithfulness": RAGASFaithfulnessMetric(model=judge),
+        "answer_relevancy": RAGASAnswerRelevancyMetric(
+            model=judge, embeddings=embeddings
+        ),
+        "context_precision": RAGASContextualPrecisionMetric(model=judge),
+        "context_recall": RAGASContextualRecallMetric(model=judge),
     }
 
 

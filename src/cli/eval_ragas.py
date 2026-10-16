@@ -823,7 +823,6 @@ def main() -> None:
         from src.infra.db.engine import run_and_dispose
         from src.infra.db.vector_store import VectorStore
         from src.infra.llm.prompt_manager import PromptManager
-        from src.infra.llm.provider import factory as _llm_factory
         from src.models import get_judge_llm, get_llm, get_rerank
 
         core_logging.log_event(Event.RAG_COMPONENT_INIT)
@@ -841,11 +840,15 @@ def main() -> None:
             sut=settings.LLM_MODEL,
             judge=judge_llm.model_name,
         )
-        # 裁判与 embeddings 走现代 RAGAS 工厂：采样策略（temperature=0、不发
-        # top_p）与显式超时已在 build_ragas_judge / build_ragas_embeddings 内落定。
+        # 裁判走 provider 层桥工厂（langchain chat model + http_async_client 细粒度
+        # 超时 + 请求级观测），embeddings 复用既有 build_embeddings()；证据桶跨题复用，
+        # 每题的 mark/reset 在 score_rows 内做。
+        from src.infra.llm.provider.factory import build_bridge_judge, build_embeddings
+        from src.infra.llm.provider.http_observability import HookEvidence
+
+        judge_evidence = HookEvidence()
         metrics = build_metrics(
-            _llm_factory.build_ragas_judge(),
-            _llm_factory.build_ragas_embeddings(),
+            build_bridge_judge(evidence=judge_evidence), build_embeddings()
         )
 
         # 构建 LangGraph
