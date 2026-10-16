@@ -26,6 +26,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 from importlib.metadata import version
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -33,10 +34,13 @@ from langfuse.decorators import langfuse_context, observe
 
 from src.cli.eval_scoring import (
     apply_sample_masks,
+    assert_behaviour_scores_complete,
+    build_behaviour_metrics,
     build_metrics,
     classify_sample,
     main_score_means,
     nan_cell_stats,
+    read_behaviour_scores,
     retrieval_coverage,
     summarize_trajectory,
     write_scores,
@@ -689,6 +693,45 @@ def _build_markdown_table(
     return lines
 
 
+def _build_behaviour_section(behaviour_rows: list[dict]) -> list[str]:
+    """渲染「Agent 行为轴」段：逐题 input + 各行为指标分。
+
+    行为轴仅作诊断观测、**不进主分/门禁**；指标列按首次出现顺序收集
+    （各题可能因裁判失败缺某些指标，缺失记为 N/A）。无任何指标名时
+    返回空列表（不写段）。
+
+    Args:
+        behaviour_rows: 逐题行为分（见 eval_scoring.read_behaviour_scores 返回形状）
+
+    Returns:
+        Markdown 行列表（含段标题与表格）
+    """
+    metric_names: list[str] = []
+    for row in behaviour_rows:
+        for name in row.get("metrics") or {}:
+            if name not in metric_names:
+                metric_names.append(name)
+    if not metric_names:
+        return []
+
+    lines = ["## Agent 行为轴", ""]
+    lines.append("> 行为轴仅作诊断观测，**不进主分/门禁**。")
+    lines.append("")
+    header = ["Question"] + metric_names
+    lines.append("| " + " | ".join(header) + " |")
+    lines.append("|" + "|".join("---" for _ in header) + "|")
+    for i, row in enumerate(behaviour_rows):
+        vals = [str(row.get("input") or f"Q{i + 1}")]
+        for name in metric_names:
+            value = (row.get("metrics") or {}).get(name)
+            if isinstance(value, (int, float)):
+                vals.append(f"{value:.4f}")
+            else:
+                vals.append("N/A")
+        lines.append("| " + " | ".join(vals) + " |")
+    return lines
+
+
 def save_markdown_report(
     result: Any,
     questions: list[str],
@@ -697,6 +740,7 @@ def save_markdown_report(
     trace_ids: list[str] | None = None,
     trajectories: list[dict] | None = None,
     report_meta: dict | None = None,
+    behaviour_rows: list[dict] | None = None,
 ) -> str:
     """将评估结果保存为 Markdown 摘要报告，与 CSV 同路径（.md 后缀）.
 
@@ -715,6 +759,9 @@ def save_markdown_report(
             传入后新增 trajectory 列（JSON 字符串）
         report_meta: 报告元数据（见 build_report_meta），传入后在报告头写入
             口径版本 / 裁判 / 温度档 / 版本 / NaN 计数
+        behaviour_rows: 逐题行为分（见 eval_scoring.read_behaviour_scores），
+            传入后在报告末尾追加「Agent 行为轴」段；该轴仅作诊断观测，
+            **不进主分/门禁**
 
     Returns:
         实际写入的 .md 文件路径
@@ -771,6 +818,10 @@ def save_markdown_report(
     avg_parts = ", ".join(f"{m}={means[m]:.4f}" for m in actual_metrics if m in means)
     lines.append(f"**Main scores (pure-KB):** {avg_parts}")
     lines.append("")
+
+    if behaviour_rows is not None:
+        lines.extend(_build_behaviour_section(behaviour_rows))
+        lines.append("")
 
     os.makedirs(os.path.dirname(md_path) or ".", exist_ok=True)
     content = "\n".join(lines)
@@ -937,6 +988,7 @@ def main() -> None:
         # 超时 + 请求级观测），embeddings 复用既有 build_embeddings()；证据桶跨题复用，
         # 每题的 mark/reset 在 score_rows 内做。桥裁判全程唯一实例：EVAL_MODEL_INIT
         # 日志与报告元数据（judge_model）均取自它，不再构造 temperature=0 的旧裁判。
+        from src.infra.llm.provider.deepeval_llm import BridgeDeepEvalLLM
         from src.infra.llm.provider.factory import build_bridge_judge, build_embeddings
         from src.infra.llm.provider.http_observability import HookEvidence
 
@@ -948,6 +1000,13 @@ def main() -> None:
             sut=settings.LLM_MODEL,
             judge=bridge_judge.model_name,
         )
+
+        # 行为轴：BridgeDeepEvalLLM 复用 provider 层裁判（细粒度超时 + 请求级 hooks），
+        # 行为指标按 T2 三项构造；behaviour_out 用与报告同源的 timestamp 建独立目录，
+        # 分数事后从 test_run_*.json 回读（eval loop 用副本，metric.score 恒 None）。
+        behaviour_eval_llm = BridgeDeepEvalLLM(bridge_judge)
+        behaviour_metrics = build_behaviour_metrics(behaviour_eval_llm)
+        behaviour_out = str(Path(settings.RAGAS_REPORT_DIR) / f"behaviour_{timestamp}")
 
         # 构建 LangGraph
         prompt_manager = PromptManager()
@@ -962,11 +1021,14 @@ def main() -> None:
             chunks = await vector_store.get_all_chunks(kb_id)
             if not chunks:
                 return None
-            return await generate_answers_and_contexts(
+            return await generate_answers_and_contexts_with_behaviour(
                 graph,
                 kb_id,
                 session_id,
                 questions,
+                ground_truth,
+                behaviour_metrics,
+                behaviour_out,
             )
 
         core_logging.log_event(Event.VECTOR_STORE_CHECK, kb_id=kb_id)
@@ -983,9 +1045,21 @@ def main() -> None:
             retrieval_details,
             sample_classes,
             trajectories,
+            _handlers,
         ) = generated
         # 生成段结束即 flush：--gate 路径会提前 sys.exit，晚 flush 等于丢数据
         flush_tracing()
+
+        # 行为分事后回读 + fail-loud（题数/分数对齐、轨迹非空、hooks 确实触发）。
+        # hooks 断言必须在 run_evaluation 之前：score_rows 会逐题 reset 证据桶，
+        # 晚查会因 events 被清空而误判「未触发」。
+        behaviour_rows = read_behaviour_scores(behaviour_out)
+        assert_behaviour_scores_complete(questions, behaviour_rows, trajectories)
+        if not any(e.get("phase") == "response" for e in judge_evidence.events):
+            raise RuntimeError(
+                "行为轴 hooks 未触发：judge_evidence 无 response 事件"
+                "（可能走了同步分支，行为分不可信）"
+            )
 
         result = run_evaluation(
             questions,
@@ -1035,6 +1109,7 @@ def main() -> None:
             trace_ids=trace_ids,
             trajectories=trajectories,
             report_meta=report_meta,
+            behaviour_rows=behaviour_rows,
         )
 
         # 行序契约：write_scores 按 enumerate 下标把 masked_df 第 i 行写到
