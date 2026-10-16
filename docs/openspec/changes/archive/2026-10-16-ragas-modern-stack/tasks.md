@@ -7,7 +7,7 @@
 
 ## 执行档
 
-- [ ] **单一计划到底**：`docs/superpowers/plans/2026-10-14-ragas-modern-stack.md`（实施时创建）
+- [x] **单一计划到底**：`docs/superpowers/plans/2026-10-14-ragas-modern-stack.md`（实施时创建）
   - **分组（按 design.md「Migration Plan」）**：
     - **G1 裁判构造 + 失败语义**（D6/D9/D2）：按角色集中构造 native client（`temperature=0` / 不发 `top_p` + 显式超时）；失败记 `error`（**只进 CSV/MD，stdout 形状不变**）。
     - **G2 执行内核迁移**（D1/D4/D5）：`@experiment` + `collections`；`Dataset` 用 **`inmemory`**；**行级**信号量 `RAGAS_EVAL_CONCURRENCY=5`；产出层改读新表结构；**验收通过后删除 legacy 路径**。
