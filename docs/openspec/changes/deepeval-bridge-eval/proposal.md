@@ -27,18 +27,16 @@
 
 ### Modified Capabilities
 
-- `evaluation-pipeline`：① **ADD** 评测打分入口与指标来源（入口 = DeepEval；RAGAS 指标 = 经典四指标经桥调用）；② **REMOVE** 答案正确性指标（`answer_correctness` 退出）；③ **MODIFY** 主分口径与门禁阈值（换尺子 → 重标定）；④ **ADD** Agent 行为指标（DeepEval 原生 agentic 族；**轨迹走官方 `CallbackHandler`**，并要求"轨迹非空"fail-loud）；⑤ **MODIFY** 评测运行环境与依赖（`ragas==0.3.9` + deepeval + 两个 DeepEval 环境变量）；⑥ **MODIFY** QA 出题路的调用状态（代码保留、调用下线 + `--generate` 硬护栏）；⑦ **ADD** 0.4.x 遗留物（现代栈代码 / 配置 / 测试 / ADR）的**显式处置**（复用 / 删除 / 改写，不留悬空引用）；⑧ **ADD** Langfuse v2 回写口径（自建通道 / 行为分一并回写 / NaN 不写 / 新 score 名带口径后缀）；⑨ **ADD** NaN 门禁阈值（≤5%）与逃生门自动判定；⑩ **ADD** 对官方两处推荐路径的**偏离记录**（自建门禁、`to_thread` 并发）。
-
-> 具体 delta 文本（`specs/evaluation-pipeline/spec.md`）与 `tasks.md` 在下一轮产出；本次先定 proposal 与 design。
+- `evaluation-pipeline`：① **ADD** 评测打分入口与指标来源（入口 = DeepEval；RAGAS 指标 = 经典四指标经桥调用，且**评分串行**）；② **REMOVE** 答案正确性指标（`answer_correctness` 退出）；③ **MODIFY** 主分口径与门禁阈值（换尺子 → 重标定 + 空窗期用 `--no-gate`）；④ **ADD** Agent 行为指标（DeepEval 原生族；**须由 `EvaluationDataset.evals_iterator` 驱动**、分数从 `test_run_*.json` 回读、"轨迹非空且取到分"否则 fail-loud；**行为轴不进主分/门禁**）；⑤ **MODIFY** 评测运行环境与依赖（`ragas==0.3.9` + deepeval + 两个 DeepEval 环境变量，**含回滚路径**）；⑥ **MODIFY** QA 出题路的调用状态（代码保留、调用下线 + `--generate` 硬护栏 + 前迁路径）；⑦ **ADD** 0.4.x 遗留物的**显式处置**（复用 / 删除 / 改写）；⑧ **ADD** Langfuse v2 回写口径（自建通道 / 行为分一并回写 / NaN 不写 / 新 score 名带口径后缀）；⑨ **ADD** NaN 门禁判据（**经验初值 5% / 待首轮复核**）与逃生门自动判定；⑩ **ADD** 对官方两处推荐路径的**偏离记录**（自建门禁、**串行评分**）。
 
 ## Impact
 
 - **代码**：`src/cli/eval_ragas.py`（打分阶段从 modern `@experiment` 改为 DeepEval 度量对象）；`src/cli/eval_scoring.py`（`build_metrics` 从 modern collections 改为桥的度量构造；`apply_sample_masks` / `main_score_means` 口径需随指标名与 NaN 语义调整）；`src/cli/eval_ragas_generate.py`（**仅**去调用，代码保留）。
 - **0.4.x 遗留清理（本次**新增**范围，见 design D11）**：删 `build_ragas_judge()` / `build_ragas_embeddings()`（`src/infra/llm/provider/factory.py:132/169`）与（核引用后）`build_native_client()`；删/改写 `_EvalResult` / `_score_metrics` / `_score_metric_with_retry` / `_exc_chain_summary` / `_judge_failure_note`；**复用** `RAGAS_JUDGE_MAX_TOKENS` / `RAGAS_JUDGE_THINKING` / `RAGAS_HTTP_TIMEOUT_*` / `RAGAS_HTTP_MAX_RETRIES` / `RAGAS_METRIC_MAX_ATTEMPTS`（改嫁到 `ChatOpenAI` 的 `max_tokens` / `extra_body` / `http_client`(细粒度 `httpx.Timeout`) / `max_retries=0`——已抓包证实透传、已核字段存在，**ADR-0024 的两项收益完整保住**）；删/重写 `tests/cli/test_eval_modern_stack.py`、`test_metric_retry.py`、`tests/infra/llm/provider/test_ragas_modern_factories.py`、`test_native_client.py`。
 - **文档**：**追加新 ADR** 取代 `docs/adr/0024-ragas-judge-client-policy.md` 的裁判 client 政策，并在旧 ADR 的 Status 加**反向指针** + 更新 ADR 索引；`docs/agents/logging-rules.md` 的 `judge call` / `metric retry` 事件口径随埋点位置重述。
-- **依赖**：新增 `deepeval`（4.2.9 量级）；`ragas` 由 **0.4.3 → 0.3.x**；连带 `click`、`huggingface_hub` 下移（见 design D1）。**这是本次唯一的"不可逆"动作**（`pyproject.toml` 的 pin 要改）。
-- **数据**：`eval_report` 表的指标列与 `detail_json` 口径随指标名/阈值变；`data/ragas/reports/` 旧报告**不再作为基线**。
+- **依赖**：新增 `deepeval`（4.2.9 量级）；`ragas` 由 **0.4.3 → 0.3.9**；连带 `click`、`huggingface_hub` 下移（见 design D1）。**这是本次唯一的"不可逆"动作**（`pyproject.toml` 的 pin 要改）⇒ **必须写明回滚路径**（恢复 `ragas==0.4.3` + `datasets==4.0.0`，并同时放弃 deepeval 与行为轴；触发条件见 design D1）。
+- **数据**：**`eval_report` 表无 schema 迁移**（订正：该表**本就无** `answer_correctness` 列，且已有四列正是经典四指标——见 `src/infra/db/models/eval_report.py`）。会随指标名/阈值变的是 `detail_json` 口径与报告；`data/ragas/reports/` 旧报告**不再作为基线**。
 - **行为**：门禁阈值必须在重跑后重新标定；报告与台账的指标名从"现代五指标"变为"经典四指标 + agentic 族"。
 - **观测**：**DeepEval 无 Langfuse 集成**（其 Integrations 清单不含 Langfuse；Langfuse 侧那份配方用的是 v3/v4 API，与本项目自托管 v2 不匹配），故回写沿用**项目自建通道**（`langfuse_context.client_instance` + `client.score`）；**行为轴指标一并回写**；`NaN` **不写**（SHALL NOT 以 `0` 代替）；新口径 score 名**带后缀**（如 `faithfulness@bridge-0.3.x`），不与历史同名覆盖。
-- **被测图侵入面**：评测路径在 `graph.ainvoke` 的 `config.callbacks` 挂官方 `CallbackHandler`（行为指标**唯一被支持**的轨迹入口）；生产链路不动。`Golden` / `evals_iterator` 在基本路径上不需要。
+- **被测图侵入面**：行为轴要求被测图标配 `EvaluationDataset.evals_iterator(...)` 驱动的循环，并在循环体内 `graph.ainvoke(..., config={"callbacks": [CallbackHandler()]})`（**handler 不挂 metrics**）；生产链路不动。**订正**：原文"`Golden` / `evals_iterator` 在基本路径上不需要"**是错的**——`evals_iterator` 是**必需**的驱动（实测只挂 handler 时 `metric.score=None`）。
 - **不改**：Agent 图与生产链路（`src/agents/**`）、`kb_eval` API 的形状、前端。

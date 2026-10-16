@@ -28,11 +28,11 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
 出题          --generate（已下线，代码保留）        不变
 ────────────────────────────────────────────────────────────────
 ① Agent 跑题  graph.ainvoke 逐题                  graph.ainvoke 逐题
-              每题一个 eval_<hex>                 ＋ config.callbacks 挂 CallbackHandler
-                                                  ⇒【行为轴在此 inline 产出】
+              每题一个 eval_<hex>                 ＋ config.callbacks 挂 CallbackHandler()
+                                                  ↳ 但**必须由 evals_iterator 驱动**才评分（见 D6）
 ────────────────────────────────────────────────────────────────
-② 裁判        第二遍：5 指标逐行 ascore            第二遍：**只剩四指标**（桥 measure + to_thread）
-              行级并发 5                          ⚠️ 行为指标**不在这一遍**
+② 裁判        第二遍：5 指标逐行 ascore            第二遍：**只剩四指标**（桥 measure，**串行**）
+              行级并发 5                          ⚠️ 行为指标**不在这一遍**（在①由 evals_iterator 评掉）
 ────────────────────────────────────────────────────────────────
 ③ 报告/落库/回写/门禁   不变                       不变（＋口径后缀、NaN 阈值）
 ```
@@ -59,13 +59,20 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
 
 ## Decisions
 
-### D1 环境与依赖：弃用 0.4.x 恰好解掉一个依赖死结
+### D1 环境与依赖：**为统一单环境而主动下移**（原"click 死锁"表述已订正）
 
-- **事实 A**：`deepeval 4.2.9 + ragas 0.4.3` **不可解析**（`ResolutionImpossible`）。链路：`ragas 0.4.3 → datasets → huggingface_hub(1.27.0) → click>=8.4.2`，而 `deepeval → click<8.4.0`，**交集为空**。
-- **事实 B**：`deepeval 4.2.9 + ragas 0.3.9` **可解析**（落到 `click-8.3.3` / `huggingface_hub-1.16.1`，`pip check` 无新增冲突）。**实测已在项目 venv 上装成功**。
-- **决策**：项目内 ragas 固定 **0.3.x**（与 deepeval 共存），并在 `pyproject.toml` 显式记录 `click` / `huggingface_hub` 的既有下限，避免下次解析又飘回 8.4.2 一侧。
-- **运行期环境变量（必设，官方明文）**：`DEEPEVAL_DISABLE_DOTENV=1` —— DeepEval **import 时即自动加载** `.env` / `.env.local` 并写入 process env，会污染本项目的配置解析；`DEEPEVAL_TELEMETRY_OPT_OUT=1` —— 否则 `posthog` 遥测开启。两者均在官方 `environment-variables` 文档与源码中明写。
-- **代价**：这是一次**不可逆的依赖下移**（0.4.x 起 `ragas.testset.transforms.default.default_transforms_for_prechunked` 不存在，见 D8）。
+- **事实 A（原表述作废）**：原写的"`deepeval 4.2.9 + ragas 0.4.3` → `ResolutionImpossible`，**click 交集为空**"**不成立**。两点订正：
+  1. 原证据是**循环论证**——当时那次 dry-run **显式 pin 了 `click==8.4.2`**（正是 deepeval 禁止的值），必然失败；
+  2. **wheel METADATA 反证**：`datasets 4.0.0` 只要求 `huggingface-hub>=0.24.0`，而 `huggingface_hub 0.24.0` **不依赖 click**、`1.16.1` 也不要求 `click>=8.4.2` ⇒ **存在满足全部约束的赋值**。
+  ⇒ 准确表述：**在项目完整 pin 集下，pip 在默认策略下无法在合理时间内解析出该组合**（独立评审实测：裸装 dry-run 90s 超时、加约束变体 150s 超时，均为 `exit 124`），**不是"数学上不可能"**。
+- **事实 B**：`deepeval 4.2.9 + ragas 0.3.9` **可解析且已实装成功**（落 `click-8.3.3` / `huggingface_hub-1.16.1`）。
+- **决策（理由改写）**：项目内 ragas 固定 **`0.3.9`**，并在 `pyproject.toml` 显式记录 `click` / `huggingface_hub` 下限。理由 = **"为统一单环境而主动下移"**（评测与抓取/拼装共用一条依赖线、避免双栈），**而不是**"被 click 死锁逼迫"。
+- **回滚（原缺，必写）**：**回滚 = 恢复 `ragas==0.4.3` + `datasets==4.0.0` 的 pin，并同时放弃 `deepeval` 与行为轴**（桥与行为指标都依赖 deepeval）。
+  - **触发条件**（任一）：① 实施中发现桥的 NaN 率 >5% 且逃生门不可行；② D6 的 `evals_iterator` 路径在 `ainvoke` 下被证实不可用且无替代。
+  - 触发时 SHALL 在台账记录原因与"回到的口径版本"。
+  - **不做"只回滚 ragas、保留 deepeval"**：两者共存正是本次下移的前提，拆开会让依赖线回到"装不上"。
+- **运行期环境变量（必设，官方明文）**：`DEEPEVAL_DISABLE_DOTENV=1`（import 即加载 `.env`/`.env.local` 进 process env）与 `DEEPEVAL_TELEMETRY_OPT_OUT=1`（否则 posthog 遥测开启）。
+- **代价**：依赖下移（0.4.x 起 `ragas.testset.transforms.default.default_transforms_for_prechunked` 不存在，见 D8）。
 
 ### D2 入口与调用面：用桥的四个"单项"，不用聚合
 
@@ -81,10 +88,12 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
   - **`answer_relevancy` → 0.3**（legacy `_answer_relevance.py:142-143` 传 `n=self.strictness`，`strictness` 默认 **3**；`generate_multiple` 的 ragas-LLM 分支把 `n` 透传，`temperature=None` → `get_temperature(3)=0.3`）。
 - **为什么 0.01 是可接受的**：0.01 ≈ 确定性，同时**避开部分供应商对 `temperature=0` 的特殊逻辑**（社区既有此实践）。0.3 对 `answer_relevancy` 是**有意**的——该指标需要"生成多个多样化问题再取均值"，压到 0 会退化。
 - **必须写的代价**：温度**不受我们控制**，且**按指标分档**；`answer_relevancy` 那一项的分数稳定性天然低于其余三项。
+- **订正（原文档把同步/异步标反了，且结论随之变化）**：`bypass_temperature` 的检查出现在 **`agenerate_text`（异步，`ragas/llms/base.py:269` 起，判断在 `:281`）**，而 **`generate_text`（同步，`:217` 起）不检查**——原文写成"同步尊重、异步漏判"，**正好相反**。
+  - **实用后果**：桥走的是 `measure()` → **同步**路径 ⇒ **`bypass_temperature` 对我们原本就无效**（不是"可用但异步失效"）。故 D2 的"接受 ragas 分档温度"是**唯一选项**，不存在"用该开关拿回 0"的退路。**可核验方式**：读 `base.py` 的这两个方法体，确认检查语句落在 `agenerate_text` 内。
 
 ### D4 两个已知坑（必须显式处理，否则门禁不可判）
 
-1. **默认模型坑**：桥的 `model` 默认是 `"gpt-3.5-turbo"`（6 处），该模型**已停服**（DeepEval issue #3404）。→ **每一个度量构造都必须显式传 `model=`**，并在测试里加断言防止回退。
+1. **默认模型坑**：桥的 `model` 默认是 `"gpt-3.5-turbo"`（**7 处**，已 `grep -c` 核实；原文写"6 处"有误），该模型**已停服**（DeepEval issue #3404）。→ **每一个度量构造都必须显式传 `model=`**，并在测试里加断言防止回退。
 2. **NaN 坑**：官方 FAQ 原文——*"`ragas` returns `NaN` when the model emits invalid JSON, and `RagasMetric` wraps it directly."* → 桥**不提供 NaN 保护**。设计上要求：
    - NaN **显式可见**（写入报告的 `error`/`skipped` 语义，不得静默参与均分）；
    - 主分聚合**排除 NaN 行**，并单独统计 NaN 计数；
@@ -100,35 +109,56 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
 
 - 注意两项口径变化：① `answer_relevancy` 走 **0.3 温度 + 3 个生成问题**；② 桥的 `context_precision` 判据是"该 chunk 是否相关"（定位为评 reranker 排序），与 0.4.x 的"是否有助于得到 reference"**不完全等价**。
 
-### D6 Agent 行为轴（DeepEval 原生；**轨迹必须走官方 `CallbackHandler`**）
+### D6 Agent 行为轴（DeepEval 原生；**必须走 `evals_iterator`，分数从 test_run JSON 回读**）
+
+> ⚠️ 本节经 **1 题 spike 实测**改写，**推翻了本决策此前两处写法与一处引用**（见下"作废记录"）。
 
 - 候选：`task_completion` / `step_efficiency` / `plan_adherence` / `plan_quality` / `tool_correctness` / `argument_correctness` / **`agent_loop_detection`**（直接对口已登记的"Agent 打转、重复同一 query"）。
 - 选型约束：**指标总数控制在 ≤5**（DeepEval 官方 "Choosing Your Metrics" 建议），先上 2–3 个高价值项，其余按需再加。
-- **轨迹接入（已按官方模型修正，推翻了本决策的原写法）**：DeepEval 的行为指标只吃**它自己的 span 树 trace**，官方**不接受**"我们自行透传 message 列表"。被支持的形态是把官方 `CallbackHandler` 挂到图的 `config.callbacks`（官方示例原样）：
+- **实测得到的唯一可用形态（两半缺一不可）**：
 
   ```python
+  from deepeval.dataset import EvaluationDataset, Golden
+  from deepeval.evaluate.configs import DisplayConfig
   from deepeval.integrations.langchain import CallbackHandler
-  from deepeval.metrics import TaskCompletionMetric
 
-  result = graph.invoke(state, config={"callbacks": [
-      CallbackHandler(metrics=[TaskCompletionMetric(strict_mode=True, async_mode=False)])
-  ]})
+  ds = EvaluationDataset(goldens=[Golden(input=<题面>, expected_output=<参考答案>)])
+  for golden in ds.evals_iterator(
+      metrics=[行为指标…], display_config=DisplayConfig(results_folder=<OUT>)
+  ):
+      graph.ainvoke(..., config={"callbacks": [CallbackHandler()]})   # 只挂 handler、不挂 metrics
+  # 分数从 <OUT>/test_run_*.json 的 metricsScores 回读
   ```
 
-  对应我们 `src/cli/eval_ragas.py` 的 `graph.ainvoke`。
-  ⇒ **原写法作废**：「把 `final_state["messages"]` 透传到评测侧再自行构造轨迹」**不成立**；`summarize_trajectory`（`src/cli/eval_scoring.py:136-154`）**不得**作为行为指标的数据源（仍可作报告里的诊断摘要）。
-- **`Golden` / `expected_output` 在基本路径上不需要**：官方示例就是"挂 handler + invoke"，不走 `evals_iterator`（那是数据集批量跑的路径）。
-- **⚠️ 静默失败守卫（必做）**：三个行为指标均声明 `requires_trace = True`；其中 **`agent_loop_detection` 在无 trace 时源码直接置 `0.0`**、**不报错**。评测 SHALL 在打分前**断言 trace 非空**，否则 **fail-loud** —— 否则行为轴会安静地全是 0 而无人察觉（与 ragas 的 NaN 属**同一类静默假分数**）。
-- **同进程前提**：该形态要求图与 `deepeval` **同环境**。本决策因 D1 的"单环境"（`ragas 0.3.9` 与 `deepeval` 同装一个 venv）而成立；若按早先"双环境"设想则**不可行**。PoC 的 K6 已实测该形态 WORKS（`CallbackHandler` 经 `config={"callbacks":[...]}` 捕获到含 `toolSpans` 的轨迹）。
-- **待验项（落 tasks，不阻塞设计）**：官方示例用**同步 `invoke` + `async_mode=False`**，而我们用 **`ainvoke`**；异步路径下 handler 是否同样可用、`async_mode` 该取何值，实施时先验。
+- **三条实测事实（spike，1 题，2026-10-16）**：
+  1. **只挂 `CallbackHandler(metrics=[…])` + invoke ⇒ 拿不到分**：实测 `metric.score = None`、`success = None`、`reason = ''`（callback 只把指标对象挂到 `trace.metrics`，`deepeval/integrations/langchain/callback.py` 内 **零** `measure`/评分调用）。
+  2. **必须 `dataset.evals_iterator(metrics=[…])` 驱动**：加上它之后评分才真的发生（实测打印 `Task Completion │ 1.00 │ passed=1`，耗时 30–38s，确系真调裁判，且**无 Confident AI key 也能跑**）。
+  3. **分数不在 `metric.score`**：eval loop 用 `copy_metrics()` 的**副本**（`deepeval/evaluate/execute/loop.py` 导入该工具）⇒ 调用方持有的实例恒为 `None`。**分数落盘在 `<OUT>/test_run_*.json`**（顶层键含 `metricsScores` / `testCases` / `testPassed` / `testFailed`），**必须回读该 JSON**。
+- **作废记录（三处，勿再沿用）**：
+  1. ~~"挂 `CallbackHandler` + invoke 即得行为分"~~ —— **不成立**（实测 `score=None`）。
+  2. ~~"`Golden` / `evals_iterator` 在基本路径上不需要"~~ —— **反了**：`evals_iterator` 是**必需**的驱动；`Golden` 由题面 + 参考答案构造即可（`input` 必填、`expected_output` 可选）。
+  3. ~~"PoC 的 K6 已实测该形态 WORKS"~~ —— **引用失真**：K6 实际走的是**私有路线**（`trace_testing_manager.test_dict` 捞轨迹 → `tc._trace_dict = …` → **手动 `metric.measure`**），**不是**官方 `evals_iterator` 路线；其 `1.0` 是手动 measure 的产物，**不能**用来论证官方路线成立。
+- **⚠️ 静默失败守卫（必做）**：三个行为指标均声明 `requires_trace = True`；其中 **`agent_loop_detection` 在无 trace 时源码直接置 `0.0`**、**不报错**。评测 SHALL 断言"轨迹非空 **且** `test_run` JSON 中确实取到了该指标的分"，否则 **fail-loud**（与 ragas 的 NaN 属**同一类静默假分数**）。
+- **`CallbackHandler` 实例作用域（并发安全）**：handler 含实例态（`_trace` / `_run_id_to_span_uuid` 等）⇒ **每题 MUST 新建独立 handler 实例**，SHALL NOT 跨题复用；验收需含"并发 2 题不串 trace"的**负向**验证。
+- **费用**：每题多一次裁判调用（spike 1 题 30–38s，含跑图）⇒ 21 题会显著加时，需计入预算。
+- **同进程前提**：该形态要求图与 `deepeval` **同环境**；本决策因 D1 的"单环境"而成立（若按早先"双环境"设想则不可行）。
+- **待验（落 tasks）**：官方示例用**同步 `invoke`**，我们用 **`ainvoke`** —— 该路径在异步下是否同样可用、`async_mode` 取值，实施时先验。
 
 ### D7 主分口径与门禁：换尺子 → 阈值必须重标定
 
 - 历史四轮基线（faithfulness=0.7813 / cp=0.5004 等）与本次**不同尺子**，**不得作为对照**。
 - 门禁阈值 `faithfulness≥0.85` / `context_precision≥0.80` / `context_recall≥0.70` / `answer_relevancy≥0.85` 全部**待重标定**（重跑首轮后按分布取）。
 - 主分聚合仍限 `pure_kb` 样本，但需在 **NaN 与 empty 两种跳过语义**下重写（见 D4）。
+- **主分与门禁只看四指标；行为轴不进主分、不进阈值判据**（行为指标 inline 产生、口径与四指标不同，混入会让"分数动了"再次无法归因）。行为指标失败时**单独标记**，不影响该题主分。
+- **四指标评分 MUST 串行（并发=1）**：桥复用的是 `ragas.metrics` 的**模块级指标实例**（`from ragas.metrics import context_precision` 等），且 `ragas.evaluate` 会 `metric.llm = llm` 并在结束时 `metrics[i].llm = None` 复位（`ragas/evaluation.py:316`），`LangchainLLMWrapper` 还会改写底层 `chat_model.temperature` 属性 ⇒ **并发会互踩**（读到 `llm=None`、温度被别的指标改掉），表现为**间歇性错分**。
+  - 并发预算留给"跑图"那一侧；四指标这一遍串行（21 题 × 4 指标可接受）。
+  - 若将来确要并发，**唯一安全形态是进程隔离**，且需单独验证。
+  - ⚠️ 与此相关：**`bypass_temperature` 对本路径无效**（见 D3 订正），所以并发下"温度被改掉"连开关都救不了。
+- **阈值标定规则 + 空窗期（原缺）**：现 `EVAL_PASS_THRESHOLD=0.70`（`src/config/const.py`）是**旧尺子**下的值。
+  - **空窗期行为**：首轮全量**用 `--no-gate` 跑**，只产出分布、不做通过/不通过判定（避免拿旧阈值判新尺子）。
+  - **标定规则**：取"纯 KB 且非 NaN 样本分布"的**保守下界**（建议：不低于均值的 90%，且不低于历史同名的 0.9 倍——具体数值在首轮分布出来后定稿并写回单一常量）。
+  - 标定完成后 SHALL 同轮复核 `kb_eval` 下发的阈值与落库 `passed` 一致（沿用"阈值单一来源"纪律）。
 - **门禁形态：保留自建 `--gate` + 单一阈值常量**（**有意偏离**官方推荐）。官方路径是 `assert_test()` + `pytest` + `deepeval test run`；我们保留自建，理由与代价见 D12。
-- **并发模型：用 `asyncio.to_thread` 在外部包裹桥的同步 `measure()`**（**有意偏离**）。官方 Python 并发路径是 `a_measure()` + `gather`，或 `evaluate(..., async_config=AsyncConfig(max_concurrent=N))`；但**桥的四个度量 `a_measure` 只是 `return self.measure(...)`（伪异步）**，官方 async 路径对桥无效 ⇒ 只能用线程池变通。理由与代价见 D12。
 
 ### D8 出题路：代码保留、调用下线
 
@@ -153,7 +183,9 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
 
 - **事实**：DeepEval **没有** Langfuse 集成（其 Integrations 清单不含 Langfuse）；Langfuse 侧那份官方配方用的是 **v3/v4 API**（`from langfuse import get_client` / `api.observations.get_many` / `LANGFUSE_BASE_URL`），与**本项目自托管 v2 不匹配**；DeepEval 的 tracing 也**没有** OTLP / Langfuse 导出。⇒ **必须由我们在 DeepEval 之外手写回写**。
 - **通道与算分框架解耦（关键澄清，避免误以为要重建）**：这条通道**从来不是 RAGAS 提供的**——三个部件都属我们：① 开关 `configure_tracing()` → `langfuse_context.configure(enabled=LANGFUSE_ENABLE)`（`src/infra/llm/tracing.py:48-54`）；② trace id `f"eval_{uuid4().hex[:12]}"`（`eval_ragas.py:287`）经 `@observe` 以 `langfuse_observation_id` 落 trace；③ 回写 `write_scores()` → `client.score(...)`（`eval_scoring.py:157-203`）。**RAGAS 只在"被评的一侧"**。⇒ 换 DeepEval 后**通道零改动**，只换 metric 名与加口径后缀。
-- **边界①：DeepEval 的轨迹（span 树）不会出现在 Langfuse 上**——它只在本进程内存（或发 Confident AI），DeepEval **没有 Langfuse 导出**。⇒ **分数可回写到 `eval_<hex>` trace，但行为指标的轨迹在 Langfuse 里看不到**，只能看报告 / 台账 / 本地日志。
+- **边界①：DeepEval 的轨迹（span 树）不会出现在 Langfuse 上**。**理由订正**（原文写"DeepEval 没有 OTLP 导出"是**错的**）：DeepEval **有** OTLP 导出（`deepeval/tracing/otel/`，含 `BatchSpanProcessor(OTLPSpanExporter(...))`），但其 exporter 指向 **Confident AI**；而**自托管 Langfuse v2 不提供 OTLP 端点** ⇒ **接不上**。**结论不变、理由更正。**
+  - 交叉证据（spike 实测）：无 Confident AI key 时打印 `[Confident AI Trace Log] No Confident AI API key found. Skipping trace posting.` ⇒ 轨迹的投递目标是 Confident AI，与我们的 v2 无关。
+  - ⇒ **分数可回写到 `eval_<hex>` trace，但行为指标的轨迹在 Langfuse 里看不到**；轨迹只能看**报告 / 台账 / 本地日志 / DeepEval 落盘物**（`test_run_*.json` 见 D6）。
 - **边界②：不会有两个 handler 打架**——核实：本项目**只**用 `@observe` 装饰器，`graph.ainvoke(...)` **当前未传 `config=`**、未挂任何 LangChain callback ⇒ 加 DeepEval `CallbackHandler` 是**唯一的 callback**。
 - **复用现有通道**：沿用 `src/cli/eval_scoring.py:157-203` 的 `write_scores` —— 客户端取 `langfuse_context.client_instance`（**不得** `new Langfuse()`：会绕过 `LANGFUSE_ENABLE` 开关与关停 flush）；逐条 `client.score(trace_id=…, name=…, value=…)`；失败只记 warning、不阻断评测。
 - **行为轴的分数也回写**（与四项同级、同一个 `trace_id`）：收益是"一个 trace 上能看到该题的全部口径"，排障不用两地对照。
@@ -165,7 +197,7 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
 ### D10 逃生门（非默认路径）
 
 - **触发条件**（任一）：**NaN 比例 > 5%**（21 题即 >1 题）且重试无效；或默认模型/依赖坑在目标环境无法稳定满足。
-  - **阈值取 5% 的理由**：实测裁判偶发退化是**稀有事件**（全量 21 题里出现 1 例）；阈值过严会让门禁天天红、过松则失去意义。
+  - **阈值取 5% 的理由（降级为经验值，勿当定论）**：依据是"旧尺子（0.4.x 现代栈）下 21 题里出现 1 例"≈4.8%——**样本量 n=1/21 偏薄，且来自换尺子之前**，换桥后 NaN 率未知。故 5% 在规格中 SHALL 标为**经验初值 / 待首轮复核**，首轮全量跑出真实 NaN 率后**同轮复核并定稿**（若真实率明显不同，以实测为准改值）。
   - **判定机制**：由评测运行**自动判定** NaN 率并在报告中给出「**建议启用逃生门**」提示；**是否真启用由人决定**，启用须在台账记录原因与生效轮次。
 - **同一阈值用于门禁**：主分排除 NaN 之后，**NaN 率 ≤5% 视为可接受**（不计失败）；**>5% 则门禁 fail**。这补上了风险 R1 里"NaN 进发布门禁无法判定"那个洞。
 - **形态**：DeepEval 只负责**采样与用例构造**（产出 `LLMTestCase` 集合），评分改由**项目侧直接调用 ragas 0.3.x**（legacy `evaluate` 或按需的 `collections`）完成。
@@ -199,7 +231,7 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
 | # | 官方路径 | 我们的做法 | 偏离理由 | 接受的代价 |
 |---|---|---|---|---|
 | 1 | 门禁 = `assert_test()` + `pytest` + `deepeval test run` | 保留自建 `--gate` + 单一阈值常量 | 门禁是**我们的发行口径**，要和台账/落库共用同一套阈值常量；换成 `test run` 需改测试组织形态并动 CI 结构，收益远小于代价（官方亦明说 `evaluate()` **不**过门禁） | 用不上 DeepEval 的 UI 与回归对比能力；阈值维护在我们自己手里 |
-| 2 | 并发 = `a_measure()` + `gather`，或 `async_config.max_concurrent` | `asyncio.to_thread` 外部包裹同步 `measure()` | **桥的 `a_measure` 是伪异步**（`deepeval/metrics/ragas.py` 内 `return self.measure(...)`）⇒ 官方 async 路径对桥**无效** | 多一层线程池；并发度需自行约束（对齐现有行级并发 5） |
+| 2 | 并发 = `a_measure()` + `gather`，或 `async_config.max_concurrent` | **四指标评分串行（并发=1）** | **不只是"官方 async 对桥无效"**（桥的 `a_measure` 是 `return self.measure(...)` 伪异步），更是**并发本身不安全**：桥复用 `ragas.metrics` **模块级指标实例**，`evaluate` 会复位 `metrics[i].llm = None`，`LangchainLLMWrapper` 还会改写 `chat_model.temperature`（见 D7）⇒ 并发会**间歇性错分** | 评测更慢（21 题 × 4 指标串行）；并发预算留给"跑图"那侧；若将来要并发，唯一安全形态是**进程隔离**且需单独验证 |
 
 **另记两处"官方无对应"、纯我们自定的口径**（不属偏离，但避免后人误当官方）：
 
@@ -210,7 +242,9 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
 
 - **问题（trace 覆盖的缺口）**：换桥后，"我们自己发起的裁判调用"仍可带 `trace_id`（沿用现有 `judge call` 事件的形态），但**框架内部的 LLM 调用默认完全不可见**——包括 ragas 内部的重试、`answer_relevancy` 的 3 次生成、以及 DeepEval 行为指标的 judge 调用。**而这些正是我们追了两天的根因所在**（退化输出、超时、NaN 全发生在这一层）。
 - **做法**：我们**本来就要**给 `ChatOpenAI` 传 `http_client`（细粒度超时，见 D11）；httpx 支持 **event hooks**（`event_hooks={"request": [...], "response": [...]}`）⇒ 在同一个 client 上挂**请求级日志**（模型 / 耗时 / 状态码 / 请求体摘要），把框架内部调用也纳入 `trace_id` 序列，并与既有工具 `src/cli/trace_logs.py` 配合使用。
-- **待验（落 tasks）**：裁判走 `asyncio.to_thread`，**contextvar 是否随线程传递**需实测；若不传递，则显式把 `trace_id` 塞进 client 闭包。
+- **`trace_id` 的传递方式（订正：SHALL 用显式闭包，SHALL NOT 依赖 contextvar）**：原写法是"待验 `asyncio.to_thread` 下 contextvar 是否传递、不传再塞闭包"。**订正理由**：即便 `to_thread` 会复制 contextvar（`copy_context()`），**ragas `evaluate` 内部还会用自己的 `Executor`（线程池）分发**，那些 worker 线程**不保证**带上我们的 contextvar ⇒ 深处 hooks 可能读到 `trace_id=None`。故 **直接以显式闭包把 `trace_id` 绑定进 event hook**，不把它当"待验项"。
+  - 附带：四指标评分改**串行**后（D7），我们这一层已无 `to_thread`，但 **ragas 内部 Executor 仍在** ⇒ 显式闭包依然必需。
+- **验收范围（订正）**：spec 的"内部调用日志 SHALL 带 trace_id"只覆盖**我们挂 hook 的那一层**（即经我们提供的 `http_client` 发出的请求），SHALL NOT 声称覆盖框架内更深、不经该 client 的调用。
 - **边界（明写）**：行为指标的 **DeepEval span 树**仍不会进日志（那需要 DeepEval 自身导出，见 D9 边界①）。本决策只解决"**LLM 请求级**"的可见性，**不**解决"轨迹"的可见性。
 - **收益**：异常时可用 `trace_id` 直接看到"框架到底发出了什么、返回了什么"——这正是本次整改中"靠 trace 才找到根因"那条经验的制度化。
 
@@ -226,5 +260,5 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
 | R6 | **口径变化被误当"分数回归"** | 换尺子后四个指标的分数都会动 | 台账加口径版本列；首轮重跑只用于**标定阈值**，不与历史比 |
 | R7 | **喂法未修，context 轴仍偏低** | 本次不解决"多轮并集当单轮 `c(q)`" | 显式写成 Non-Goal；context 轴的根治（per-step 单轮化）另行跟踪 |
 | R8 | **出题路死代码** | 保留但不再调用 | 在文件头与台账标注"保留未调用"；重启需先解决 0.4.x 依赖；`--generate` 加**硬护栏**（见 D8） |
-| R9 | **行为轴的轨迹取材（最高风险，已修正）** | 原设想"透传 `messages` 自行构造"**不被 DeepEval 接受**——它只吃自己的 span 树 trace | 改用**官方 `CallbackHandler` 挂 `config.callbacks`**（官方唯一被支持路径，PoC K6 已实测）；并加**"trace 非空"断言 fail-loud**（`agent_loop_detection` 无 trace 会静默 `0.0`）；异步路径（我们用 `ainvoke`）待验 |
-| R10 | **`CallbackHandler` 对被测图有侵入** | 评测运行时图会多挂一层 handler | 仅在**评测路径**挂（生产链路不动）；handler 开销与 `ainvoke` 兼容性在 1 题冒烟时先测 |
+| R9 | **行为轴的取分路径（最高风险；已由 spike 定案并修正）** | 原设想"透传 `messages` 自建轨迹"不被接受；**改成只挂 `CallbackHandler` 后实测仍拿不到分**（`metric.score=None`、`reason=''`） | **定案**：必须 `EvaluationDataset.evals_iterator(metrics=[…])` 驱动，且**分数从 `test_run_*.json` 的 `metricsScores` 回读**（见 D6）；加"轨迹非空**且**取到分"fail-loud；`ainvoke`（异步）兼容性待验 |
+| R10 | **行为轴对被测图有侵入，且每题多一次裁判调用** | 评测运行时图会多挂一层 handler；每题多一次裁判调用（spike 1 题 30–38s，含跑图） | 仅在**评测路径**做（生产链路不动）；**每题新建独立 handler**（并发负向验证）；时间成本计入评测预算 |
