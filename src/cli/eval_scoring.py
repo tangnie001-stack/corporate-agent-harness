@@ -310,6 +310,12 @@ def assert_behaviour_scores_complete(
         raise RuntimeError(
             f"行为分题数不齐：questions={len(questions)} rows={len(rows)}（JSON 缺失或循环未耗尽）"
         )
+    if len(trajectories) != len(questions):
+        # 缺这条守卫时，trajectories 偏短会让下面的循环体一次都不跑 ⇒ 静默通过，
+        # 正是本函数要防的"没测到当成没异常"（评审 Important）
+        raise RuntimeError(
+            f"轨迹数与题数不齐：questions={len(questions)} trajectories={len(trajectories)}"
+        )
     for r in rows:
         if not any(v is not None for v in (r.get("metrics") or {}).values()):
             raise RuntimeError(

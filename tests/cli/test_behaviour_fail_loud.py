@@ -36,3 +36,9 @@ def test_no_metric_score_at_all_fails_loud():
     rows = [{"q_index": 0, "input": "Q0", "metrics": {}}]
     with pytest.raises(RuntimeError, match="行为分"):
         assert_behaviour_scores_complete(["Q0"], rows, _traj(1))
+
+
+def test_trajectory_count_mismatch_fails_loud():
+    """轨迹数偏短 ⇒ 循环体一次都不跑，会静默通过 —— 必须显式拦（评审 Important）。"""
+    with pytest.raises(RuntimeError, match="轨迹"):
+        assert_behaviour_scores_complete(["Q0", "Q1"], _rows(2), _traj(1))
