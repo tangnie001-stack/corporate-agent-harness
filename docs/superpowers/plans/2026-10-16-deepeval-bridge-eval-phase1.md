@@ -1486,4 +1486,7 @@ Agent 行为轴（组 5）· 出题入口硬护栏（组 6）· 逃生门可替�
 
 ### 挂账问题（下阶段开头就做）
 
-- **`faithfulness=0.0` 待证伪**：冒烟那题（答案「约 6603 亿元」对 context「…营业收入 6603 亿元」）判 0。终审认为 context 侧已由 `context_precision`/`context_recall` = 1.0 证明送达，但**未排除 `actual_output` 字段的接线问题**。⇒ Phase 2/4 开头做一个**逐字答案**探针（答案直接抄 context）:若回到 ~1.0 即判官严格，若仍 0.0 须回头查 `actual_output` 的传递。
+- **~~`faithfulness=0.0` 待证伪~~ → 已证伪，且结论与假设相反（2026-10-16 重跑）**：原假设是"判官严格"，实测证明是**调用级非确定**。证据：① 同一 toy 题重跑得 **1.0**（T12 记录的是 0.0）；② 逐字抄 context 的答案反而得 **0.0**；③ **同一进程同一 judge 连跑 4 次得 `[0.0, 1.0, 0.0, 1.0]`**。`context_precision`/`context_recall` 稳定 1.0 ⇒ 接线正常（`actual_output` 传递无误）。而 `answer_relevancy`（温度档更高 0.3）反而稳定在 0.44–0.47 ⇒ **温度分档不是主因**，更像 faithfulness 内部两段式流程（抽陈述 → NLI 判定）偶发翻转/解析回退。
+  - **须处置（Phase 2/4，不能当噪声）**：`faithfulness` 进主分，主分/门禁/跨轮台账比对都假设同输入可复现；二值抖动会让**阈值重标定与跨轮比对失真**。最小动作：把该题重复 N 次看抖动率、查 faithfulness 内部两段的中间产物（抽出的陈述集 / NLI 原始判定）定位是哪一段翻，再决定（换判官参数 / 换指标实现 / 报告里标注该指标不可复现）。
+  - 证据：`docs/tmp/deepeval-poc/RESULTS.md`「Phase 1 收口冒烟重跑」节；脚本 `/tmp/deepeval-poc-scripts/{phase1_smoke.py,faithfulness_repeat.py}`。
+- **证据留存教训**：T12 的原始报告随 SDD 工作区清理被删，导致"冒烟结论"一度只剩二手转述。以后**冒烟/探针的原始输出必须落进 `docs/tmp/**`（tracked）再清工作区**。

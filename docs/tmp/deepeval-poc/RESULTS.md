@@ -138,3 +138,45 @@ DEEPEVAL_DISABLE_DOTENV=1 DEEPEVAL_TELEMETRY_OPT_OUT=1 /tmp/deepeval-poc/.venv/b
 **结论**：① 挂 `http_async_client` 时 hook **确实触发**，且能 `await response.aread()` + `json.loads` 拿到 `finish_reason`（失败留证与"429 识别"的观测前提成立）；② 挂 `http_client` 时 **0 触发**——错误接线**不会报错、只是静默失去全部可观测性与细粒度超时**（这正是它一路没被发现的原因）。⇒ 已把"响应 hook 触发数 > 0"与"只挂同步字段时 == 0"两条**互为反向的冒烟断言**写进 tasks 3.3。
 
 **顺带实测**：`build_chat("judge", thinking=…, max_tokens=…, max_retries=0, http_async_client=…)` 经 provider 层透传后，judge 实例上 `http_async_client` 已置、`http_client` 为 `None`（即字段确实按名路由）。
+
+---
+
+## Phase 1 收口冒烟重跑（2026-10-16）：hook 断言 PASS，但 `faithfulness` 被证实为**非确定**
+
+**背景**：Phase 1 的 T12 曾跑过一次真实链路冒烟，记录 `hook_events=13`、四指标有值，但 **`faithfulness=0.0`**（toy 题：答案「约 6603 亿元」对 context「…营业收入 6603 亿元。」），当时被挂账为"待证伪"，终审的假设是"判官严格"。T12 的原始报告文件随 SDD 工作区清理一并删除，故本轮重跑以恢复可复验证据。
+
+**做法**：`/tmp/deepeval-poc-scripts/phase1_smoke.py`（脚本不入库）。真调裁判（`build_chat("judge", …)` + `thinking=False`），两题各自 `HookEvidence` 与 judge 同源：
+
+- **A 原 toy 题**：答案 `约 6603 亿元`，context `腾讯控股 2024 年报：营业收入 6603 亿元。`
+- **B 逐字答案探针**：答案 `腾讯控股 2024 年报显示，营业收入 6603 亿元。`（逐字抄自 context），同一 context
+
+**结果（1 次）**：
+
+| 题 | faithfulness | answer_relevancy | context_precision | context_recall | hook_events | 耗时 |
+|---|---|---|---|---|---|---|
+| A 原 toy | **1.0** | 0.444 | 1.0 | 1.0 | 13 | 37.4s |
+| B 逐字答案 | **0.0** | 0.893 | 1.0 | 1.0 | 13 | 35.7s |
+
+**Hook 断言的 A 向成立**：两题各 13 事件、`status_codes` 全 200、`abnormal=False` ⇒ tasks 3.3a 的 `hook_events > 0` **PASS**（合计 26）。
+
+**但 A 题的 `faithfulness` 与 T12 记录相反（0.0 → 1.0）**，而 B 题（**更该得高分**的逐字抄写）反而 0.0。这不是"判官严格"，是**同一输入不同结果**。故追加重复性探针：
+
+**做法**：`/tmp/deepeval-poc-scripts/faithfulness_repeat.py` —— **同一进程、同一 judge、同一题**连跑 4 次（每题新建指标实例，与 `score_rows` 内一致）。
+
+**结果**：
+
+```
+[0] faithfulness=0.0   answer_relevancy=0.4628  ... 41.0s
+[1] faithfulness=1.0   answer_relevancy=0.4590  ... 38.5s   （[2]/[3] 见下）
+faithfulness 序列: [0.0, 1.0, 0.0, 1.0]
+```
+
+**结论**：
+
+1. **`faithfulness` 在本判官下是二值抖动**（`[0.0, 1.0, 0.0, 1.0]`），输入完全一致、judge 完全一致、串行执行 ⇒ **不是并发/状态串用，也不是"判官严格"，而是调用级非确定性**。（注意 `answer_relevancy` 反而稳定在 0.44–0.47，尽管它的温度档更高（0.3 vs 0.01）—— 这把"温度分档"排除为主因，更像 faithfulness 内部的两段式 LLM 流程（抽陈述 → NLI 判定）某一段偶发翻转或解析回退。）
+2. 挂账假设（"判官严格 / 未排除 `actual_output` 接线"）**不成立**：`actual_output` 接线正常（B 题答案更长更逐字，仍 0.0；且 context 侧指标稳定 1.0）。
+3. **对 change 的影响**：`faithfulness` 进入主分，而主分/门禁/跨轮台账比对都假定同一输入可复现。若该指标二值抖动，**跨轮比对与阈值重标定（组 10）会失真** —— 这必须在 Phase 2/4 处置，不能当噪声忽略。
+
+**探针自身的坑（供后人）**：`faithfulness_repeat.py` 里 judge 建在一个**随手丢弃的** `HookEvidence()` 上，逐题又传另一个 `ev` ⇒ 该探针打印的 `hooks=0` 是**构造错误**，不是产品缺陷。真实路径 `src/cli/eval_ragas.py:840-841/894` 里 `judge_evidence` 是**同一个对象**同时喂给 judge 与 `run_evaluation`，故 hooks 正常。但这暴露一个**静默失效耦合**：`score_rows(..., evidence=None)` 缺省即跳过 429 判定（`:418` 的 `evidence is not None` 守卫），且传了非 judge 所用的桶也照样静默零观测 —— 建议后续加一条断言（judge 的桶 is 传入的桶）。
+
+**脚本**：`/tmp/deepeval-poc-scripts/{phase1_smoke.py,faithfulness_repeat.py}`（按本仓先例**不入库**，否则 ruff/pyright 会拦）。
