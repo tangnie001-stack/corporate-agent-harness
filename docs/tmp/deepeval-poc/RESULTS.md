@@ -314,3 +314,39 @@ NLI 理由: "上下文指出'归属于上市公司股东的净利润'，而陈�
 3. **另一个统一视角**：M 的失败与 `answer_relevancy` 的 0.44 同源——**答案不是 context 的忠实长句而是缩写**。在真实 21 题上，若 agent 答案偏长/完整，严重度可能低于这两个玩具案例；**但任何"数值 + 限定词"型事实都会命中**。⇒ 需在真实集上抽样确认严重度。
 
 **脚本**：`/tmp/deepeval-poc-scripts/{faithfulness_n20.py,faithfulness_moutai_dump.py,faithfulness_moutai_thinking.py}`（不入库）。
+
+---
+
+## Phase 2 前置 spike（2026-10-17）：行为轴链路打通 + 抓到"同步/异步 client"第二次现形
+
+**目的**：写 Phase 2 计划前，把「自建 `DeepEvalBaseLLM` 适配器 + 三个 DeepEval 原生行为指标 + `evals_iterator` + `graph.ainvoke` + `CallbackHandler`」这条链在**本项目判官**上跑通并钉死形态。
+
+**关键源码事实（决定适配器形状）**：`deepeval.metrics.utils.models.initialize_model` **只接受 `str | DeepEvalBaseLLM`**（`metrics/utils/models.py:170`）⇒ **langchain 模型不被接受**；且 `DeepEvalBaseLLM.generate_with_schema` 在非 native 模型上会**退回 `generate(prompt)`**、由 DeepEval 自己 `trimAndLoadJson`（`models/base_model.py:151`）⇒ **适配器只需实现 `load_model` / `generate` / `a_generate` / `get_model_name`，返回 JSON 文本**。
+
+**做法**：`/tmp/deepeval-poc-scripts/phase2_behaviour_spike.py`（另见 `_async.py` 变体）。适配器 `BridgeEvalLLM(DeepEvalBaseLLM)` 包住 `build_bridge_judge()` 的裁判；toy 图（1 个工具）跑 1 题真链路；三指标 = `TaskCompletionMetric`（**`task=None`，逐题取**）/ `StepEfficiencyMetric` / `AgentLoopDetectionMetric`（**无 model 参数、纯 trace**）。
+
+**结果（同步变体：`async_mode=False` + `AsyncConfig(run_async=False)`）**：
+
+| 项 | 结果 |
+|---|---|
+| generator 耗尽 / JSON 落盘 | ✅ `consumed_goldens=1`、`test_run_*.json` 已写 |
+| 三指标出分 | ✅ Task Completion 1.0 / Step Efficiency 1.0 / Agent Loop Detection 1.0（11s） |
+| 逐题取任务（`task=None`） | ✅ 可用（`task_completion.py:121-122` 从 test case 取） |
+| **`hook_events`** | ❌ **0**（`status_codes=[]`） |
+
+**异步变体（指标默认 `async_mode=True` + `AsyncConfig(run_async=True)`）**：
+
+| 项 | 结果 |
+|---|---|
+| 三指标出分 | ✅ 全 1.0（10s） |
+| **`hook_events`** | ✅ **8**，`status_codes=[200,200,200,200]` |
+
+**结论（三条，写进 Phase 2 计划）**：
+
+1. **适配器形状已定**：`DeepEvalBaseLLM` 子类，`generate`/`a_generate` 调 provider 层裁判的 `invoke`/`ainvoke` 并返回**内容文本（JSON）**；`agent_loop_detection` 不需要 model。
+2. **⚠️ 行为轴必须走异步路径**：同步模式下 DeepEval 调 `generate()` → `invoke()` → langchain **同步 client**，而 `build_bridge_judge` **只挂了 `http_async_client`** ⇒ **hooks 零触发、细粒度超时也失效**（与 Phase 1 那个 Blocker 同型，**第二次现形**）。修法 = 用默认的异步配置（`run_async=True` + `async_mode=True`），**不需要再加同步 client**。**防护**：行为轴跑完 SHALL 断言 `hook_events > 0`（与 tasks 3.3a 同理的反向冒烟）。
+3. **`task=None` 可逐题取任务** ⇒ 三个指标**共用一个实例**即可，无需每题新建（`CallbackHandler` 仍需每题新建）。
+
+**附带**：会打印 `⚠ WARNING: No hyperparameters logged`（无害；传 `identifier`/`hyperparameters` 可消）。另 `AsyncConfig(run_async=True)` 在 `asyncio.run` 内嵌套可用 —— 与 Q1 探测一致（`nest_asyncio.apply()`）。
+
+**脚本**：`/tmp/deepeval-poc-scripts/phase2_behaviour_spike{,_async}.py`（不入库）。
