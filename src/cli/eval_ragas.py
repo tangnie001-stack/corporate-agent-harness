@@ -25,6 +25,7 @@ import sys
 import time
 import uuid
 from datetime import UTC, datetime
+from importlib.metadata import version
 from typing import Any
 
 import pandas as pd
@@ -592,6 +593,7 @@ def save_markdown_report(
     sample_classes: list[str],
     trace_ids: list[str] | None = None,
     trajectories: list[dict] | None = None,
+    report_meta: dict | None = None,
 ) -> str:
     """将评估结果保存为 Markdown 摘要报告，与 CSV 同路径（.md 后缀）.
 
@@ -608,6 +610,8 @@ def save_markdown_report(
             传入后在表格中新增 trace_id 列
         trajectories: 每个问题的轨迹诊断摘要（与 questions 一一对应），
             传入后新增 trajectory 列（JSON 字符串）
+        report_meta: 报告元数据（见 build_report_meta），传入后在报告头写入
+            口径版本 / 裁判 / 温度档 / 版本 / NaN 计数
 
     Returns:
         实际写入的 .md 文件路径
@@ -629,6 +633,30 @@ def save_markdown_report(
         f"**Configuration:** TOP_K_RETRIEVAL={cfg_topk}, TOP_K_RERANK={cfg_rerank}"
     )
     lines.append(f"**QA Pairs:** {len(questions)}")
+    if report_meta is not None:
+        lines.append(
+            "**Caliber / Judge:** "
+            f"caliber={report_meta['caliber']}, "
+            f"judge={report_meta['judge_model']}, "
+            f"model_arg_explicit={report_meta['model_arg_explicit']}"
+        )
+        regime = report_meta["temperature_regime"]
+        lines.append(
+            "**Temperature regime:** "
+            f"n1_metrics={regime['n1_metrics']}, "
+            f"answer_relevancy={regime['answer_relevancy']} "
+            f"({report_meta['temperature_control']})"
+        )
+        versions = report_meta["runner_versions"]
+        lines.append(
+            "**Runner versions:** "
+            f"ragas={versions['ragas']}, deepeval={versions['deepeval']}"
+        )
+        lines.append(
+            "**NaN cells:** "
+            f"{report_meta['nan_cells']}/{report_meta['nan_denominator_cells']} "
+            f"(rate={report_meta['nan_rate']})"
+        )
     lines.append("")
 
     lines.extend(_build_markdown_table(df, actual_metrics, trace_ids, trajectories))
@@ -707,6 +735,27 @@ def check_gate(df: pd.DataFrame, questions: list[str]) -> None:
         sys.exit(1)
 
     sys.exit(0)
+
+
+def build_report_meta(
+    *, judge_model: str, nan_stats: dict, runner_versions: dict
+) -> dict:
+    """报告/台账元数据（口径版本、温度档、NaN 计数、模型显式性）。
+
+    温度**不由本项目控制**（ragas 按 n 分档：n=1 → 0.01；answer_relevancy
+    n=3 → 0.3），故只记录事实，SHALL NOT 出现「temperature=0」的表述。
+    """
+    return {
+        "caliber": "bridge-0.3.9",
+        "judge_model": judge_model,
+        "model_arg_explicit": True,
+        "temperature_regime": {"n1_metrics": 0.01, "answer_relevancy": 0.3},
+        "temperature_control": "ragas_decides_by_n",
+        "nan_cells": nan_stats["nan_cells"],
+        "nan_denominator_cells": nan_stats["denominator_cells"],
+        "nan_rate": round(nan_stats["nan_rate"], 4),
+        "runner_versions": dict(runner_versions),
+    }
 
 
 def main() -> None:
@@ -849,6 +898,18 @@ def main() -> None:
         # 统一「主分」口径：报告 / stdout / 门禁都读同一张已掩码表（纯 KB 样本）。
         masked_df = apply_sample_masks(result.to_pandas(), sample_classes)
 
+        # 报告/台账元数据：口径版本、温度档、NaN 计数、裁判版本与模型显式性。
+        # judge_model 复用上方 EVAL_MODEL_INIT 同源的 judge_llm.model_name；
+        # 温度由 ragas 按 n 分档、本项目不可控，故只记录事实（见 build_report_meta）。
+        report_meta = build_report_meta(
+            judge_model=judge_llm.model_name,
+            nan_stats=nan_cell_stats(masked_df),
+            runner_versions={
+                "ragas": version("ragas"),
+                "deepeval": version("deepeval"),
+            },
+        )
+
         # 指标均值输出到 stdout：compare_retrieval 等 A/B 脚本以
         # 子进程方式调用本脚本，靠 stdout 解析指标（parse_metrics）；logger 只写
         # 文件不落 stdout，故此处显式 print。--gate 模式下 check_gate 已打印指标行。
@@ -871,6 +932,7 @@ def main() -> None:
             sample_classes=sample_classes,
             trace_ids=trace_ids,
             trajectories=trajectories,
+            report_meta=report_meta,
         )
 
         # 行序契约：write_scores 按 enumerate 下标把 masked_df 第 i 行写到
@@ -892,6 +954,7 @@ def main() -> None:
             output_path,
             retrieval_details,
             sample_classes,
+            report_meta=report_meta,
         )
 
         # 观测旁路回写：排在落库之后、门禁之前（失败只记 warning，见 write_scores）
@@ -1011,6 +1074,7 @@ def _save_eval_report(
     output_path: str,
     retrieval_details: list[list[dict]] | None = None,
     sample_classes: list[str] | None = None,
+    report_meta: dict | None = None,
 ) -> None:
     """把评估结果持久化到 eval_report 表。
 
@@ -1027,6 +1091,8 @@ def _save_eval_report(
         retrieval_details: 每 query 的检索明细（与 detail 数组按 q_index 对齐），
             传入后并入对应 detail_json 条目，供低分 query 下钻检索环节
         sample_classes: 每题的样本类别；传入后先掩码再算主分与明细
+        report_meta: 报告元数据（见 build_report_meta），传入后随 detail_json
+            一并落库（形如 {"meta": …, "items": […] }）
     """
     try:
         from src.cli import eval_scoring
@@ -1036,6 +1102,14 @@ def _save_eval_report(
         if sample_classes is not None:
             df = eval_scoring.apply_sample_masks(df, sample_classes)
         detail, _avg = _build_eval_detail(df, qa_count, retrieval_details)
+        # 台账条目携带口径元数据（口径版本/温度档/NaN 计数/版本），使跨轮比对
+        # 可知「哪把尺子产出的数」；无 report_meta 时保持 detail_json 为纯列表
+        # （向后兼容既有调用方与断言）。
+        detail_json: Any = (
+            {"meta": report_meta, "items": detail}
+            if report_meta is not None
+            else detail
+        )
 
         means = eval_scoring.main_score_means(df)
         present = [v for v in means.values() if pd.notna(v)]
@@ -1055,7 +1129,7 @@ def _save_eval_report(
                 passed=overall is not None and overall >= EVAL_PASS_THRESHOLD,
                 report_path=output_path,
                 triggered_by=None,
-                detail_json=detail,
+                detail_json=detail_json,
             )
             await svc.insert_eval_report(entity)
 
