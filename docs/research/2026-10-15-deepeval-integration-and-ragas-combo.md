@@ -191,3 +191,163 @@ output: markdown
 ```
 
 > **说明**：本文为三路 worker（DeepEval 官方接入 / Langfuse 与结合实例 / GitHub 项目）+ 一份依赖成本核查的合成。`api.github.com` 在本环境不可达，star 数为 shields.io 量级值；其余结论均附一手 URL。
+
+---
+
+## 附录：本地源码指引（coding 用，2026-10-15 补）
+
+> 本附录是**追加**的源码导航，不改上文任何结论与数字。有了本地镜像后，下文所有"官方源码经 GitHub API 核实"的结论都可以**直接读源码复核**，不必再靠 URL 转述。
+
+**本地镜像**：`/root/code/github/deepeval` · **版本 `4.3.0`**（`pyproject.toml` 的 `version`）。
+⚠ **版本差异**：本地镜像是 **4.3.0**；本次 1 题 PoC 实装的是 **4.2.8**；前文调研引用的线上文档标注 **4.2.9**。三者不要混用——尤其 4.x 内部 API 变动频繁。
+
+### 我们要用的能力 → 本地源码路径
+
+| 能力 | 本地路径（相对 `/root/code/github/deepeval`） | 备注 |
+|---|---|---|
+| **RAGAS 指标桥** | `deepeval/metrics/ragas.py` | 单文件。裁判构造在 `:71-72`、`:152-153`、`:224-225`：`if isinstance(self.model, str): chat_model = OpenAIModel(model=self.model).load_model()` —— **本地源码逐行印证了 PoC 的 K2 发现**（传字符串会拿到裸 client；必须传 langchain `BaseChatModel`） |
+| **LangGraph / LangChain 挂件** | `deepeval/integrations/langchain/callback.py` | `CallbackHandler` 实现；同目录 `patch.py` / `utils.py` |
+| **裁判模型（OpenAI 兼容）** | `deepeval/models/llms/openai_model.py` | `OpenAIModel`；同目录还有 `local_model.py`（自建 OpenAI 兼容端点）、`kimi_model.py`、`deepseek_model.py` |
+| **自建裁判基类** | `deepeval/models/base_model.py` | `DeepEvalBaseLLM` |
+| **用例类型** | `deepeval/test_case/llm_test_case.py`（`LLMTestCase` / `ToolCall`）、`conversational_test_case.py`（多轮）、`mcp.py` | 字段以源码为准 |
+| **指标全量目录** | `deepeval/metrics/` | 见下表 |
+
+### 源码实读的**新发现**（前文未覆盖）
+
+**① 存在一套「多轮版」context 指标** —— 这直接改变了"context 轴只能单轮"的判断：
+
+```
+deepeval/metrics/turn_contextual_precision/
+deepeval/metrics/turn_contextual_recall/
+deepeval/metrics/turn_contextual_relevancy/
+deepeval/metrics/turn_faithfulness/
+deepeval/metrics/turn_relevancy/
+```
+
+→ 即 DeepEval **有 per-turn 的上下文精度/召回/相关性与忠实度**。前文"RAGAS 与 DeepEval 都是单轮 context 指标"这一说法，**对 DeepEval 的 `turn_*` 族不成立**，需按此更正选型视角。
+
+**② 存在 `agent_loop_detection`（Agent 打转检测）** —— 直接对口我们已登记的"Agent 打转、重复同一 query"（Q17）。
+
+**③ 其它与 agentic 相关的指标（本地实读）**：
+`task_completion` · `step_efficiency` · `plan_adherence` · `plan_quality` · `goal_accuracy` · `tool_correctness` · `argument_correctness` · `topic_adherence` · `agent_loop_detection` · `conversation_completeness` · `knowledge_retention` · `role_adherence` · `conversational_dag` · `mcp` · `mcp_use_metric`
+
+**④ click 冲突在最新版依旧** —— `pyproject.toml:33`：`click = ">=8.0.0,<8.4.0"`。与 `huggingface_hub` 的 `click>=8.4.2` 互斥，**4.3.0 未修**。
+
+### 怎么用这份指引
+
+1. 写代码前先读对应 `deepeval/metrics/<指标名>/` 下的 `metric.py` 与其 `schema.py`/prompt，确认**构造参数与必填字段**——比查文档快且准。
+2. 任何"DeepEval 能不能做 X"的问题，先 `ls deepeval/metrics/`；**指标名即能力清单**。
+3. 版本差异要留神：本地是 4.3.0，**实装前先确认目标版本**（PoC 装到的是 4.2.8）。
+
+---
+
+## 附录 B：DeepEval 桥与 RAGAS 两套 API 的源码级核对（2026-10-16 补）
+
+> 本附录同样是**追加**记录，来源为「本机实装源码 + 本地镜像 `/root/code/github/deepeval`（4.3.0）+ 官方仓库 PR/issue + 官方文档」。不改上文任何结论。
+
+### B1. DeepEval 的 RAGAS 桥到底做了什么（`deepeval/metrics/ragas.py`，564 行）
+
+**它是一个薄适配器**，不是重新实现 RAGAS：
+
+```python
+from ragas import evaluate
+from ragas.metrics import context_precision            # legacy ragas.metrics，非 collections
+chat_model = OpenAIModel(model=self.model).load_model() # 字符串 → 裸 client
+dataset = Dataset.from_dict({"contexts":[…], "question":[…], "ground_truth":[…]})  # 1 行
+scores = evaluate(dataset, metrics=[context_precision], llm=chat_model)
+score = scores["context_precision"][0]
+```
+
+| 事实 | 证据 |
+|---|---|
+| 桥内 6 个类：ContextualPrecision / ContextualRecall / **ContextualEntitiesRecall** / AnswerRelevancy / Faithfulness / 聚合 `RagasMetric` | `ragas.py:38/115/186/334/414/484` |
+| **必填四字段**：`input` / `actual_output` / `expected_output` / `retrieval_context` | 官方 Required Arguments |
+| **默认 model = `gpt-3.5-turbo`**（6 处），该模型**已停服** | `ragas.py:44` 等；deepeval issue **#3404** |
+| `embeddings` **仅** `RAGASAnswerRelevancyMetric` 需要 | 官方文档 + `ragas.py:341,395-397,491,527` |
+| **聚合 `RagasMetric` 在源码里是 5 项算术平均**（含 ContextualEntitiesRecall），**官方文档写 4 项** | `ragas.py:521-541` vs 文档 —— **文档与源码不一致** |
+| **NaN 无保护**，官方 FAQ 原文："`ragas` returns `NaN` when the model emits invalid JSON, and `RagasMetric` wraps it directly." | `deepeval.com/docs/metrics-ragas` FAQ |
+| 桥对 ragas 的版本要求仅 **`>=0.2.1`**，且用**字符串比较**（`"0.10.0" < "0.2.1"` 会误判） | `ragas.py` 的 `import_ragas()` |
+| 官方对桥的定位：「**Use `RagasMetric` only if you're already standardized on ragas**」 | 同上 FAQ |
+
+### B2. RAGAS 现代（0.4.x `metrics.collections`）与经典（legacy `metrics`）：**公式同源，不是"更优"**
+
+- **[官方源码]** 迁移标准就是"行为一致"——PR **#2370**：*"Migrating metrics requires consistent validation that **new implementations match legacy behavior**"*，并配了逐指标比分工具 **`metric_score_diff.ipynb`**。
+- **[官方源码]** PR **#2407**：文档改为 *"showcase the new `ragas.metrics.collections` API as the **primary recommended approach**, while preserving legacy API documentation for backward compatibility"*。
+- **[本机源码实读]** 公式逐行一致：
+  - context_precision：legacy `_context_precision.py:113-126`（`denominator=sum(verdicts)+1e-10`、`Σ precision@i·v_i`）与 collections 版同式（后者 docstring 原文 *"Matches legacy logic exactly"*）；
+  - faithfulness：legacy `_faithfulness.py:182-189`（`faithful/num_statements`）与 collections 版同式。
+- **三处真实差别**：① 接口（`ascore(参数)` vs `evaluate(dataset)`）；② **LLM 管道**（collections 走 `llm_factory → InstructorLLM`，**temperature 由调用方 kwargs 决定**；legacy 走 `LangchainLLMWrapper`，**会改写底层模型温度**）；③ **覆盖面**（见 B3）。
+
+### B3. ragas 0.3.9 与 0.4.3 的能力差（决定"能不能降版"）
+
+| | 0.3.9 | 0.4.3 |
+|---|---|---|
+| `metrics.collections`（现代） | ✅ 存在（AnswerCorrectness / Faithfulness / ContextPrecision / ContextRecall / ContextUtilization / SemanticSimilarity …） | ✅ |
+| **agent 指标进现代化** | ❌ **零个**（`goal_accuracy` / `tool_call_accuracy` / `tool_call_f1` / `topic_adherence` **只在 legacy**） | ✅ 现代化里有 |
+| `testset.transforms.default.default_transforms_for_prechunked`（出题路） | ❌ **不存在** → `ImportError` | ✅ |
+| 实装验证 | `pytest tests/cli`：**147 passed / 1 failed**（失败即出题路 `ImportError`，`src/cli/eval_ragas_generate.py:307`）；打分路（modern-stack 测试）**3 passed** | —— |
+
+⇒ **降版只打断"出题路"，不打断"打分路"**；但会**丢掉现代化里的 agent 指标**。
+
+### B4. 温度：不是"统一 0.01"，而是**按 `n` 分档**，且**被 ragas 改写**
+
+- 源码：`get_temperature(n) = 0.3 if n > 1 else 0.01`（`ragas/llms/base.py:71-73`）；`generate_text`/`agenerate_text` **直接改写** `self.langchain_llm.temperature`（`:229-231` / `:281-283`），调用后还原。
+- **实测（mock server 抓真实请求体）**：faithfulness（`n=1`）→ `"temperature": 0.01`；`max_completion_tokens: 8192` 与 `enable_thinking: false` **均透传成功**。ragas 0.3.9 与 0.4.3 **表现相同**。
+- **`answer_relevancy` 是例外**：legacy `_answer_relevance.py:142-143` 传 `n=self.strictness`（默认 **3**）→ `get_temperature(3)` = **0.3**。这是**有意**的（该指标需生成多个多样化问题；issue **#1812** 报的正是温度被压低导致问题雷同）。
+- **官方 bug**：`bypass_temperature` 开关**只在同步路径生效**（`:281` 有 `and not self.bypass_temperature`），**异步路径漏判**（`:229` 无此判断）。
+- 相关 issue：#1812（温度被忽略）、#656 / PR #657（提议删除 temperature 关键字，**未合并**）、#2722 / #2781 / #2817（覆盖用户温度 → 雷同输出 / o3 只接受 1 → 400 / 重试返回同样的坏输出）。
+- **对照**：DeepEval 自身是 `temperature 显式 > settings.TEMPERATURE > 默认 0.0`，并**对声明不支持温度的模型自动改 1**（`deepeval/models/llms/openai_model.py:102-116`）；`DEEPEVAL_MODEL_THINKING` 默认关（描述原文：*"Off unless set, so judges spend their token budget on the verdict"*）。
+
+### B5. 依赖：**弃用 0.4.x 恰好解开 click 死结**
+
+```
+deepeval 4.2.9 + ragas 0.4.3  →  ResolutionImpossible
+    ragas0.4.3 → datasets → huggingface_hub(1.27.0) → click>=8.4.2
+    deepeval                                          → click<8.4.0      ⇒ 交集 = ∅
+
+deepeval 4.2.9 + ragas 0.3.9  →  解析通过（实测项目 venv 装成功）
+    落 click-8.3.3 / huggingface_hub-1.16.1；pip check 无新增冲突
+```
+
+`ragas[tracing]` 另需 `langfuse>=3.2.4`，与本项目 `langfuse<3.0` 硬冲突 ⇒ RAGAS 自动 tracing 不可用。
+
+### B6. DeepEval 原生四指标 vs RAGAS：**名字同、机制未全同**
+
+| RAGAS | DeepEval | 等价性 | 关键证据 |
+|---|---|---|---|
+| `faithfulness` | `FaithfulnessMetric` | 🟡 近似 | DeepEval 从**上下文逐文档抽 truths** 再判答案（`faithfulness.py:40-45`），且有 `BORDERLINE` 档（`:408-413`）；RAGAS 从**答案抽 statements** 做 NLI |
+| `answer_relevancy` | `AnswerRelevancyMetric` | 🔴 **机制不同** | DeepEval = 答案拆陈述判"是否切题"取比例（`answer_relevancy.py:326-331`，仅需 `input`/`actual_output`，**不需 embeddings**）；RAGAS = **反向生成 N 问 → 与原问余弦相似度 → 均值** |
+| `context_precision` | `ContextualPrecisionMetric` | 🟡 近似 | DeepEval = per-context 0/1 + **加权累积精度**（`contextual_precision.py:366-390`），定位为**评 reranker 排序** |
+| `context_recall` | `ContextualRecallMetric` | 🟢 最接近 | `contextual_recall.py:262-267` |
+
+**两处"说法"未获证实**（勿当事实引用）：① 「按 chunk 粒度评估利用率的指标」——`deepeval/metrics/` 下**没有** util/chunk/usage 类指标；② 「2024 官方把 ragas 重写进原生指标就是为了同名替换」——官方文档无此表述。
+
+### B7. `turn_*` 的粒度是"对话单元"，不是"检索步"
+
+`Turn(role: "user"|"assistant", content, retrieval_context, expected_outcome)` → `ConversationalTestCase(turns=[...], expected_outcome=...)`；流程为 `get_unit_interactions(turns)`（按 user→assistant 切单元）→ `get_turns_in_sliding_window(units, window_size=10)` → **窗口内把所有 assistant turn 的 `retrieval_context` 合并成一个列表**再算分（`turn_contextual_precision.py:133-141, 223-245`）。
+
+⇒ 对"**一个用户问题 + Agent 内部连搜 N 次**"的形态，只会得到一个单元 ⇒ 行为与单轮 context 指标相同。**`turn_*` 不能提供 per-step 检索质量**。
+
+### B8. GitHub：使用 DeepEval 的项目（star 抓取 2026-10-16，`api.github.com` 实测可达）
+
+**名字/描述含 `deepeval`（total 1,278）**
+
+| ⭐ | 仓库 | 备注 |
+|---|---|---|
+| **18,897** | `confident-ai/deepeval` | 官方 |
+| 173 | `kanchengw/cnllm` | 中文 LLM 工具包 |
+| 156 | `AgentEvalHQ/AgentEval` | .NET agent 评测 |
+| 116 | `bansalkanav/GenAI-AgenticAI-From-Zero-to-Production` | 教程 |
+| 44 | `campusx-official/rag-eval-deepeval` | RAG + DeepEval 教学 |
+| 38 | `SDETBMan/qa-automation-portfolio` | 测试工程 |
+| 37 | `theaiautomators/deepeval-wrapper` | REST 封装 |
+| 29 | `Srivatsa03/rag-redteam` | RAG 红队 |
+| 22 | `droideronline/pyconf-hyd-2026-trustworthy-llm-agents` | workshop |
+| **19** | `Magical-Bear/langchain-mcp-deepeval-trajectory-eval` | **多 MCP 工具轨迹评测 demo**（与本项目 agentic 形态最像） |
+| 16 / 15 | `avnlp/rag-pipelines` / `avnlp/dspy-opt` | 高级 RAG 管线 |
+
+**`topic:deepeval`（total 212）**：`cnllm` 173 → `GenAI-AgenticAI…` 116 → `qa-automation-portfolio` 38 → `avnlp/rag-pipelines` 16 → `avnlp/dspy-opt` 15 → `messeb/py-deepeval-behave-bdd-testing-example` 11 → `awslabs/uaef`（AWS 的通用 Agent 评测框架）6
+
+**README 提到 `deepeval`（total 9,977）**：`mlabonne/llm-course` 83,619 → `rohitg00/ai-engineering-from-scratch` 69,889 → `NirDiamant/RAG_Techniques` 29,888 → `EthicalML/awesome-production-machine-learning` 21,011 → `confident-ai/deepeval` 18,897
+
+**读法**：除官方外**生态里"有星"的 DeepEval 项目几乎没有**（第二名即掉到 173），且 agentic 轨迹类最高仅 19★。⇒ **无可抄的生产级参考，设计风险自担**。

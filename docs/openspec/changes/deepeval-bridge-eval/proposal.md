@@ -1,0 +1,43 @@
+## Why
+
+**现状**：评测用 RAGAS **0.4.x 现代栈**（`ragas.metrics.collections` + `llm_factory` + `@experiment`）去评一个**多轮 LangGraph Agent**，属范式错配，已实测出两类硬问题：
+
+1. **喂法错配**：`src/cli/eval_ragas.py:164` 把 Agent **全部累积工具产出**（跨多次 `retrieve_kb`，不去重、不重排）当作 RAGAS 的 `retrieved_contexts`。而 RAGAS 的 `c(q)` 定义是"为回答**这个** q 检索出的那批"——多轮并集**既不是任何一轮的 `c(qᵢ)`、也不是 `c(q)`**。后果实测：`ctx=5` 的题 context_precision 均值 ≈0.73，`ctx≥10` 的题 ≈**0.17**。
+2. **口径不可复现**：同题面、同 TOP_K，跨配置出现 **1.0 → 0.0** 的翻转；且存在 `context_recall=0.875` 而 `context_precision=0.0` 的自相矛盾行（Q13 已用原始 context 逐条证实是裁判判错，不是检索错）。
+
+**为什么改成 DeepEval 入口**：DeepEval 对"评什么"有原生姿态——上下文轴与 **agentic 行为轴**（`task_completion` / `step_efficiency` / `plan_*` / `tool_correctness` / **`agent_loop_detection`**）都齐，且自带 reason、可 debug、JSON 可约束、与 pytest/CI 集成。它内建的 **RAGAS 桥**（`deepeval/metrics/ragas.py`）能让我们**继续用 RAGAS 的经典四指标**，不必自己维护第二套 ragas 管道。
+
+**为什么彻底弃用 0.4.x**：经源码与官方材料核对，RAGAS 现代与经典**公式同源**（官方迁移标准就是"新实现匹配 legacy 行为"，PR #2370 并配了逐指标比分工具），差别只在**接口**（`ascore` vs `evaluate`）与 **LLM 管道**（现代可传 `temperature=0`、经典由 `LangchainLLMWrapper` 统一改写）。既然决定"只保留一条"，就没有理由同时背 0.4.x 的 API 面与依赖面。
+
+## What Changes
+
+- **评测打分入口统一到 DeepEval**：以 DeepEval 的度量对象 + `evaluate()` / `pytest` 形态承载评测，接受其温度与结果口径。
+- **RAGAS 指标经 DeepEval 桥调用，采用经典四指标**：`RAGASContextualPrecisionMetric` / `RAGASContextualRecallMetric` / `RAGASAnswerRelevancyMetric` / `RAGASFaithfulnessMetric`（或聚合 `RagasMetric`）。
+- **弃用 RAGAS 0.4.x 现代栈**：移除对 `ragas.metrics.collections` / `llm_factory` / `@experiment` 的依赖；项目内 ragas 下移到 **0.3.x**。
+- **出题路代码保留、不再调用**：`src/cli/eval_ragas_generate.py` 原样留存（只作为历史能力），其依赖的 0.4.x `default_transforms_for_prechunked` 随之不再需要。
+- **`answer_correctness` 退出评测**：它不属于 RAGAS 经典四指标，本次不做替代。
+- **基线重跑、阈值重标定**：口径换了尺子（且 `answer_relevancy` 内部走 `n=3` / 温度 0.3），历史分数不作对照基线。
+- **保留一个"逃生门"**：若桥的 NaN 或默认模型坑在实际运行中明显，改为 **DeepEval 只做采样与用例构造、单独跑 ragas 0.3.x 评分**。该路径不常驻、只在桥不可用时启用。
+
+## Capabilities
+
+### New Capabilities
+
+（无 —— 本次是替换既有评测能力的实现与口径，不新开 capability。）
+
+### Modified Capabilities
+
+- `evaluation-pipeline`：① **ADD** 评测打分入口与指标来源（入口 = DeepEval；RAGAS 指标 = 经典四指标经桥调用）；② **REMOVE** 答案正确性指标（`answer_correctness` 退出）；③ **MODIFY** 主分口径与门禁阈值（换尺子 → 重标定）；④ **ADD** Agent 行为指标（DeepEval 原生 agentic 族，含 `agent_loop_detection`）；⑤ **MODIFY** 评测运行环境与依赖（`ragas==0.3.9` + deepeval；依赖降级为既定事实）；⑥ **MODIFY** QA 出题路的调用状态（代码保留、调用下线）；⑦ **ADD** 0.4.x 遗留物（现代栈代码 / 配置 / 测试 / ADR）的**显式处置**（复用 / 删除 / 改写，不留悬空引用）。
+
+> 具体 delta 文本（`specs/evaluation-pipeline/spec.md`）与 `tasks.md` 在下一轮产出；本次先定 proposal 与 design。
+
+## Impact
+
+- **代码**：`src/cli/eval_ragas.py`（打分阶段从 modern `@experiment` 改为 DeepEval 度量对象）；`src/cli/eval_scoring.py`（`build_metrics` 从 modern collections 改为桥的度量构造；`apply_sample_masks` / `main_score_means` 口径需随指标名与 NaN 语义调整）；`src/cli/eval_ragas_generate.py`（**仅**去调用，代码保留）。
+- **0.4.x 遗留清理（本次**新增**范围，见 design D11）**：删 `build_ragas_judge()` / `build_ragas_embeddings()`（`src/infra/llm/provider/factory.py:132/169`）与（核引用后）`build_native_client()`；删/改写 `_EvalResult` / `_score_metrics` / `_score_metric_with_retry` / `_exc_chain_summary` / `_judge_failure_note`；**复用** `RAGAS_JUDGE_MAX_TOKENS` / `RAGAS_JUDGE_THINKING` / `RAGAS_HTTP_TIMEOUT_*` / `RAGAS_HTTP_MAX_RETRIES` / `RAGAS_METRIC_MAX_ATTEMPTS`（改嫁到 `ChatOpenAI` 的 `max_tokens` / `extra_body` / `http_client`(细粒度 `httpx.Timeout`) / `max_retries=0`——已抓包证实透传、已核字段存在，**ADR-0024 的两项收益完整保住**）；删/重写 `tests/cli/test_eval_modern_stack.py`、`test_metric_retry.py`、`tests/infra/llm/provider/test_ragas_modern_factories.py`、`test_native_client.py`。
+- **文档**：**追加新 ADR** 取代 `docs/adr/0024-ragas-judge-client-policy.md` 的裁判 client 政策，并在旧 ADR 的 Status 加**反向指针** + 更新 ADR 索引；`docs/agents/logging-rules.md` 的 `judge call` / `metric retry` 事件口径随埋点位置重述。
+- **依赖**：新增 `deepeval`（4.2.9 量级）；`ragas` 由 **0.4.3 → 0.3.x**；连带 `click`、`huggingface_hub` 下移（见 design D1）。**这是本次唯一的"不可逆"动作**（`pyproject.toml` 的 pin 要改）。
+- **数据**：`eval_report` 表的指标列与 `detail_json` 口径随指标名/阈值变；`data/ragas/reports/` 旧报告**不再作为基线**。
+- **行为**：门禁阈值必须在重跑后重新标定；报告与台账的指标名从"现代五指标"变为"经典四指标 + agentic 族"。
+- **观测**：Langfuse 回写沿用现有通道；score 命名空间需按新指标名调整。
+- **不改**：Agent 图与生产链路（`src/agents/**`）、`kb_eval` API 的形状、前端。
