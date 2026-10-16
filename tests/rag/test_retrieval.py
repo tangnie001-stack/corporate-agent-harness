@@ -172,7 +172,10 @@ class TestRerank:
         ]
         # r0 距离 0.9 → 分 0.1，r1 距离 0.5 → 分 0.5；分数降序下先 r1 后 r0
         results[1].distance = 0.5
-        with patch("src.rag.retrieval.with_retry", side_effect=lambda f, **kw: f):
+        with patch(
+            "src.rag.retrieval.retry_policy.call_with_retry",
+            side_effect=lambda f, *a, **kw: f(*a, **kw),
+        ):
             contexts = retrieval.rerank_results("query", results, reranker)
         assert len(contexts) == 2
         assert [c.score for c in contexts] == pytest.approx([0.5, 0.1])

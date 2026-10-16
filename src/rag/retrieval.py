@@ -21,10 +21,10 @@ from src.config.const import (
 )
 from src.core.log_events import Event
 from src.core.logging import log_event
+from src.infra import retry_policy
 from src.infra.db.vector_store import VectorStore
 from src.infra.db.vector_store.types import ChunkResult
 from src.infra.llm.chat_message import ChatMessage
-from src.models import with_retry
 from src.rag.context import RAGContext
 from src.rag.fusion import rrf_fusion
 
@@ -168,12 +168,14 @@ def rerank_results(
     docs = [r.content for r in results]
     used_fallback = False
     try:
-        reranked = with_retry(
+        reranked = retry_policy.call_with_retry(
             reranker.rerank,
-            max_attempts=RETRY_MAX_ATTEMPTS,
+            docs,
+            query,
+            attempts=RETRY_MAX_ATTEMPTS,
             initial_interval=RETRY_INITIAL_INTERVAL,
             backoff=RETRY_BACKOFF_FACTOR,
-        )(docs, query)
+        )
     except Exception as e:  # noqa: BLE001
         log_event(
             Event.RERANK_FAILED,
