@@ -819,7 +819,7 @@ def main() -> None:
         from src.infra.db.engine import run_and_dispose
         from src.infra.db.vector_store import VectorStore
         from src.infra.llm.prompt_manager import PromptManager
-        from src.models import get_judge_llm, get_llm, get_rerank
+        from src.models import get_llm, get_rerank
 
         core_logging.log_event(Event.RAG_COMPONENT_INIT)
         vector_store = VectorStore()
@@ -830,21 +830,20 @@ def main() -> None:
         #   评分，避免自我评价偏置；模型名空/None 时由 registry 兜底。
         llm = get_llm()  # 选手：生产模型（含生产 temperature）
         reranker = get_rerank()
-        judge_llm = get_judge_llm()
-        core_logging.log_event(
-            Event.EVAL_MODEL_INIT,
-            sut=settings.LLM_MODEL,
-            judge=judge_llm.model_name,
-        )
         # 裁判走 provider 层桥工厂（langchain chat model + http_async_client 细粒度
         # 超时 + 请求级观测），embeddings 复用既有 build_embeddings()；证据桶跨题复用，
-        # 每题的 mark/reset 在 score_rows 内做。
+        # 每题的 mark/reset 在 score_rows 内做。桥裁判全程唯一实例：EVAL_MODEL_INIT
+        # 日志与报告元数据（judge_model）均取自它，不再构造 temperature=0 的旧裁判。
         from src.infra.llm.provider.factory import build_bridge_judge, build_embeddings
         from src.infra.llm.provider.http_observability import HookEvidence
 
         judge_evidence = HookEvidence()
-        metrics = build_metrics(
-            build_bridge_judge(evidence=judge_evidence), build_embeddings()
+        bridge_judge = build_bridge_judge(evidence=judge_evidence)
+        metrics = build_metrics(bridge_judge, build_embeddings())
+        core_logging.log_event(
+            Event.EVAL_MODEL_INIT,
+            sut=settings.LLM_MODEL,
+            judge=bridge_judge.model_name,
         )
 
         # 构建 LangGraph
@@ -899,10 +898,10 @@ def main() -> None:
         masked_df = apply_sample_masks(result.to_pandas(), sample_classes)
 
         # 报告/台账元数据：口径版本、温度档、NaN 计数、裁判版本与模型显式性。
-        # judge_model 复用上方 EVAL_MODEL_INIT 同源的 judge_llm.model_name；
+        # judge_model 复用上方 EVAL_MODEL_INIT 同源的 bridge_judge.model_name；
         # 温度由 ragas 按 n 分档、本项目不可控，故只记录事实（见 build_report_meta）。
         report_meta = build_report_meta(
-            judge_model=judge_llm.model_name,
+            judge_model=bridge_judge.model_name,
             nan_stats=nan_cell_stats(masked_df),
             runner_versions={
                 "ragas": version("ragas"),

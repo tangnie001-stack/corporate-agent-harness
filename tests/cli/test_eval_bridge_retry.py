@@ -20,6 +20,17 @@ class _Seq:
         return self.score
 
 
+class _Raising:
+    """每次 measure 都抛异常，异常链携带独立根因（而非返回 NaN）。"""
+
+    def __init__(self):
+        self.calls = 0
+
+    def measure(self, test_case):
+        self.calls += 1
+        raise RuntimeError("outer") from TimeoutError("boom")
+
+
 ROW = {"q_index": 0, "trace_id": "t0"}
 
 
@@ -51,6 +62,20 @@ def test_exhausted_retries_report_error_and_return_nan():
     assert math.isnan(value)
     assert err.startswith("faithfulness:")
     assert m.calls == 3, "有界：RAGAS_METRIC_MAX_ATTEMPTS=3"
+
+
+def test_measure_raises_chain_survives_into_error_and_retries():
+    m = _Raising()
+    value, err = _score_metric_with_retry(
+        "faithfulness", m, object(), ROW, HookEvidence()
+    )
+
+    assert math.isnan(value)
+    assert m.calls == 3, "有界：RAGAS_METRIC_MAX_ATTEMPTS=3"
+    # 异常链须完整存活进错误串：外层类 + 根因类 + 根因消息，而非退化回 ":nan"
+    assert "RuntimeError" in err and "TimeoutError" in err
+    assert "boom" in err, "根因消息必须存活进错误串"
+    assert err != "faithfulness:nan"
 
 
 def test_rate_limit_evidence_skips_outer_retry():
