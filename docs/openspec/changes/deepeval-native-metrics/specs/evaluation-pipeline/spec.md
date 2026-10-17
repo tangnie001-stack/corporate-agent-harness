@@ -88,21 +88,23 @@ The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as pr
 
 **两类 `NaN`（只分「掩码」与「非掩码」；SHALL NOT 设计可归因的子分类）**：
 
-- **(a) 掩码跳过型**：`empty` 样本的 context 指标被项目主动掩码为 `NaN`。天然不在纯 KB 分母里。
-- **(b) 非掩码型**：DeepEval 原生指标可能**合法**返回 `NaN`（如无可校验陈述时的 `Faithfulness`），也可能因裁判异常/解析失败而失败。二者在指标出口**不可区分** ⇒ SHALL NOT 依据请求级日志做子分类（该分类不可实现）。
+- **(a) 掩码跳过型**：`empty` 样本的四指标与三项诊断被项目主动掩码为 `NaN`/`null`。天然不在纯 KB 分母里。
+- **(b) 非掩码型**：仅表示**裁判异常/解析失败/超时**等失败。DeepEval 4.2.9 的原生指标在"无 verdict / 无可校验陈述"时**不返回 `NaN`**——`Faithfulness` / `AnswerRelevancy` 返回 **1.0**（`score_qag_verdicts(empty_score=1)`），`ContextualPrecision` / `ContextualRecall` / `ContextualRelevancy` 返回 **0**。因此 SHALL NOT 再把"合法缺值"当作 `NaN` 的来源，也 SHALL NOT 依据请求级日志做子分类（该分类不可实现）。
 
-因此评测 SHALL：① 让 `NaN` 显式可见、且**掩码 / 非掩码在报告中标记不同**（SHALL NOT 静默计入均分）；② **单独统计非掩码 `NaN` 计数**并在报告中呈现；③ **以「非掩码 `NaN`」为判据执行有界重试**（`EVAL_METRIC_MAX_ATTEMPTS`）；**限流类（HTTP 429 / `openai.RateLimitError`）SHALL 与其它失败一样由外层有界重试**——换用原生指标后，不再有 RAGAS 框架层的 429 重试，原"429 不重试"的豁免依据已消失；④ 失败留证 SHALL 由**框架内部请求级日志**承载（见「Framework-internal LLM calls…」）；**该日志只做留证，SHALL NOT 被当作分类依据**；⑤ 若该日志完全不可用，报告 SHALL **显式标注"请求级日志不可用"**。
+因此评测 SHALL：① 让 `NaN` 显式可见、且**掩码 / 非掩码在报告中标记不同**（SHALL NOT 静默计入均分）；② **单独统计非掩码 `NaN` 计数**并在报告中呈现；③ **以「非掩码 `NaN`」为判据执行有界重试**（`EVAL_METRIC_MAX_ATTEMPTS`）；**限流类（HTTP 429 / `openai.RateLimitError`）SHALL 与其它失败一样由外层有界重试**，退避 SHALL 为指数 + jitter 并优先采用 `Retry-After`；裁判 SDK 重试 SHALL 固定为 0（`max_retries=0`），避免与外层叠乘；④ 失败留证 SHALL 由**框架内部请求级日志**承载（见「Framework-internal LLM calls…」）；**该日志只做留证，SHALL NOT 被当作分类依据**；⑤ 若该日志完全不可用，报告 SHALL **显式标注"请求级日志不可用"**。
 
-**空回答的预检**：跑图失败（`answer=""`）的样本在进入指标评分前 SHALL 直接记 `NaN` 并跳过该题四指标，SHALL NOT 让 `MissingTestCaseParamsError` 触发无意义的三次重试。
+**失败预检**：跑图失败或未检索到材料（`sample_class == empty`，回答可能是 `[ERROR] ...` 而非空串）的样本在进入指标评分前 SHALL 直接记 `NaN` 并跳过该题全部指标（含诊断），SHALL NOT 让 `[ERROR]` 文本进入 `NonAdvice`，也 SHALL NOT 触发无意义的多次重试。诊断指标不进主分，失败时 SHALL 直接记 `NaN`/`null`，SHALL NOT 重试。
 
-**接受的代价（明写，勿当 bug）**：合法缺值型 `NaN` 会被计入分子、并触发一次有界重试（对该情形是**无收益的浪费**，不是错误）。阈值 10%（76 格允许 7 格）即为吸收该水位而设；**v6 定稿后的首轮全量**跑出真实分布后 SHALL 复核该假设并定稿（v5 分布仅作基线，不用于标定）。
+**错误信息可见**：`score_rows` 的 `error` SHALL 同时写入 Markdown 表格与 `detail_json` 条目；仅写 CSV 不满足"样本行携带失败信息"。
+
+**接受的语义（明写，勿当 bug）**：原生指标对空 verdict 返回 1.0 / 0 而非 `NaN`，主分在空陈述样本上可能偏乐观；本 change 接受该原生语义，不自行改写 verdict 解析。NaN 率只度量失败面；阈值 10%（76 格允许 7 格）为经验初值，**v6 定稿后的首轮全量**跑出真实分布后 SHALL 复核并定稿（v5 分布仅作基线，不用于标定）。
 
 `NaN`（指标出不来值）与样本类别 `empty`（未检索到材料）SHALL 被区分为**两种不同的跳过语义**。
 
 #### Scenario: A failed metric stays visible on its row
 
 - **WHEN** 某样本的某个指标调用失败
-- **THEN** 该样本行 SHALL 仍出现在报告中，且 SHALL 携带该失败的错误信息
+- **THEN** 该样本行 SHALL 仍出现在报告中，且 Markdown 表格与 `detail_json` 条目 SHALL 都携带该失败的错误信息
 
 #### Scenario: No row is silently dropped
 
@@ -116,7 +118,7 @@ The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as pr
 
 #### Scenario: Masked NaN is excluded by the denominator
 
-- **WHEN** 某 `empty` 样本的 context 指标被掩码为 `NaN`
+- **WHEN** 某 `empty` 样本的四指标与诊断指标被掩码为 `NaN`/`null`
 - **THEN** 该格 SHALL NOT 计入 NaN 率分子/分母，且 SHALL 在报告中以**掩码**语义标记
 
 #### Scenario: No sub-classification of non-masked NaN is attempted
@@ -124,20 +126,30 @@ The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as pr
 - **WHEN** 审阅实现
 - **THEN** SHALL NOT 出现"按请求级日志把 NaN 分为合法缺值与裁判失败"的逻辑
 
+#### Scenario: Empty verdicts follow native semantics
+
+- **WHEN** 某样本的回答抽取不出可校验陈述 / verdict
+- **THEN** `Faithfulness` / `AnswerRelevancy` SHALL 采用原生返回值 1.0，CP/CR 采用 0，SHALL NOT 由项目改写成 `NaN`
+
 #### Scenario: Retry is keyed on the non-masked NaN
 
-- **WHEN** 某题某指标首次返回非掩码 `NaN`
+- **WHEN** 某题某四指标首次返回非掩码 `NaN`
 - **THEN** 评测 SHALL 按 `EVAL_METRIC_MAX_ATTEMPTS` 重试该指标（判据为非掩码 `NaN`）
 
 #### Scenario: Rate-limit failures are retried by the outer layer
 
 - **WHEN** 某格失败于 HTTP 429
-- **THEN** 外层 SHALL 仍按 `EVAL_METRIC_MAX_ATTEMPTS` 有界重试（不再有 RAGAS 框架层重试可依赖）
+- **THEN** 外层 SHALL 按 `EVAL_METRIC_MAX_ATTEMPTS` 有界重试，退避为指数 + jitter 并优先采用 `Retry-After`；SDK 重试 SHALL 为 0
 
-#### Scenario: Empty answer skips scoring without retries
+#### Scenario: Failed generation skips scoring without retries
 
-- **WHEN** 某题跑图失败、回答为空
-- **THEN** 该题四指标 SHALL 直接记 `NaN`，SHALL NOT 触发三次重试
+- **WHEN** 某题跑图失败或未检索到材料（`sample_class == empty`，回答可能是 `[ERROR] ...`）
+- **THEN** 该题四指标与诊断 SHALL 直接记 `NaN`/`null`，SHALL NOT 触发重试，`[ERROR]` 文本 SHALL NOT 进入 `NonAdvice`
+
+#### Scenario: Diagnostic failures are not retried
+
+- **WHEN** 某诊断指标失败
+- **THEN** 该项 SHALL 直接记 `NaN`/`null`，SHALL NOT 触发 `EVAL_METRIC_MAX_ATTEMPTS` 重试
 
 ### Requirement: Reported overall score uses the main-score 口径
 
@@ -147,7 +159,11 @@ The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as pr
 
 判定「通过」的阈值 SHALL 由**单一常量**提供 —— SHALL NOT 在评测落库与前端各硬编码一份。阈值取值 SHALL 在 **v6 定稿后**重新标定（换尺子后历史阈值作废；v5 分布仅作基线）。
 
-**Baseline 语义（新口径首轮）**：首次以 `deep-eval-native` 口径跑出的全量 SHALL 以 `run_type="baseline"` 落库；`run_type` SHALL 由 CLI 参数 `--run-type` 写入（默认 `manual`），SHALL NOT 由"是否首轮"自动推断。`kb_eval` 对该 `run_type` SHALL 返回 `passed=None`（SHALL NOT 用未标定的阈值判红/绿），前端 SHALL 以**三态**渲染：`passed=null` 显示"未标定"（灰色，SHALL NOT 显示 ✓/✗），`true` 显示通过，`false` 显示不通过；前端 SHALL NOT 用 `overall_score >= 阈值` 自行重算通过态。
+**Baseline 语义（新口径首轮）**：首次以 `deep-eval-native` 口径跑出的全量 SHALL 以 `run_type="baseline"` 落库；`run_type` SHALL 由 CLI 参数 `--run-type` 写入（默认 `manual`），SHALL NOT 由"是否首轮"自动推断。**v6 阈值标定前，所有新口径全量运行 SHALL 显式传 `--run-type baseline`**；`manual` 仅用于阈值标定后的常规回归。`--run-type baseline` 与 `--gate` SHALL 互斥（启动即报错）。
+
+`kb_eval` 对 `run_type="baseline"` SHALL 返回 `passed=None`（SHALL NOT 用未标定的阈值判红/绿），该转换 SHALL 落在 API 响应组装层（`_build_eval_payload`），SHALL NOT 依赖把数据库 `passed` 写成 `NULL`（该列非空）。前端 SHALL 以**三态**渲染 **KB 评测徽标**：`passed=null` 显示"未标定"（灰色，SHALL NOT 显示 ✓/✗），`true` 显示通过，`false` 显示不通过；前端 SHALL NOT 用 `overall_score >= 阈值` 自行重算通过态。**分块质量弹窗**（`showEvalModal`）不是 KB 评测消费者，其布尔 `passed` 与 0.70 阈值 SHALL NOT 被本 change 改动。
+
+API 返回四项分值与 `overall_score` 时 SHALL 用 `is not None` 判断，SHALL NOT 用真值判断——原生指标合法的 `0.0` 不得被转成 `null`（否则前端会把"真实 0 分"当成"没有评测"而隐藏徽标）。
 
 跨口径分数 SHALL NOT 被直接比较：报告与台账 SHALL 标注「口径版本」（`deep-eval-native`），历史（modern-0.4.x / bridge-0.3.x）的分数不得作为回归判据。
 
@@ -166,12 +182,22 @@ The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as pr
 #### Scenario: Frontend renders the unknown pass state as neutral
 
 - **WHEN** `kb_eval` 返回 `passed=None`
-- **THEN** KB 徽标与评估弹窗 SHALL 显示"未标定"（灰色），且 SHALL NOT 显示 ✓ / ✗，也 SHALL NOT 依据 `overall_score` 重新判定
+- **THEN** KB 评测徽标 SHALL 显示"未标定"（灰色），且 SHALL NOT 显示 ✓ / ✗，也 SHALL NOT 依据 `overall_score` 重新判定；分块质量弹窗 SHALL NOT 被改动
 
 #### Scenario: Run type comes from the CLI argument
 
 - **WHEN** 用户以 `--run-type baseline` 运行评测
 - **THEN** 新写入的 `eval_report` 行 SHALL 为 `run_type="baseline"`；未传该参数时 SHALL 为 `manual`
+
+#### Scenario: Baseline cannot be gated
+
+- **WHEN** 同时传 `--run-type baseline` 与 `--gate`
+- **THEN** 启动即报错（非零退出），不执行任何评测
+
+#### Scenario: Legitimate zero scores survive the API
+
+- **WHEN** 某指标的真实值为 `0.0`
+- **THEN** `kb_eval` 响应 SHALL 返回 `0.0`（SHALL NOT 变成 `null`）
 
 #### Scenario: Pass threshold is defined once
 
@@ -190,7 +216,7 @@ The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as pr
 - `src/cli/eval_ragas_generate.py` SHALL 被删除（含 `run_generate` / `_build_transforms` / `_ensure_vertexai_stub`）。
 - 仍被评测路径使用的**测试集加载器** SHALL 迁入 `src/cli/testset_io.py`，且 SHALL 返回**完整 sample**（含为 v6 预留的 `expected_tools` 字段），SHALL NOT 连带 ragas 依赖。
 - 评测输入 SHALL 仍为**固定的既有版本文件**（`testset_<kb>_v5.json`）；评测与出题 SHALL 保持解耦。
-- `POST /api/ragas/generate` SHALL 下线（410 + 前迁路径），SHALL NOT 让用户撞到裸 `ImportError`。
+- `POST /api/ragas/generate` SHALL 保留**路由挂载**并返回 410 + 前迁路径（改为不 import 出题模块的桩实现），SHALL NOT 摘除路由（摘除会变成 404），SHALL NOT 让用户撞到裸 `ImportError`。
 
 #### Scenario: Evaluation does not trigger testset generation
 
@@ -257,13 +283,13 @@ The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as pr
 
 弃用 0.4.x 时，为现代栈而写的代码与配置 SHALL 被**逐项处置**（复用 / 删除 / 改写），SHALL NOT 留下悬空引用或失义配置。
 
-- **复用（改嫁到 provider 层）**：`JUDGE_MAX_TOKENS` / `JUDGE_THINKING` SHALL 经 `build_chat("judge", max_tokens=…, thinking=…)` 传入；`EVAL_METRIC_MAX_ATTEMPTS` SHALL 保留（判据见「Metric failures」）；`JUDGE_HTTP_TIMEOUT_*` 与 `JUDGE_HTTP_MAX_RETRIES` SHALL 经 **`http_async_client` + `max_retries=0`** 保留。
-- **删除**：`build_ragas_judge()` / `build_ragas_embeddings()` / `build_native_client()` SHALL 已删除；`ragas` 依赖 SHALL 已从 `pyproject.toml` 移除；所有 `RAGAS_*` 配置 SHALL 已重命名（`JUDGE_*` / `EVAL_*`）或删除（出题专用）。
+- **复用（改嫁到 provider 层）**：`JUDGE_MAX_TOKENS` / `JUDGE_THINKING` SHALL 经 `build_chat("judge", max_tokens=…, thinking=…)` 传入；`EVAL_METRIC_MAX_ATTEMPTS` SHALL 保留（判据见「Metric failures」）；`JUDGE_HTTP_TIMEOUT_*` SHALL 经 **`http_async_client`** 保留。**`JUDGE_HTTP_MAX_RETRIES` SHALL 删除**，裁判 `max_retries` SHALL 硬编码 0（可配置成 >0 会与外层重试叠乘）。
+- **删除**：`build_ragas_judge()` / `build_ragas_embeddings()` / `build_native_client()` SHALL 已删除；`ragas` 依赖 SHALL 已从 `pyproject.toml` 移除；所有 `RAGAS_*` 配置 SHALL 已重命名（`JUDGE_*` / `EVAL_*`）或删除（出题专用 / `RAGAS_HTTP_MAX_RETRIES`）。
 - **旧配置不兼容**：启动期 SHALL 检测残留的 `RAGAS_*` 环境变量并**立即失败**，错误信息 SHALL 列出「旧名 → 新名」映射；SHALL NOT 回退读取旧名。环境模板 SHALL 只写新名（迁移对照表放 runbook）。
 - **旧目录保留**：部署脚本 SHALL 只创建 `data/deepeval/`，SHALL NOT 自动删除旧 `data/ragas/`；runbook SHALL 提示人工确认后清理。
-- **命名收尾**：CLI 模块 SHALL 为 `src/cli/eval_deepeval.py`，测试 SHALL 为 `test_eval_deepeval*` / `test_eval_native_*`，台账 SHALL 为 `docs/agents/eval-ledger.md`，Langfuse `--session-id` 默认值 SHALL 为 `deepeval_eval_session`。
+- **命名收尾**：CLI 模块 SHALL 为 `src/cli/eval_deepeval.py`，测试 SHALL 为 `test_eval_deepeval*` / `test_eval_native_*`，台账 SHALL 为 `docs/agents/eval-ledger.md`，Langfuse `--session-id` 默认值 SHALL 为 `deepeval_eval_session`；报告 `caliber` / 默认 CSV 文件名前缀 / Markdown 标题 / 日志事件 `judge model missing` SHALL 一并切换，SHALL NOT 残留 `bridge-0.3.9` 或 `RAGAS Evaluation Report`。
 - **改写**：`eval_scoring.build_metrics()` SHALL 改为原生四指标；`judge call` / `metric retry` 日志事件口径 SHALL 随之重述；`--generate` 文案 SHALL 指向 DeepEval `Synthesizer`。
-- **ADR**：SHALL 追加新 ADR（0027）取代 ADR-0026 的桥相关部分与 ADR-0022/0023 的出题决策，并在旧 ADR 的 Status 加**反向指针**、更新索引。
+- **ADR**：SHALL 追加新 ADR（0027）**完全取代** ADR-0026 / ADR-0022 / ADR-0023，并在 0027 正文重述仍生效的约束（async hooks / 细粒度超时 / `max_tokens` / `thinking` / `max_retries=0` / 评估检索镜像生产）；三份旧 ADR 的 Status SHALL 加**反向指针**并更新索引。
 
 **判据边界**：自查 SHALL 以「**最终态**无悬空引用」为准，SHALL NOT 要求每个中间提交都无悬空引用——删除动作 SHALL 与"调用点改写 + 受影响测试"**同一提交**。
 
@@ -276,6 +302,11 @@ The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as pr
 
 - **WHEN** 审阅裁判构造处
 - **THEN** token 上限、思考开关、细粒度超时 SHALL 以 `ChatOpenAI` 参数形式落到裁判上
+
+#### Scenario: SDK retries are fixed at zero
+
+- **WHEN** 审阅裁判构造处
+- **THEN** `max_retries` SHALL 为字面量 0，且 SHALL NOT 存在可将其配成 >0 的环境变量
 
 #### Scenario: Legacy environment names fail fast
 
@@ -330,7 +361,7 @@ The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as pr
 **分子/分母 SHALL 精确定义（单位是"格"，不是"题"）**：
 
 - **分母** = **纯 KB 样本 × 四项指标**（格数）。实测有效纯 KB = 19 题 ⇒ 分母 76 格；`>10%` 即 `>7.6 格 ⇒ ≥8 格`判失败。
-- **分子** = **纯 KB 格里的全部 `NaN`**（掩码类由分母天然排除；合法缺值型与失败型一并计入）。
+- **分子** = **纯 KB 格里的全部非掩码 `NaN`**（掩码类由分母天然排除；原生指标的空 verdict 返回 1.0/0、不产生 NaN，故不计入）。
 
 NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提示；**是否启用由人决定**，启用 SHALL 在台账记录原因与生效轮次。
 
@@ -451,11 +482,12 @@ NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提�
 
 评测 SHALL 提供三项**诊断指标**，仅作观测，SHALL NOT 进入主分、门禁或 `eval_report` 的四指标列：
 
-- `ContextualRelevancyMetric`：不需要 `expected_output`；评分层 SHALL 只对**前 8 条** `retrieval_context` 判定（常量 `EVAL_RELEVANCY_MAX_CONTEXTS`），SHALL NOT 原地修改共享 test case；报告 SHALL 标注"仅判前 8 条（并集顺序，非最相关 8 条）"。
-- `NonAdviceMetric(advice_types=["financial"])`：财务合规口径。
+- `ContextualRelevancyMetric(model=judge)`：不需要 `expected_output`；评分层 SHALL 只对**前 8 条** `retrieval_context` 判定（常量 `EVAL_RELEVANCY_MAX_CONTEXTS`），SHALL NOT 原地修改共享 test case；报告 SHALL 标注"仅判前 8 条（并集顺序，非最相关 8 条）"。
+- `NonAdviceMetric(advice_types=["financial"], model=judge)`：财务合规口径。
+- 每个诊断指标 SHALL 显式传 `model=judge`，SHALL NOT 使用 DeepEval 的默认模型（`gpt-3.5-turbo` 已停服）。
 - `ToolCorrectnessMetric`：本 change SHALL NOT 构造（现有题集无 `expected_tools`）；待 `deepeval-synthesizer-testset` 产出该标注后启用，在此之前其值 SHALL 记 `N/A`。
 
-诊断指标的 `NaN` SHALL 与四指标的 `NaN` 分开计数，SHALL NOT 影响 NaN 率门禁。
+诊断指标的 `NaN` SHALL 与四指标的 `NaN` 分开计数，SHALL NOT 影响 NaN 率门禁。诊断指标失败 SHALL 直接记 `NaN`/`null`，SHALL NOT 重试。`sample_class == empty` 或跑图失败的样本，三项诊断 SHALL 一并写 `NaN`/`null`，SHALL NOT 让 `[ERROR]` 文本进入 `non_advice`、也 SHALL NOT 让空 context 的 `0.0` 进入诊断均值。
 
 诊断指标的逐题值 SHALL 写入 `eval_report.detail_json`，键名使用**裸指标名**（`contextual_relevancy` / `non_advice` / `tool_correctness`），与四指标同级；`tool_correctness` 在本 change SHALL 写 `null`（键存在、值为空）。`kb_eval` API SHALL NOT 返回这三个键（只存不读）。"不进主分"SHALL 由 `EVAL_METRIC_COLUMNS` 白名单保证，SHALL NOT 依赖键名前缀。
 
@@ -463,6 +495,21 @@ NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提�
 
 - **WHEN** 审阅主分聚合与门禁
 - **THEN** `contextual_relevancy` / `non_advice` / `tool_correctness` SHALL NOT 出现在 `EVAL_METRIC_COLUMNS` 或门禁判据中
+
+#### Scenario: Diagnostics use the project judge
+
+- **WHEN** 构造任一诊断指标
+- **THEN** 构造实参 SHALL 显式传入 `model=judge`（`BridgeDeepEvalLLM`），SHALL NOT 走 `gpt-3.5-turbo` 默认值
+
+#### Scenario: Empty samples are masked out of diagnostics
+
+- **WHEN** 某样本 `sample_class == empty` 或跑图失败
+- **THEN** 三项诊断 SHALL 写 `NaN`/`null`，且 `non_advice` SHALL NOT 对 `[ERROR] ...` 文本评分
+
+#### Scenario: Diagnostic failures are not retried
+
+- **WHEN** 某诊断指标调用失败
+- **THEN** 该项 SHALL 直接记 `NaN`/`null`，SHALL NOT 触发有界重试
 
 #### Scenario: Diagnostics are stored for drill-down but not exposed
 
