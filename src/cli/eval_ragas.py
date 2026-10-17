@@ -288,7 +288,15 @@ async def _collect_one_question(
         )
         return answer, ctx_list, details, sample_class, trajectory
     except Exception as e:  # noqa: BLE001
-        core_logging.log_event(Event.QA_ANSWER_FAILED, index=index, err=str(e))
+        # `err` 只记 str(e)：超时类异常的 str 可能为空（如 TimeoutError()），
+        # 单凭它无法定位；补类型与 repr 作为排障证据（字段见 EVENT_SPECS）。
+        core_logging.log_event(
+            Event.QA_ANSWER_FAILED,
+            index=index,
+            err=str(e),
+            err_type=type(e).__name__,
+            err_repr=repr(e)[:200],
+        )
         return (
             f"[ERROR] {e}",
             [],

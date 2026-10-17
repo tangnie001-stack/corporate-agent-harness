@@ -247,7 +247,10 @@ EVENT_SPECS: dict[str, EventSpec] = {
         "question answer done", "cli", "info", ("index", "answer_len", "contexts")
     ),
     "question answer failed": EventSpec(
-        "question answer failed", "cli", "warning", ("index", "err")
+        "question answer failed",
+        "cli",
+        "warning",
+        ("index", "err", "err_type", "err_repr"),
     ),
     "metric mean": EventSpec("metric mean", "cli", "info", ("metric", "mean")),
     "metrics nan": EventSpec("metrics nan", "cli", "warning", ("counts",)),

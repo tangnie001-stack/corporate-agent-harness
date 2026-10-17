@@ -100,6 +100,13 @@ class RetryingReasoningChat(ReasoningPreservingChat):
             except BaseException as exc:  # 由 _should_retry 判定是否重试
                 attempt += 1
                 if not self._should_retry(exc, attempt):
+                    # 与 _astream 对齐：非流式路径也要留下"为何没重试"的证据
+                    logger.warning(
+                        "[llm] model retry skipped role={} path=agenerate err={} attempt={}",
+                        self.model_retry_role,
+                        type(exc).__name__,
+                        attempt,
+                    )
                     raise
                 self._log_retry(attempt, exc)
                 await self._sleep_before_retry(attempt)
