@@ -20,7 +20,7 @@
 | `sessions.py` | 会话：`POST /api/sessions/list`、`POST /api/sessions/messages`、`POST /api/sessions/delete`、`POST /api/sessions/cancel`、`GET /api/sessions/events`、`GET /api/sessions/tasks`、`GET /api/sessions/task-status` |
 | `feedback.py` | 回答反馈 `POST /api/feedback` |
 | `llm_test.py` | 连通性自检 `POST /api/llm/test` |
-| `ragas_generate.py` | 评估测试集生成 `POST /api/ragas/generate` |
+| `ragas_generate.py` | 已下线的出题端点 `POST /api/ragas/generate`（保留路由，恒返回 410 + 前迁路径） |
 | `capabilities.py` | 能力清单 `GET /api/skills`、`GET /api/agents` |
 | `wecom.py` | 企微智能机器人回调 `GET /api/wecom/callback`（URL 验证）、`POST /api/wecom/callback`（收消息/事件）；受 `WECOM_BOT_ENABLED` 控制，关闭时 404；且仅在 `WECOM_BOT_MODE=callback` 时可用，`long_connection` 模式下 404（长连接不经 HTTP 回调） |
 | `alerts.py` | 告警接入 `POST /api/alerts/webhook/{token}`（Grafana contact point 直连；token 在**路径**里，未配置或不匹配 `401`，路径缺 token 段 `404`） |

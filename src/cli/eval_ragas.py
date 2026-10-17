@@ -11,9 +11,9 @@
   python -m src.cli.eval_ragas --kb-id <kb-uuid>                          # 评估（最新测试集）
   python -m src.cli.eval_ragas --kb-id <kb-uuid> --testset-version 4       # 评估（指定测试集版本）
   python -m src.cli.eval_ragas --kb-id <kb-uuid> --gate                    # 评估并检查质量门禁
-  python -m src.cli.eval_ragas --kb-id <kb-uuid> --generate                # 生成测试集
-  python -m src.cli.eval_ragas --kb-id <kb-uuid> --generate --size 30      # 生成 30 条
   python -m src.cli.eval_ragas --list-kbs                                  # 列出可用知识库
+
+出题生成入口已下线（`--generate` 保留参数、命中即报错）。
 """
 
 import argparse
@@ -138,7 +138,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--generate",
         action="store_true",
-        help="生成测试集模式（从文档自动生成 QA 对）",
+        help="已下线（保留参数，命中即报错并指向 DeepEval Synthesizer）",
     )
     parser.add_argument(
         "--testset-version",
@@ -1207,18 +1207,13 @@ def main() -> None:
 
     # ---- generate 模式（已下线：硬护栏，design D8 / spec「The testset generation path
     #      is guarded against accidental invocation」）----
-    # 出题链依赖 ragas 0.4.x 的 default_transforms_for_prechunked，而评测侧统一下移到
-    # ragas==0.3.9 ⇒ 该路径在当前依赖线下必然失败。此处显式拦下并给出前迁路径，
-    # SHALL NOT 让用户撞到裸 ImportError（design D8 硬护栏）。
+    # 出题链已整体删除，此处显式拦下并给出前迁路径，SHALL NOT 让用户撞到裸 ImportError。
     if args.generate:
         print(
             "error: --generate 已下线（出题生成入口不再经 CLI 提供）。\n"
-            "原因：出题链依赖 ragas 0.4.x 的 default_transforms_for_prechunked，"
-            "而评测侧已统一下移到 ragas==0.3.9，该路径在当前依赖线下必然失败。\n"
             "前迁路径：DeepEval 自带的出题器 Synthesizer"
             "（deepeval.synthesizer.Synthesizer.generate_goldens_from_docs(...) -> List[Golden]），"
-            "其产出字段（input / expected_output / retrieval_context）与评测输入同构。\n"
-            "若确需暂用旧出题路，须在临时环境装回 ragas==0.4.3。"
+            "由后续 change deepeval-synthesizer-testset 提供。"
         )
         sys.exit(1)
 
@@ -1238,7 +1233,7 @@ def main() -> None:
         )
 
         # 从 JSON 加载测试集
-        from src.cli.eval_ragas_generate import _load_latest_testset
+        from src.cli.testset_io import _load_latest_testset
 
         try:
             questions, ground_truth = _load_latest_testset(
@@ -1254,11 +1249,6 @@ def main() -> None:
         core_logging.log_event(Event.EVALUATION_RUN, kb_id=kb_id)
 
         # ---- 初始化 RAG 组件 ----
-        # ragas 0.4.3 + langchain-community>=0.4 兼容：先建 vertexai stub 再导入 ragas
-        from src.cli.eval_ragas_generate import _ensure_vertexai_stub
-
-        _ensure_vertexai_stub()
-
         from src.agents.graph.workflow import build_graph
         from src.infra.db.engine import run_and_dispose
         from src.infra.db.vector_store import VectorStore

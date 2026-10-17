@@ -3,5 +3,4 @@
 包含：
   - check_retrieval.py:          检索质量检查 CLI
   - compare_retrieval.py:        检索/重排序参数对比实验 CLI
-  - eval_ragas_generate.py:      RAGAS 测试集自动生成（--generate 模式）
 """

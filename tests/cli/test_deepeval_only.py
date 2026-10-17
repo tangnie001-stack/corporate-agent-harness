@@ -97,11 +97,8 @@ def test_deepeval_only_skips_all_ragas_side_effects(monkeypatch, tmp_path):
 
     # main() 函数体内的 import 必须打在源模块上
     monkeypatch.setattr(
-        "src.cli.eval_ragas_generate._load_latest_testset",
+        "src.cli.testset_io._load_latest_testset",
         lambda kb_id, version=None: (["q"], ["a"]),
-    )
-    monkeypatch.setattr(
-        "src.cli.eval_ragas_generate._ensure_vertexai_stub", lambda: None
     )
     monkeypatch.setattr(
         "src.agents.graph.workflow.build_graph", lambda *a, **k: object()
@@ -116,9 +113,6 @@ def test_deepeval_only_skips_all_ragas_side_effects(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "src.infra.llm.provider.factory.build_bridge_judge",
         lambda **kw: SimpleNamespace(model_name="fake-judge"),
-    )
-    monkeypatch.setattr(
-        "src.infra.llm.provider.factory.build_embeddings", lambda: object()
     )
 
     class _FakeHookEvidence:

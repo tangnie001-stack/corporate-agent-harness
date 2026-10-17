@@ -16,8 +16,7 @@ python -m src.cli.<模块名> --help
 
 | 命令 | 用途 |
 |---|---|
-| `eval_ragas` | RAGAS 评估主脚本：生成测试集 / 执行评估 / 质量门禁 |
-| `eval_ragas_generate` | 测试集生成模块（`eval_ragas --generate` 的内部实现，一般直接调 eval_ragas） |
+| `eval_ragas` | RAGAS 评估主脚本：执行评估 / 质量门禁 |
 | `compare_retrieval` | 遍历「检索 top-K × 重排 top-K」参数网格，用 RAGAS 指标对比选参 |
 | `check_retrieval` | 对已有知识库执行语义检索，打印结果供人工检查 |
 
@@ -219,10 +218,6 @@ python -m src.cli.compare_retrieval --kb-name <知识库名称>
 | `--deepeval-only` | 只跑 Agent 行为轴，跳过 RAGAS 四指标（无主分/门禁、不写 CSV 与 `eval_report`；与 `--gate` 互斥） |
 | `--output` | CSV 报告输出路径 |
 | `--session-id` | 评估用会话 ID，默认 `ragas_eval_session` |
-
-## eval_ragas_generate — 测试集生成模块
-
-`eval_ragas.py --generate` 的内部实现，一般无需直接运行。包含：从 PostgreSQL 读取已有分块、构建知识图谱、`TestsetGenerator` 编排、版本管理与缓存恢复。
 
 ## compare_retrieval — 检索参数对比实验
 

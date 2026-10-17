@@ -60,7 +60,7 @@ def test_cli_main_configures_before_flushing(monkeypatch):
     configure → flush，即可证明 flush 没有先于 configure 构造客户端。
     """
     import src.cli.eval_ragas as cli
-    import src.cli.eval_ragas_generate as cli_generate
+    from src.cli import testset_io
 
     calls: list[str] = []
 
@@ -78,7 +78,7 @@ def test_cli_main_configures_before_flushing(monkeypatch):
 
     monkeypatch.setattr(cli, "configure_tracing", _record_configure)
     monkeypatch.setattr(cli, "flush_tracing", _record_flush)
-    monkeypatch.setattr(cli_generate, "_load_latest_testset", _raise_file_not_found)
+    monkeypatch.setattr(testset_io, "_load_latest_testset", _raise_file_not_found)
     monkeypatch.setattr(
         cli,
         "parse_args",

@@ -64,7 +64,6 @@ dev = [
     "pytest==9.0.2",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.0.0",
-    "ragas==0.3.9",  # was 0.4.3：为统一单环境主动下移（design D1）
     "deepeval==4.2.9",  # 评测入口；其内建 RAGAS 桥调经典四指标
     "click==8.3.3",  # 下限：与 deepeval 的 click 约束共存（design D1）
     "huggingface_hub==1.16.1",  # 下限：防回落到与 deepeval 互斥的一侧

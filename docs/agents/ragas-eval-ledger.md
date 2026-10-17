@@ -62,11 +62,11 @@
 
 ## 出题路状态（2026-10-17）
 
-- **出题生成入口已下线**：CLI `--generate` 显式失败（依赖 ragas 0.4.x 的
-  `default_transforms_for_prechunked`，而评测侧为 ragas 0.3.9）；出题**代码保留未调用**，
-  前迁路径 = DeepEval `Synthesizer`（见 change `deepeval-bridge-eval` design D8）。
-- **测试集加载器仍在用**：`_load_latest_testset` / `_ensure_vertexai_stub` 被评测主流程
-  调用 ⇒ `src/cli/eval_ragas_generate.py` **不可删**。
+- **出题链路已删除**：原 RAGAS 出题模块（含 `run_generate` / `_ensure_vertexai_stub`）
+  整文件移除；CLI `--generate` 保留参数、命中即报错并指向 DeepEval `Synthesizer`
+  （见 change `deepeval-native-metrics`）。
+- **测试集加载器已迁出**：`_load_latest_testset` 移到 `src/cli/testset_io.py`
+  （不依赖 ragas），评测主流程从该模块加载。
 - 评测输入 = **固定版本文件**（`testset_<kb>_v5.json`），与出题生成解耦。
 
 ## 已知口径与坑（读表前先看）
