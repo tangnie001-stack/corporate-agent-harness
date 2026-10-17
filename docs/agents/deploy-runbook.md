@@ -345,6 +345,26 @@ provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定�
 
 **发布前置**：制品源于**已提交的 commit** —— 发布前 `git status` 必须为空，未提交改动不得进入发布。
 
+### 6.1 RAGAS → DeepEval 配置迁移（2026-10-17）
+
+| 旧名 | 新名 |
+|---|---|
+| `RAGAS_LLM_MODEL` | `JUDGE_MODEL` |
+| `RAGAS_PROVIDER` | `JUDGE_PROVIDER` |
+| `RAGAS_JUDGE_TIMEOUT` | `JUDGE_TIMEOUT` |
+| `RAGAS_HTTP_TIMEOUT_*` | `JUDGE_HTTP_TIMEOUT_*` |
+| `RAGAS_METRIC_MAX_ATTEMPTS` | `EVAL_METRIC_MAX_ATTEMPTS` |
+| `RAGAS_DATA_DIR` | `EVAL_DATA_DIR` |
+| `RAGAS_TESTSET_DIR` | `EVAL_TESTSET_DIR` |
+| `RAGAS_REPORT_DIR` | `EVAL_REPORT_DIR` |
+| `RAGAS_LLM_CACHE_DIR` | `EVAL_LLM_CACHE_DIR` |
+| `RAGAS_USER_ID` | `EVAL_USER_ID` |
+| `RAGAS_HTTP_MAX_RETRIES` | 删除（裁判固定 `max_retries=0`） |
+| 出题专用 `RAGAS_TEST_*` / `RAGAS_DOC_WHITELIST` | 删除（随出题路退役） |
+
+启动期检测到任何 `RAGAS_*` 会 fail-fast；先改共享 `.env` 再部署。
+旧 `data/ragas/` 不自动删除，确认无引用后人工清理；历史 `report_path` 不迁移。
+
 ---
 
 ## 7. 回滚与备份
