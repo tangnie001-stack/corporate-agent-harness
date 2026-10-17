@@ -575,7 +575,8 @@ git commit -m "docs(superpowers): deepeval-only-eval 验收记录"
 | T1 | `095a7bee` | `--deepeval-only` 参数 + 与 `--gate` 互斥 + `main()` 跳过四指标 |
 | T2 | `99632d7` / `9b0d935` | 报告/落库/CSV 的无 RAGAS 语义；修复 T1 遗漏的 `test_tracing_order` 假 Namespace |
 | T3 | `e6419c6d` | CLI README 用法与台账口径 |
-| T4 | 本提交 | 验收记录 |
+| T4 | `9b0d7be7` | 验收记录 |
+| 附带 | `6706165e` | **不在本 change spec 范围**：偶发超时排查追加的观测补丁（见 tasks.md 备注） |
 
 ### 静态闸门
 

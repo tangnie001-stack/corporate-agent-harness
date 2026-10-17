@@ -32,3 +32,7 @@
 - [x] 4.3 活体：`--deepeval-only --limit 5` → 同上。**注**：v5 前 5 条均为东软中文单跳简单题，本项只验证"链路通"，不代表题型覆盖。
 - [ ] 4.4（**可选，本轮未跑**）活体：`--deepeval-only`（21 题）→ 记录耗时；若做，仅作为"长上下文/多跳题不挂"的额外证据，不作为本 change 的完成判据。
 - [x] 4.5 验收记录写回计划文件并提交。
+
+## 备注（不在本 change spec 范围）
+
+- `6706165e`：一次偶发超时排查中追加的观测补丁——`question answer failed` 事件增加 `err_type` / `err_repr`；`RetryingReasoningChat._agenerate` 的"不可重试"分支补 `[llm] model retry skipped` 日志。它不改变 `--deepeval-only` 的规格，随本分支一并合入，归档时按「附带补丁」记录。
