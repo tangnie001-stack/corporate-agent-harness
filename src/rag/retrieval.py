@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import time
 
 from src.config import (
     HYBRID_SEARCH_ENABLED,
@@ -212,6 +213,7 @@ def rerank_results(
 
     docs = [r.content for r in results]
     used_fallback = False
+    start = time.monotonic()
     try:
         reranked = retry_policy.call_with_retry(
             reranker.rerank,
@@ -236,6 +238,7 @@ def rerank_results(
             else:
                 fallback_score = 0
             reranked.append({"index": i, "relevance_score": fallback_score})
+    rerank_ms = int((time.monotonic() - start) * 1000)
 
     contexts: list[RAGContext] = []
     for item in reranked:
@@ -270,6 +273,7 @@ def rerank_results(
             Event.RERANK_DONE,
             doc_count=len(results),
             query_len=len(query),
+            latency_ms=rerank_ms,
             **_rerank_stats(reranked, used_fallback),
         )
     before = len(contexts)

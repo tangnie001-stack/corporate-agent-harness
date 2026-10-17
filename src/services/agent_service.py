@@ -507,6 +507,95 @@ def _record_event(capture: _StreamCapture | None, event: SSEEvent) -> None:
     )
 
 
+def _idle_thresholds(deep_thinking: bool) -> tuple[float, float]:
+    """按思考档位取业务层静默的**两档阈值**（D15；四值见 spec / settings）。
+
+    首事件前档更宽：该段含排队 + prefill，开思考时首个 chunk 可达数十秒，属正常。
+
+    Args:
+        deep_thinking: 本轮是否开启思考
+
+    Returns:
+        (首事件前阈值秒数, 首事件后阈值秒数)
+    """
+    if deep_thinking:
+        return settings.MAIN_IDLE_FIRST_THINKING_S, settings.MAIN_IDLE_GAP_THINKING_S
+    return settings.MAIN_IDLE_FIRST_S, settings.MAIN_IDLE_GAP_S
+
+
+async def _idle_guard(
+    manager: StreamingRunManager,
+    session_id: str,
+    capture: _StreamCapture | None,
+    deep_thinking: bool,
+) -> None:
+    """业务层「生成任务静默」守卫（P3 / D3 / D15；**档 1：只记录、不中止**）。
+
+    判据是**事件是否增长**（`seq` 推进），不是字节间隔 —— 模型只吐 tool_call
+    而不吐 token 时字节在动、用户无感，本判据正好覆盖该情形。
+
+    - **首事件前档**：自本守卫启动起**从未**有新事件（图事件 / 工具事件）；
+    - **首事件后档**：已有事件之后再次静默。
+    两档取 `_idle_thresholds()` 的对应值；两档都已由启动期断言保证 < 传输层 read。
+
+    **档 1 的动作**：记一条 `degraded`（`reason=generation_idle`，字段 `idle_s` / `tier`）
+    + 经 `status` + `STAGE_DEGRADED` 送达取值集合表里的**过程**文案；
+    **不动控制流**（不取消、不降级、不改 status）。**每个静默段最多一条**：
+    本层自己写入的通知不算"事件恢复"（其 `seq` 记入 `last_seq` 吸收），
+    只有外部新事件才清除已通知标记。
+
+    Args:
+        manager: StreamingRunManager（读该 session 的事件缓冲；`add_event` 返回新 seq）
+        session_id: 会话 ID
+        capture: 流捕获容器（通知同时进事件日志，随 process 持久化与历史回放）
+        deep_thinking: 本轮是否开启思考（决定取哪一档阈值）
+    """
+    first_threshold, gap_threshold = _idle_thresholds(deep_thinking)
+    existing = manager.get_events_since(session_id, 0)
+    if existing:
+        last_seq = existing[-1][0]
+    else:
+        last_seq = 0
+    last_change = time.monotonic()
+    first_event_seen = False
+    notified = False
+    interval = settings.MAIN_IDLE_POLL_INTERVAL_S
+    while True:
+        await asyncio.sleep(interval)
+        if not manager.buffer_exists(session_id):
+            # 缓冲已随终态 TTL 清理 ⇒ 无可守护，正常退出（防"永远静默 ⇒ 无限刷"）
+            return
+        pending = manager.get_events_since(session_id, last_seq)
+        if pending:
+            last_seq = pending[-1][0]
+            last_change = time.monotonic()
+            first_event_seen = True
+            notified = False
+            continue
+        idle = time.monotonic() - last_change
+        if first_event_seen:
+            threshold = gap_threshold
+            tier = "gap"
+        else:
+            threshold = first_threshold
+            tier = "first"
+        if notified or idle < threshold:
+            continue
+        core_logging.log_event(
+            Event.DEGRADED, reason="generation_idle", idle_s=int(idle), tier=tier
+        )
+        notice = SSEStatusEvent(
+            stage=SSEInteractionTexts.STAGE_DEGRADED,
+            message=SSEInteractionTexts.DEGRADATION_TEXTS["generation_idle"],
+        )
+        _record_event(capture, notice)
+        # add_event 返回新 seq：把自己的通知吸收掉，避免"自我唤醒"变成周期刷屏
+        last_seq = manager.add_event(
+            session_id, notice.type, notice.payload_for_buffer()
+        )
+        notified = True
+
+
 async def _dual_stream(
     event_source: AsyncIterator[StreamEvent | dict],
     queue: asyncio.Queue[_QueueItem],
@@ -601,76 +690,6 @@ async def _drain_clarify_channel(
                 item_type=type(item).__name__,
                 err=str(exc),
             )
-
-
-# ─────────── 临时取证埋点（systematic-debugging 走 A：定位"长时间静默"的挂起点）───────────
-# 用途：某轮生成在出网调用（web 搜索 / LLM）里长时间无任何事件推送时，打印当时所有
-# asyncio 任务的栈，直接看出卡在哪个 await。定位完成后**整块删除**（含上面 import time、
-# 下面的 watch_task 创建与取消）。仅诊断用，不改变任何业务逻辑。
-_SILENCE_WATCH_INTERVAL_S = 10.0  # 看门狗轮询间隔（秒）
-_SILENCE_WATCH_THRESHOLD_S = 60.0  # 缓冲无新事件达该秒数即打印任务栈
-
-
-def _dump_task_stacks() -> str:
-    """把所有 asyncio 任务的当前调用栈格式化为多行文本（临时取证用）。
-
-    Returns:
-        每个任务一行标题 + 其栈帧（文件:行号 in 函数名）；无 Python 栈时打印协程对象
-    """
-    lines: list[str] = []
-    for task in asyncio.all_tasks():
-        if task is asyncio.current_task():
-            continue
-        lines.append(
-            f"--- task={task.get_name()} done={task.done()} cancelled={task.cancelled()}"
-        )
-        stack = task.get_stack()
-        if not stack:
-            lines.append(f"    (无 Python 栈) coro={task.get_coro()}")
-            continue
-        for frame in stack:
-            lines.append(
-                f"    {frame.f_code.co_filename}:{frame.f_lineno} in {frame.f_code.co_name}"
-            )
-    return "\n".join(lines)
-
-
-async def _silence_watchdog(
-    manager: StreamingRunManager,
-    session_id: str,
-    interval: float,
-    threshold: float,
-) -> None:
-    """临时取证：本轮缓冲长时间无新事件时，打印所有 asyncio 任务栈。
-
-    判据用缓冲事件条数（token/status/citation 都会增长），因此出网调用期间必然静默。
-
-    Args:
-        manager: StreamingRunManager（读该 session 的事件缓冲长度）
-        session_id: 会话 ID
-        interval: 轮询间隔（秒）
-        threshold: 静默阈值（秒），超过即打印一次并重置计时
-    """
-    last_len = len(manager.get_events_since(session_id, 0))
-    last_change = time.monotonic()
-    while True:
-        await asyncio.sleep(interval)
-        current_len = len(manager.get_events_since(session_id, 0))
-        if current_len != last_len:
-            last_len = current_len
-            last_change = time.monotonic()
-            continue
-        idle = time.monotonic() - last_change
-        if idle < threshold:
-            continue
-        core_logging.logger.warning(
-            "[agent] TIMING silence_idle_s={} events={} session_id={}\n{}",
-            int(idle),
-            current_len,
-            session_id,
-            _dump_task_stacks(),
-        )
-        last_change = time.monotonic()  # 打印后重置，避免每轮轮询都刷
 
 
 @observe(name="chat_turn", capture_input=False)
@@ -818,11 +837,10 @@ async def _run_generation(
     drain_task = asyncio.create_task(
         _drain_clarify_channel(ctx, manager, session_id, capture)
     )
-    # 临时取证埋点：静默看门狗（定位完成后删除）
-    watch_task = asyncio.create_task(
-        _silence_watchdog(
-            manager, session_id, _SILENCE_WATCH_INTERVAL_S, _SILENCE_WATCH_THRESHOLD_S
-        )
+    # 业务层「生成任务静默」守卫（P3 / D15）：与澄清消费并行；档 1 只记录不中止，
+    # 故它不会影响下面的图事件循环（取消由本函数 finally 统一负责）
+    idle_task = asyncio.create_task(
+        _idle_guard(manager, session_id, capture, deep_thinking)
     )
     try:
         async for item in graph.astream_events(
@@ -862,10 +880,10 @@ async def _run_generation(
         # 生成结束/异常/取消后停止澄清消费（工具等待期间图事件循环阻塞，
         # 澄清项已被并行任务即时消费，收尾时队列已空）
         drain_task.cancel()
-        watch_task.cancel()  # 临时取证埋点：随生成结束一并取消
+        idle_task.cancel()  # 生成结束/异常/取消后停止静默守护
         # 取消 / 异常路径同样走到这里 —— 不关的 span 会永远悬空
         tool_trace.close()
-        await asyncio.gather(drain_task, watch_task, return_exceptions=True)
+        await asyncio.gather(drain_task, idle_task, return_exceptions=True)
         if partial_holder is not None:
             partial_holder["model_name"] = capture.model_used
     # 收尾：复刻旧 stream_chat 语义，按捕获结果补发 abstention / model_info

@@ -1,6 +1,6 @@
 # ADR-0020：不启用 LiteLLM 模型网关，三类模型直连 Provider
 
-- **Status**：Accepted（**本决策不变；在其『不引入替代网关』边界内，ADR-0021 引入应用内 provider 兼容层**）
+- **Status**：Accepted（**本决策不变；在其『不引入替代网关』边界内，ADR-0021 引入应用内 provider 兼容层**；**ADR-0025 在其边界内处理『长时不可用』尺度（亦不做进程内自愈）**）
 - **Date**：2026-10-10
 - **Deciders**：用户（决策，2026-07-31 实际生效）；助手（2026-10-10 追记）
 - **关系**：与 openspec 规格 `model-config` / `model-gateway` 相关；不取代任何在先 ADR

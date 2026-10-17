@@ -49,7 +49,15 @@ EVENT_SPECS: dict[str, EventSpec] = {
         "rerank done",
         "retrieval",
         "info",
-        ("doc_count", "query_len", "score_max", "score_min", "score_p50", "scored"),
+        (
+            "doc_count",
+            "query_len",
+            "latency_ms",
+            "score_max",
+            "score_min",
+            "score_p50",
+            "scored",
+        ),
     ),
     "dedup done": EventSpec("dedup done", "retrieval", "info", ("dropped", "kept")),
     "rerank failed": EventSpec(
@@ -208,7 +216,10 @@ EVENT_SPECS: dict[str, EventSpec] = {
         ("kb_id", "collection_name", "collection_count", "top_k"),
     ),
     "search result": EventSpec(
-        "search result", "db", "info", ("kb_id", "query_len", "result_count", "model")
+        "search result",
+        "db",
+        "info",
+        ("kb_id", "query_len", "result_count", "embedding_ms", "model"),
     ),
     # [llm] prompt 拉取 / LLM 内容深日志（3.4 批）
     "prompt fetched": EventSpec("prompt fetched", "llm", "info", ("name", "version")),
@@ -425,5 +436,10 @@ EVENT_SPECS: dict[str, EventSpec] = {
         "model retry", "agent", "warning", ("role", "attempt", "err")
     ),
     # 外部依赖降级留痕（reason 取值见 specs/degradation-policy 的取值集合表；不得自造）
-    "degraded": EventSpec("degraded", "degradation", "warning", ("reason", "err")),
+    "degraded": EventSpec(
+        "degraded",
+        "degradation",
+        "warning",
+        ("reason", "err", "idle_s", "tier"),
+    ),
 }

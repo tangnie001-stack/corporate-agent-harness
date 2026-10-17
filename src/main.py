@@ -54,9 +54,10 @@ async def lifespan(app: FastAPI):
     启动阶段校验 provider 配置（`validate_config`）：解析每个角色的 provider/
     模型/密钥，缺失或未知即抛 `RuntimeError`，进程启动失败（fail-fast）。
 
-    启动阶段校验 rerank 三层超时嵌套（`validate_timeout_nesting`）：内层总预算
+    启动阶段校验超时嵌套（`validate_timeout_nesting`）：rerank 内层总预算
     （`RERANK_MAX_ATTEMPTS × RERANK_TIMEOUT_READ`）须小于外层 `RERANK_OUTER_TIMEOUT`，
-    否则抛 `RuntimeError`，进程启动失败（fail-fast，D13）。
+    且业务层四档 idle 阈值（`MAIN_IDLE_{FIRST,GAP}[_THINKING]_S`）须小于传输层
+    `MAIN_TIMEOUT_READ`；任一不满足即抛 `RuntimeError`，进程启动失败（fail-fast，D13/D15）。
 
     启动阶段校验告警接入配置（`load_alert_config`）：解析 ALERT_TARGET 等非法即抛
     `ValueError`，进程启动失败（fail-fast），不在请求期降级成 500。未配置 token 属
