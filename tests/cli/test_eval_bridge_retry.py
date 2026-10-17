@@ -78,15 +78,40 @@ def test_measure_raises_chain_survives_into_error_and_retries():
     assert err != "faithfulness:nan"
 
 
-def test_rate_limit_evidence_skips_outer_retry():
+def test_rate_limit_retries_with_retry_after(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr("src.cli.eval_ragas.time.sleep", lambda s: sleeps.append(s))
+
     ev = HookEvidence()
     ev.mark("t0")
     ev.append(
-        {"phase": "response", "status": 429, "json_ok": True, "finish_reason": []}
+        {
+            "phase": "response",
+            "status": 429,
+            "json_ok": True,
+            "finish_reason": [],
+            "retry_after": "2",
+        }
     )
     m = _Seq([None, 0.8])
 
-    value, _ = _score_metric_with_retry("faithfulness", m, object(), ROW, ev)
+    value, err = _score_metric_with_retry("faithfulness", m, object(), ROW, ev)
 
-    assert m.calls == 1, "429 已由 ragas 层重试 ≤10 次，外层不得再叠（防 10×3 放大）"
+    assert m.calls == 2, "429 不再短路，必须由外层重试"
+    assert value == pytest.approx(0.8)
+    assert err == ""
+    assert sleeps == [2.0], "优先使用 Retry-After"
+
+
+def test_diagnostic_max_attempts_one(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr("src.cli.eval_ragas.time.sleep", lambda s: sleeps.append(s))
+    m = _Seq([None, 0.8])
+
+    value, _err = _score_metric_with_retry(
+        "contextual_relevancy", m, object(), ROW, HookEvidence(), max_attempts=1
+    )
+
     assert math.isnan(value)
+    assert m.calls == 1
+    assert sleeps == []

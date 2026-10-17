@@ -21,6 +21,7 @@ import asyncio
 import json
 import math
 import os
+import random
 import sys
 import time
 import uuid
@@ -544,6 +545,32 @@ def _exc_chain_summary(exc: BaseException, limit: int = 140) -> str:
     return f"{chain}: {msg}" if msg else chain
 
 
+def _retry_delay(attempt: int, evidence) -> float:
+    """计算第 attempt 次失败后的等待秒数。
+
+    429 优先采用响应头 `Retry-After`；否则指数退避 + 0~0.25s jitter，上限 8s。
+
+    Args:
+        attempt: 1-based 尝试序号
+        evidence: 可选证据桶（含 response 事件）
+
+    Returns:
+        等待秒数
+    """
+    if evidence is not None:
+        for event in reversed(evidence.events):
+            if event.get("status") != 429:
+                continue
+            retry_after = event.get("retry_after")
+            if retry_after:
+                try:
+                    return min(float(retry_after), 30.0)
+                except (TypeError, ValueError):
+                    pass
+    base = min(0.5 * (2 ** (attempt - 1)), 8.0)
+    return base + random.uniform(0.0, 0.25)
+
+
 def _score_metric_with_retry(
     metric_name,
     metric,
@@ -559,8 +586,9 @@ def _score_metric_with_retry(
     `raise_exceptions`（默认 False），`ragas/executor.py` 对**任何** Exception 都
     `return np.nan` ⇒ 桥不抛异常，旧的 `except Exception` 判据永不触发（design D4）。
 
-    为何 429 不重试：ragas 框架层已对 `openai.RateLimitError`（HTTP 429）重试
-    ≤10 次（`ragas/run_config.py:52` + `llms/base.py:325-335`），外层再叠会 10×3。
+    为何 429 由外层重试：桥的裁判 client 不再内置重试，限流（429）与其它失败
+    同一判据（非掩码 NaN）进入本层重试；退避优先取响应的 `Retry-After`，
+    缺失时指数退避 + jitter（见 `_retry_delay`），避免短间隔连打重试放大限流。
 
     为何不做"合法缺值 / 裁判失败"子分类：桥只回一个 float，HTTP 200 的 envelope
     恒为合法 JSON ⇒ 该分类不可实现（design D4，第 5 轮评审证实）。
@@ -570,7 +598,7 @@ def _score_metric_with_retry(
         metric: 指标实例（需实现 `measure(test_case)`）
         test_case: 待评用例
         row: 当前行（取 q_index / trace_id 记日志）
-        evidence: 可选证据桶（429 判定）
+        evidence: 可选证据桶（退避时读取 429 的 `Retry-After`）
         max_attempts: 显式重试次数；None 时取 `settings.RAGAS_METRIC_MAX_ATTEMPTS`
 
     Returns:
@@ -606,8 +634,6 @@ def _score_metric_with_retry(
             return float(value), ""
         last_note = note or "nan"
 
-        if evidence is not None and evidence.non_2xx and 429 in evidence.status_codes:
-            return float("nan"), ""  # 429：外层不重试（ragas 层已重试）
         if attempt >= attempts:
             break
         core_logging.log_event(
@@ -617,7 +643,7 @@ def _score_metric_with_retry(
             trace_id=row.get("trace_id"),
             reason=last_note,
         )
-        time.sleep(0.5 * attempt)  # 原为 await asyncio.sleep；改同步后同义
+        time.sleep(_retry_delay(attempt, evidence))
     return float("nan"), f"{metric_name}:{last_note}"
 
 
@@ -737,7 +763,7 @@ def run_evaluation(
         contexts: 每题检索上下文列表
         metrics: 主分指标（`build_metrics` 产物）
         trace_ids: 每题 trace_id
-        evidence: 可选证据桶（429 判定）
+        evidence: 可选证据桶（退避时读取 429 的 `Retry-After`）
         diagnostic_metrics: 诊断指标（`build_diagnostic_metrics` 产物）；不进主分
         sample_classes: 每题样本类别；None 表示不分类
 

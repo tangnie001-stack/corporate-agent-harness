@@ -69,3 +69,16 @@ async def test_response_hook_warns_on_non_2xx_and_on_unreadable_body():
     joined = "".join(messages)
     assert "bridge judge http non-2xx" in joined
     assert "bridge judge http body unreadable" in joined
+
+
+@pytest.mark.asyncio
+async def test_response_hook_records_retry_after():
+    ev = HookEvidence()
+    client = _client_with(
+        ev,
+        lambda req: httpx.Response(429, headers={"Retry-After": "2"}),
+    )
+    async with client:
+        await client.post("https://example.invalid/v1/chat/completions")
+
+    assert ev.events[-1]["retry_after"] == "2"

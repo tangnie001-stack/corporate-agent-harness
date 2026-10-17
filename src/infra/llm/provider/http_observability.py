@@ -88,6 +88,7 @@ def make_logging_client(
 
     async def on_response(response: httpx.Response) -> None:
         rec: dict = {"phase": "response", "status": response.status_code}
+        rec["retry_after"] = response.headers.get("retry-after")
         if not (200 <= response.status_code < 300):
             logger.warning(
                 "[provider] bridge judge http non-2xx status={}", response.status_code
