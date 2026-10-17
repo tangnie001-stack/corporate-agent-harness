@@ -164,7 +164,7 @@ docker exec corporate-rag-app grep "<trace_id>" /data/logs/app_YYYY-MM-DD.log
 **本次奏效的做法**（正是 §2「查不到 = 观测缺口」的落地）：
 
 1. 给裁判**每次尝试**加事件 `judge call`（`metric` / `q_index` / `trace_id` / `attempt` / `seconds` / `ok` / `note`）；
-2. `note` 从 instructor 异常的 `last_completion` 取出**原始响应**（`finish_reason` + 输出 token 数 + 输出片段）；
+2. `note` 落**异常链摘要**（`_exc_chain_summary`，`外层类<-根因类: 根因消息`）；请求级证据（状态码 / 响应体可读性 / `finish_reason`）由裁判 client 的 event hooks 收集在 `HookEvidence` 桶，仅失败时进日志（provider hooks）；
 3. `run_evaluation` 把每题的 `trace_id` 写进行 ⇒ 报告那列 `trace_id` 直达裁判调用。
 
 **结论**：同一指标上**两种独立失败模式并存**——「空结构」（`finish_reason=stop`、输出极短）与
@@ -175,7 +175,7 @@ docker exec corporate-rag-app grep "<trace_id>" /data/logs/app_YYYY-MM-DD.log
 
 ```bash
 TID=$(python -c "import csv,glob,os;print(next(csv.DictReader(open(sorted(glob.glob('data/ragas/reports/*.csv'))[-1],encoding='utf-8-sig')))['trace_id'])")
-python -m src.cli.trace_logs "$TID" --grep "judge call"   # 该题每次裁判尝试 + 失败时的原始响应
+python -m src.cli.trace_logs "$TID" --grep "judge call"   # 该题每次裁判尝试 + 失败时的异常链摘要（请求级证据另见 provider hooks 日志）
 python -m src.cli.trace_logs "$TID" --grep "metric retry" # 重试原因（异常链摘要）
 ```
 

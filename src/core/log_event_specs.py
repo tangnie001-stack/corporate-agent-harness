@@ -296,7 +296,8 @@ EVENT_SPECS: dict[str, EventSpec] = {
     # [cli] 评测打分 —— 埋点层是「外层对桥度量 metric.measure 的调用」（我们这层，
     # 逐题串行）。桥内部真正的 HTTP 请求级证据（状态码 / 响应体摘要 / finish_reason）
     # 由裁判 http_async_client 的 event hooks 记录（provider 层，见 design D13），
-    # 两者分工：本层记"我们第几次尝试、耗时、是否拿到分"；hooks 记"发出去/收回来的是什么"。
+    # 两者分工：本层记"我们第几次尝试、耗时、是否拿到分"；hooks 记请求 URL 与响应的
+    # 状态 / 体积 / `finish_reason`（仅失败时进日志；证据本体收集在 `HookEvidence`）。
     "metric retry": EventSpec(
         "metric retry", "cli", "info", ("metric", "q_index", "trace_id", "reason")
     ),
