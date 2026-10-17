@@ -70,7 +70,7 @@
 
 **SHALL NOT 依据请求级日志把 (b) 再切成"合法缺值"与"裁判失败"（前稿方案已否决）**：桥把每个指标压成**一个 `float`**（`deepeval/metrics/ragas.py:92-97` 的 `scores[name][0]`），返回值不可判别；而唯一的旁证——HTTP 200 的 OpenAI envelope——**永远是合法 JSON**，主因失败（截断 / 垃圾内容）与"生成问题全空"在 HTTP 层与正常完成**同形**（2xx + `finish_reason=stop`）⇒ 该分类**不可实现**，做了只会把主因失败误判为"合法缺值"而放过（正是本次整改要根除的错）。
 
-因此评测 SHALL：① 让 `NaN` 显式可见、且**掩码 / 非掩码在报告中标记不同**（SHALL NOT 静默计入均分）；② **单独统计非掩码 `NaN` 计数**并在报告中呈现；③ **以「非掩码 `NaN`」为判据执行有界重试**（`RAGAS_METRIC_MAX_ATTEMPTS` 保留；判据 SHALL NOT 沿用 `except Exception` —— 桥下它永不触发）；**唯一例外：限流类（= HTTP 429 / `openai.RateLimitError`）SHALL NOT 触发外层重试**（ragas 框架层已对该类重试 ≤10 次，见「RAGAS dependency is pinned to the 0.3 line」的复用条款，外层再叠会 10×3 放大；429 可由 hooks 的状态码判定；**403 额度类不属该列**，`openai/_client.py:694/706`，仍由外层重试）；④ 失败留证 SHALL 由**框架内部请求级日志**承载，且该日志 SHALL 记**响应体摘要 + `finish_reason`**（主因失败是 HTTP 200 + 畸形响应体）；**该日志只做留证，SHALL NOT 被当作分类依据**；⑤ 若该日志完全不可用，报告 SHALL **显式标注"请求级日志不可用"**（NaN 率统计不依赖它，故门禁仍可判，但归因能力下降须可见）。
+因此评测 SHALL：① 让 `NaN` 显式可见、且**掩码 / 非掩码在报告中标记不同**（SHALL NOT 静默计入均分）；② **单独统计非掩码 `NaN` 计数**并在报告中呈现；③ **以「非掩码 `NaN`」为判据执行有界重试**（`RAGAS_METRIC_MAX_ATTEMPTS` 保留；判据 SHALL NOT 沿用 `except Exception` —— 桥下它永不触发）；**唯一例外：限流类（= HTTP 429 / `openai.RateLimitError`）SHALL NOT 触发外层重试**（ragas 框架层已对该类重试 ≤10 次，见「RAGAS dependency is pinned to the 0.3 line」的复用条款，外层再叠会 10×3 放大；429 可由 hooks 的状态码判定；**403 额度类不属该列**，`openai/_client.py:694/706`，仍由外层重试）；④ 失败留证 SHALL 由**框架内部请求级日志**承载；**当前落地**记录请求状态与响应可解析性（`status` / `body_bytes` / `json_ok` / `finish_reason`），**仅失败时产日志行**；**目标形态**另含响应体摘要（主因失败是 HTTP 200 + 畸形响应体；未落地项见「Framework-internal LLM calls are observable by trace id」条的「落地现状」）；**该日志只做留证，SHALL NOT 被当作分类依据**；⑤ 若该日志完全不可用，报告 SHALL **显式标注"请求级日志不可用"**（NaN 率统计不依赖它，故门禁仍可判，但归因能力下降须可见）。
 
 **接受的代价（明写，勿当 bug）**：合法缺值型 `NaN`（典型为 `faithfulness` 无陈述）会被计入分子、并触发一次有界重试（对该情形是**无收益的浪费**，不是错误）。阈值 10%（76 格允许 7 格）即为吸收该水位而设；首轮全量 SHALL 以实测分布复核该假设。
 
@@ -584,7 +584,7 @@ NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提�
 承载，并在报告「Agent 行为轴」段呈现。本条对行为轴**只**要求"证据可从 JSON 获得"，
 SHALL NOT 读成"行为轴判官调用也须带逐题 trace_id"。
 
-实现手段 SHALL 为：在裁判的 **`http_async_client`**（`httpx.AsyncClient`）上挂**请求级日志**（httpx event hooks，记录模型 / 耗时 / 状态码 / 请求体摘要 / **响应体摘要 + `finish_reason`**）。**SHALL 挂在 `http_async_client` 而非 `http_client`**——ragas 的裁判调用走**异步**，而 langchain 的 `http_client` **只喂同步 client**（`langchain_openai/chat_models/base.py:806`；异步用 `:1273` 的 `http_async_client`）⇒ 挂错字段 hooks **一条都不会响**。该 client 本已因细粒度超时而传入（见 D11 与「0.4.x-era evaluation artifacts」的复用条款），故 SHALL 复用它、SHALL NOT 为此另建客户端。
+实现手段 SHALL 为：在裁判的 **`http_async_client`**（`httpx.AsyncClient`）上挂**请求级日志**（httpx event hooks）。**当前落地记录** `url` / `status` / `body_bytes` / `json_ok` / `finish_reason`（响应体不可解析时另有 `body_exc`），**仅失败时产日志行**；**目标形态**另含模型 / 耗时 / 请求体摘要 / 响应体摘要（见本条「落地现状」）。**SHALL 挂在 `http_async_client` 而非 `http_client`**——ragas 的裁判调用走**异步**，而 langchain 的 `http_client` **只喂同步 client**（`langchain_openai/chat_models/base.py:806`；异步用 `:1273` 的 `http_async_client`）⇒ 挂错字段 hooks **一条都不会响**。该 client 本已因细粒度超时而传入（见 D11 与「0.4.x-era evaluation artifacts」的复用条款），故 SHALL 复用它、SHALL NOT 为此另建客户端。
 
 **hook SHALL 为 `async def` 且以 `await response.aread()` 读体**：异步 client 调用 hook 的形式是 `await hook(response)`（`httpx/_client.py:1697`；同步 client 才是 `hook(response)`，`:982`），传同步 hook 会抛 `TypeError`；同步 `read()` 在异步流上抛 `RuntimeError`（`httpx/_models.py:944`）。
 
@@ -594,8 +594,9 @@ SHALL NOT 读成"行为轴判官调用也须带逐题 trace_id"。
 `url` / `status` / `body_bytes` / `json_ok` / `finish_reason`（响应体不可解析时另有 `body_exc`），
 且**仅在失败时产日志行**；模型与耗时分别由 `eval model init` 与四指标路径的 `judge call` 承载。
 **请求体摘要 / 响应体摘要 / 成功路径日志尚未落地**（见 design D13「落地现状」与 ADR-0026 决策 6、
-复查触发条件 ④）。故「A malformed 200 response is diagnosable from the logs」当前依赖
-`json_ok` 与 `finish_reason` 两个信号，**不**依赖响应体摘要。
+复查触发条件 ④）。⚠️ 因此「A malformed 200 response is diagnosable from the logs」**当前不成立**：
+可解析但内容畸形的 200 响应不产任何日志行（`json_ok=True`、无 warning），其证据只在
+`HookEvidence` 内存桶（不落盘）⇒ 该场景的诊断能力随请求体/响应体摘要一并属**未落地项**。
 
 **该日志只做留证**：SHALL NOT 被当作 `NaN` 子分类的依据（该分类不可实现，见「Metric failures are explicit, not silently dropped」）。若该日志不可用，报告 SHALL 显式标注。
 
@@ -620,7 +621,7 @@ SHALL NOT 读成"行为轴判官调用也须带逐题 trace_id"。
 - **WHEN** 实施期跑 1 题真调裁判的桥度量（`RAGASFaithfulnessMetric` 等）
 - **THEN** SHALL 断言 ① 响应 hook 触发 **> 0** 次、且 hook 内 `await response.aread()` + `json.loads` 成功并能取到 `finish_reason`；**且** SHALL 有一条**负向**断言——只传 `http_client`（同步字段）时响应 hook 触发 **== 0**，把"挂错字段就零触发"钉成回归防线。**实测基线（2026-10-16，真 judge）**：A 臂（`http_async_client`）**4** 事件（2 请求 + 2 响应，均 `200` / `json_ok` / `finish_reason=['stop']`），B 臂（仅 `http_client`）**0** 事件，两臂指标分均 1.0 —— 即错误接线**不报错、只是静默失去全部可观测性与细粒度超时**。证据见 `docs/tmp/deepeval-poc/RESULTS.md`「Hook 冒烟」节。
 
-#### Scenario: A malformed 200 response is diagnosable from the logs
+#### Scenario: A malformed 200 response is diagnosable from the logs（目标形态；当前未满足，见「落地现状」）
 
 - **WHEN** 裁判返回 HTTP 200 但响应体畸形（空结构 / 截断）
 - **THEN** 请求级日志 SHALL 含**响应体摘要与 `finish_reason`**，使该失败模式可从日志定位（SHALL NOT 只记请求体 / 状态码）；**该日志仅用于定位**，SHALL NOT 被用来把该 `NaN` 归成"合法缺值"

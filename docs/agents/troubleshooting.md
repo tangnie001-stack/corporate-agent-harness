@@ -130,7 +130,7 @@ docker exec corporate-rag-app grep "<trace_id>" /data/logs/app_YYYY-MM-DD.log
 | 不知道是哪个渠道来的 | 日志第 5 段 `channel` | 本文件 §4 |
 | 企微不回 / 被顶号 | 渠道侧日志 + SDK 实测事实 | `docs/agents/wecom-sdk-facts.md` |
 | 部署/端口/发布异常 | 部署槽位日志与运行形态 | `docs/agents/deploy-runbook.md` |
-| 评测指标出现 `error` / 评测总耗时异常 | 该题 trace_id 下的 judge call（失败时为异常链摘要）与 provider hooks 请求级证据（仅失败时产日志） | 本文件 §10 + **ADR-0026** |
+| 评测指标出现 `error` / 评测总耗时异常 | 该题 trace_id 下的 judge call（异常路径为异常链摘要（NaN 无异常时为空））与 provider hooks 请求级证据（仅失败时产日志） | 本文件 §10 + **ADR-0026** |
 
 ## 9. "查不到 → 加日志"落点清单
 
@@ -151,7 +151,7 @@ docker exec corporate-rag-app grep "<trace_id>" /data/logs/app_YYYY-MM-DD.log
 > **历史记录（换桥前）**：本案的证据字段（`finish_reason` / `completion_tokens` / 原始输出片段）来自
 > 现代栈（instructor）时代的检测器；当前桥路径**不产**这些字段，现行排查口径见上方 §8 与本页 `judge call` 说明。
 
-> 决策与证据 → **ADR-0024**（裁判客户端策略）。本节只记**排查方法**与**走错的路**。
+> 决策与证据 → **ADR-0024（已被 ADR-0026 取代）**（裁判客户端策略）。本节只记**排查方法**与**走错的路**。
 
 **症状**：21 题评测跑 **1h31m**（其中仅约 8 分钟在计算）；**5/21 行**指标带 `error`；异常类名随配置漂移
 （`IncompleteOutputException` / `InstructorRetryException` / `RuntimeError`）。

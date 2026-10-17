@@ -139,7 +139,7 @@ channel），业务不手写。channel 取值见 `src/config/const.py` 的 `Chan
   （`外层类<-根因类: 根因消息`，见 `_exc_chain_summary`），成功时为空串；桥把失败吞成 NaN 而无异常时 `note` 亦为空串（此时判据是 NaN，不是 `note`）；**请求级证据
   （状态码 / 响应体可读性 / `finish_reason`）由 `HookEvidence` 桶承载、仅失败时进日志**
   （provider hooks，见 `src/infra/llm/provider/http_observability.py`）。`trace_id` 与报告
-  同名，用于把「报告行 → 该题日志 → 裁判调用」串起来（排障见 `troubleshooting.md` §10）。
+  同名，用于把「报告行 → 该题日志 → 裁判调用」串起来（排障见 `troubleshooting.md` §8（现行口径；§10 为换桥前的历史案例））。
 - `metric retry`（cli / info）——单指标**重试**发生时记一条；`reason` 为异常链摘要
   （`外层类<-根因类: 根因消息`），口径与 `judge call` 的 `note` 同源。
 - `testset self-contained dropped`（cli / warning）——出题后自足性门**丢弃**样本时记一条；
