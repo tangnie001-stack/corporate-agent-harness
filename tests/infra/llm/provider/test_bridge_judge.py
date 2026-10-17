@@ -8,12 +8,22 @@ class _FakeChat:
     model_kwargs: ClassVar[dict] = {}
 
 
-def test_bridge_judge_binds_async_client_only():
+def test_bridge_judge_binds_both_clients_with_fine_grained_timeout():
+    """异步与同步两条路都必须有细粒度超时。
+
+    只挂 `http_async_client` 时，DeepEval 的同步 `generate()` 会回落到 SDK 默认
+    `read=600s`（Phase 4 实测 5 题卡住 12+ 分钟）⇒ 两个 client 都要挂，且同一
+    `httpx.Timeout` 也要作为 `request_timeout` 传入（SDK per-request 会覆盖 client 超时）。
+    """
     judge = build_bridge_judge(evidence=HookEvidence())
 
     assert judge.http_async_client is not None, "ragas 走异步：必须挂 http_async_client"
-    assert judge.http_client is None, "不得只挂同步 client（hooks 与超时都会失效）"
+    assert judge.http_client is not None, (
+        "DeepEval 同步 generate 路径也必须挂 http_client"
+    )
     assert judge.max_retries == 0, "关掉 SDK 重试（防与 ragas 层重试乘法放大）"
+    assert judge.http_async_client.timeout == judge.http_client.timeout
+    assert judge.request_timeout == judge.http_client.timeout
 
 
 def test_bridge_judge_does_not_pass_temperature_or_top_p(monkeypatch):
@@ -39,8 +49,11 @@ def test_bridge_judge_does_not_pass_temperature_or_top_p(monkeypatch):
     assert "temperature" not in captured
     assert "top_p" not in captured
     assert "extra_body" not in captured  # 思考开关走 provider 层，禁硬写
+    assert captured["http_client"] is not None
     assert captured["http_async_client"] is not None
-    assert "http_client" not in captured
+    # httpx 的 Client 构造器内部执行 `Timeout(timeout)`，总会复制出新对象
+    # ⇒ 只能比值（Timeout.__eq__ 逐维比较 connect/read/write/pool），不能比同一性。
+    assert captured["request_timeout"] == captured["http_client"].timeout
     assert (
         captured["thinking"] is not None
     )  # 思考开关走 thinking=，不硬写 enable_thinking
