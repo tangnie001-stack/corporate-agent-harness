@@ -189,6 +189,114 @@ git commit -m "feat(eval): --limit 冒烟参数（逐级活体用，不改变全
 
 ---
 
+### Task 1b: 修复裁判同步路径无细粒度超时（Phase 4 实测阻塞缺陷）
+
+**背景（实测，2026-10-17）**：5 题冒烟在跑图结束（12:16:26，5 题答案全部生成）后**卡住 12+ 分钟无日志**，最终被人工终止、无产物。根因：`BridgeDeepEvalLLM.generate()`（同步）走 `self._chat.invoke()`，而 `build_bridge_judge()` **只挂了 `http_async_client`** ⇒ 同步路径回落到 langchain/OpenAI SDK 默认 `read=600s`，且没有 connect/write/pool 的细粒度超时 ⇒ 单题可挂十分钟以上。这正是 Phase 2 Global Constraints 提示的"同步分支落到同步 client"，但当时只把它当作"hooks 零触发"，未堵住超时缺口。
+
+**Files:**
+- Modify: `src/infra/llm/provider/factory.py:117-150`（`build_bridge_judge`）
+- Modify: `tests/infra/llm/provider/test_bridge_judge.py`（两条既有断言）
+
+**Interfaces:**
+- Produces: `build_bridge_judge(evidence=…)` 返回的 ChatOpenAI **同时**具备：
+  - `http_async_client`（带 hooks 的异步 client）—— ragas 异步路径；
+  - `http_client`（同一 `httpx.Timeout` 的同步 client）—— DeepEval 同步 `generate()` 路径；
+  - `request_timeout`（同一 `httpx.Timeout`）—— 防 SDK per-request 覆盖 client 超时；
+  - `max_retries = RAGAS_HTTP_MAX_RETRIES`（默认 0）。
+- 契约变化：**不得**再断言 `http_client is None`；改为断言两个 client 均存在且超时对象一致。
+
+- [ ] **Step 1: 改写测试（先失败）**
+
+把 `tests/infra/llm/provider/test_bridge_judge.py` 的两条断言替换为：
+
+```python
+def test_bridge_judge_binds_both_clients_with_fine_grained_timeout():
+    """异步与同步两条路都必须有细粒度超时。
+
+    只挂 `http_async_client` 时，DeepEval 的同步 `generate()` 会回落到 SDK 默认
+    `read=600s`（Phase 4 实测 5 题卡住 12+ 分钟）⇒ 两个 client 都要挂，且同一
+    `httpx.Timeout` 也要作为 `request_timeout` 传入（SDK per-request 会覆盖 client 超时）。
+    """
+    judge = build_bridge_judge(evidence=HookEvidence())
+
+    assert judge.http_async_client is not None, "ragas 走异步：必须挂 http_async_client"
+    assert judge.http_client is not None, "DeepEval 同步 generate 路径也必须挂 http_client"
+    assert judge.max_retries == 0, "关掉 SDK 重试（防与 ragas 层重试乘法放大）"
+    assert judge.http_async_client.timeout == judge.http_client.timeout
+    assert judge.request_timeout == judge.http_client.timeout
+```
+
+并把第二条测试中的 `assert "http_client" not in captured` 改为：
+
+```python
+    assert captured["http_client"] is not None
+    assert captured["http_async_client"] is not None
+    assert captured["request_timeout"] is captured["http_client"].timeout
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `POSTGRES_HOST=localhost pytest tests/infra/llm/provider/test_bridge_judge.py -v`
+Expected: **FAIL** —— `judge.http_client is None`（`assert ... is not None` 失败）。
+
+- [ ] **Step 3: 实现**
+
+把 `src/infra/llm/provider/factory.py` 的 `build_bridge_judge` 改为：
+
+```python
+def build_bridge_judge(*, evidence: HookEvidence) -> ChatOpenAI:
+    """构造 DeepEval RAGAS 桥用的裁判（langchain `BaseChatModel`）。
+
+    两个 client 都挂、且与 `request_timeout` 同源：
+    - `http_async_client`：ragas 的异步路径（hooks + 细粒度超时）；
+    - `http_client`：DeepEval 原生指标可能走同步 `generate()`（`BridgeDeepEvalLLM`），
+      只挂异步 client 时该路径会回落到 SDK 默认 `read=600s`、无细粒度超时
+      ⇒ 单题可挂十几分钟（Phase 4 实测 5 题卡住）。
+
+    温度由 ragas 按 `n` 分档决定，本函数不传 `temperature` / `top_p`。
+
+    Args:
+        evidence: 请求级观测证据桶（挂到异步 client 的 hooks 上）。
+
+    Returns:
+        ChatOpenAI（`ReasoningPreservingChat`）：两个 client 与 `request_timeout`
+        共用同一 `httpx.Timeout`，`max_retries` 取 `RAGAS_HTTP_MAX_RETRIES`。
+    """
+    from src.config import settings
+
+    timeout = httpx.Timeout(
+        connect=settings.RAGAS_HTTP_TIMEOUT_CONNECT,
+        read=settings.RAGAS_HTTP_TIMEOUT_READ,
+        write=settings.RAGAS_HTTP_TIMEOUT_WRITE,
+        pool=settings.RAGAS_HTTP_TIMEOUT_POOL,
+    )
+    async_client = make_logging_client(timeout=timeout, evidence=evidence)
+    sync_client = httpx.Client(timeout=timeout)
+    return build_chat(
+        "judge",
+        thinking=settings.RAGAS_JUDGE_THINKING,
+        max_tokens=settings.RAGAS_JUDGE_MAX_TOKENS,
+        http_client=sync_client,
+        http_async_client=async_client,
+        request_timeout=timeout,
+        max_retries=settings.RAGAS_HTTP_MAX_RETRIES,
+    )
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: `POSTGRES_HOST=localhost pytest tests/infra/llm/provider/test_bridge_judge.py tests/infra/llm/provider -v`
+Expected: 全 PASS。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add src/infra/llm/provider/factory.py tests/infra/llm/provider/test_bridge_judge.py
+git commit -m "fix(provider): 裁判同步路径补齐细粒度超时（只挂异步 client 会让 generate() 回落 SDK 600s）"
+```
+
+---
+
 ### Task 2: 逐级活体 1 → 5 → 21（10.2 + 10.3）
 
 > **本任务不适用 TDD**：交付物是**运行产物 + 校验记录**，不是新代码。每一步都必须留下命令、耗时、报告路径与校验结论。
