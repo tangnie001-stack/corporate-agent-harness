@@ -55,6 +55,15 @@
 
 > **#4 相对 #3 的唯一代码改动** = `14e1d52e`（cap 4096 → 8192）。这是本次「跑了什么、改了什么」的最小可比对单元。
 
+## 出题路状态（2026-10-17）
+
+- **出题生成入口已下线**：CLI `--generate` 显式失败（依赖 ragas 0.4.x 的
+  `default_transforms_for_prechunked`，而评测侧为 ragas 0.3.9）；出题**代码保留未调用**，
+  前迁路径 = DeepEval `Synthesizer`（见 change `deepeval-bridge-eval` design D8）。
+- **测试集加载器仍在用**：`_load_latest_testset` / `_ensure_vertexai_stub` 被评测主流程
+  调用 ⇒ `src/cli/eval_ragas_generate.py` **不可删**。
+- 评测输入 = **固定版本文件**（`testset_<kb>_v5.json`），与出题生成解耦。
+
 ## 已知口径与坑（读表前先看）
 
 1. **各指标的有效样本数不一致**：主分只统计 `pure_kb` 行；但 `answer_correctness` / `answer_relevancy` 不需 context，连空检索题也算；`context_recall` 又会因裁判失败再少一行。读均值前先确认分母。

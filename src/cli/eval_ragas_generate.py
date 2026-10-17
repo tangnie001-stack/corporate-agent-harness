@@ -1,14 +1,20 @@
 """RAGAS 测试集生成模块 — 从知识库文档自动生成 QA 测试集.
 
-本模块被 eval_ragas.py 的 --generate 模式调用，包含：
+**调用状态（design D8 / spec「Testset generation exercises every query path」）**：
+  - **出题生成入口**（`run_generate` / CLI `--generate`）**保留未调用** —— 评测入口已不再
+    触发它（CLI `--generate` 显式失败，见 `eval_ragas.py` 的 `main()` 硬护栏）；
+  - **测试集加载器**（`_load_latest_testset`）与 **VertexAI stub**（`_ensure_vertexai_stub`）
+    **仍被评测主流程使用**（`eval_ragas.py` 的评估模式）。
+  ⇒ 不得把本模块读成"整个模块不再被调用"。
+  - 前迁路径：DeepEval 自带的出题器 `Synthesizer`
+    （`generate_goldens_from_docs(...) -> List[Golden]`，字段与评测输入同构）。
+
+本模块包含：
   - vertexai stub 自动修复（ragas 兼容性）
   - 从分块存储读取已有分块数据
   - 分步构建 KG + DiskCacheBackend 缓存（支持中断恢复）
   - TestsetGenerator 编排
   - 测试集版本管理与 JSON 写入
-
-运行方式：
-  python -m src.cli.eval_ragas --kb-name "xxx" --generate --size 20
 """
 
 import asyncio

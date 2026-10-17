@@ -927,14 +927,22 @@ def main() -> None:
         sys.exit(1)
     kb_id = args.kb_id
 
-    # ---- generate 模式 ----
+    # ---- generate 模式（已下线：硬护栏，design D8 / spec「The testset generation path
+    #      is guarded against accidental invocation」）----
+    # 出题链依赖 ragas 0.4.x 的 default_transforms_for_prechunked，而评测侧统一下移到
+    # ragas==0.3.9 ⇒ 该路径在当前依赖线下必然失败。此处显式拦下并给出前迁路径，
+    # SHALL NOT 让用户撞到裸 ImportError（design D8 硬护栏）。
     if args.generate:
-        from src.cli.eval_ragas_generate import run_generate
-
-        size = args.size or settings.RAGAS_TEST_SIZE
-        model = args.model or ""
-        run_generate(kb_id, size, model)
-        return
+        print(
+            "error: --generate 已下线（出题生成入口不再经 CLI 提供）。\n"
+            "原因：出题链依赖 ragas 0.4.x 的 default_transforms_for_prechunked，"
+            "而评测侧已统一下移到 ragas==0.3.9，该路径在当前依赖线下必然失败。\n"
+            "前迁路径：DeepEval 自带的出题器 Synthesizer"
+            "（deepeval.synthesizer.Synthesizer.generate_goldens_from_docs(...) -> List[Golden]），"
+            "其产出字段（input / expected_output / retrieval_context）与评测输入同构。\n"
+            "若确需暂用旧出题路，须在临时环境装回 ragas==0.4.3。"
+        )
+        sys.exit(1)
 
     # ---- 评估模式（原有流程改造）----
     # CLI 不经 main.py 的 lifespan：开关与 flush 都要自己做（D5 / D6）。
