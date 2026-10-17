@@ -21,6 +21,7 @@ from loguru import logger
 
 from src.config.const import (
     CONTEXT_METRIC_COLUMNS,
+    DIAGNOSTIC_METRIC_COLUMNS,
     RAGAS_METRIC_COLUMNS,
     SAMPLE_CLASS_EMPTY,
     SAMPLE_CLASS_PURE_KB,
@@ -102,7 +103,7 @@ def classify_sample(contexts: list[RAGContext]) -> str:
 
 
 def apply_sample_masks(df: pd.DataFrame, sample_classes: list[str]) -> pd.DataFrame:
-    """按样本类别掩码：无材料样本的三项 context 指标置 NaN 并记 skipped。
+    """按样本类别掩码：无材料样本的三项 context 指标与诊断指标置 NaN 并记 skipped。
 
     置空用 NaN（而非 None/pd.NA），以免下游 float() 抛错致落库静默失败。
     返回值重建为从 0 起的 RangeIndex：掩码用 `.loc[i, col]` 定位行，
@@ -121,7 +122,7 @@ def apply_sample_masks(df: pd.DataFrame, sample_classes: list[str]) -> pd.DataFr
     for i in range(len(out)):
         marks: list[str] = []
         if sample_classes[i] == SAMPLE_CLASS_EMPTY:
-            for col in CONTEXT_METRIC_COLUMNS:
+            for col in CONTEXT_METRIC_COLUMNS + DIAGNOSTIC_METRIC_COLUMNS:
                 if col in out.columns:
                     out.loc[i, col] = float("nan")
                     marks.append(col)

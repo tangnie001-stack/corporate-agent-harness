@@ -831,7 +831,7 @@ def _build_markdown_table(
     """渲染 MD 报告的逐题表格（表头 + 分隔行 + 每题一行）.
 
     Args:
-        df: 已掩码的结果表（可能含 sample_class / skipped 列）
+        df: 已掩码的结果表（可能含 sample_class / skipped / error 列）
         metric_cols: 实际存在的指标列（按固定顺序）
         trace_ids: 每题的 trace_id（None 则不展示该列）
         trajectories: 每题的轨迹摘要（None 则不展示 trajectory 列）
@@ -840,6 +840,8 @@ def _build_markdown_table(
         Markdown 表格行列表
     """
     header = ["Question"] + metric_cols
+    if "error" in df.columns:
+        header.append("error")
     if trace_ids is not None:
         header.append("trace_id")
     for col in ("sample_class", "skipped"):
@@ -852,6 +854,8 @@ def _build_markdown_table(
     lines.append("|" + "|".join("---" for _ in header) + "|")
     for i in range(len(df)):
         vals = [f"Q{i + 1}"] + [f"{df[m].iloc[i]:.4f}" for m in metric_cols]
+        if "error" in df.columns:
+            vals.append(str(df["error"].iloc[i]))
         if trace_ids is not None:
             if i < len(trace_ids):
                 vals.append(trace_ids[i])
@@ -866,6 +870,53 @@ def _build_markdown_table(
             else:
                 vals.append("")
         lines.append("| " + " | ".join(vals) + " |")
+    return lines
+
+
+def _build_diagnostic_section(df: pd.DataFrame) -> list[str]:
+    """渲染「诊断指标」段；诊断不进主分/门禁。
+
+    Args:
+        df: 经 apply_sample_masks 处理的结果表
+
+    Returns:
+        Markdown 行列表；无诊断列时返回空列表
+    """
+    from src.config.const import DIAGNOSTIC_METRIC_COLUMNS
+
+    cols = [c for c in DIAGNOSTIC_METRIC_COLUMNS if c in df.columns]
+    if not cols:
+        return []
+
+    lines = ["## 诊断指标（不进主分/门禁）", ""]
+    lines.append(
+        "> ContextualRelevancy 仅判前 8 条 context（并集顺序，非最相关 8 条）。"
+    )
+    lines.append("")
+    header = ["Question"] + cols
+    lines.append("| " + " | ".join(header) + " |")
+    lines.append("|" + "|".join("---" for _ in header) + "|")
+    for i in range(len(df)):
+        vals = [f"Q{i + 1}"]
+        for col in cols:
+            value = df[col].iloc[i]
+            if pd.isna(value):
+                vals.append("N/A")
+            else:
+                vals.append(f"{value:.4f}")
+        lines.append("| " + " | ".join(vals) + " |")
+
+    pure = df[df["sample_class"] == SAMPLE_CLASS_PURE_KB]
+    parts: list[str] = []
+    for col in cols:
+        # 显式标注标量，消除 pandas 存根的 Series/Unknown 误判
+        mean: Any = pure[col].mean()
+        if pd.isna(mean):
+            parts.append(f"{col}=NaN")
+        else:
+            parts.append(f"{col}={mean:.4f}")
+    lines.append("")
+    lines.append(f"**Diagnostic means (pure-KB):** {', '.join(parts)}")
     return lines
 
 
@@ -1008,6 +1059,8 @@ def save_markdown_report(
             f"{m}={means[m]:.4f}" for m in actual_metrics if m in means
         )
         lines.append(f"**Main scores (pure-KB):** {avg_parts}")
+        lines.append("")
+        lines.extend(_build_diagnostic_section(df))
         lines.append("")
 
     if behaviour_rows is not None:
@@ -1477,9 +1530,13 @@ def _build_eval_detail(
             传入后并入对应明细条目，供低分 query 下钻检索环节
 
     Returns:
-        (detail, avg)：detail 为逐题条目列表，avg 为指标名 -> 均值
+        (detail, avg)：detail 为逐题条目列表（含诊断键与恒 None 的
+        tool_correctness），avg 为指标名 -> 均值
     """
+    from src.config.const import DIAGNOSTIC_METRIC_COLUMNS
+
     metric_cols = [col for col in RAGAS_METRIC_COLUMNS if col in df.columns]
+    diag_cols = [col for col in DIAGNOSTIC_METRIC_COLUMNS if col in df.columns]
 
     detail: list[dict] = []
     for i in range(qa_count):
@@ -1491,6 +1548,15 @@ def _build_eval_detail(
                 entry[col] = float("nan")
             else:
                 entry[col] = float(v)
+        for col in diag_cols:
+            v: Any = df[col].iloc[i]
+            if pd.isna(v):
+                entry[col] = float("nan")
+            else:
+                entry[col] = float(v)
+        entry["tool_correctness"] = None
+        if "error" in df.columns:
+            entry["error"] = str(df["error"].iloc[i])
         if retrieval_details is not None and i < len(retrieval_details):
             entry["retrieval_details"] = retrieval_details[i]
         detail.append(entry)
