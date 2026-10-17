@@ -49,6 +49,7 @@ from src.cli.eval_scoring import (
 from src.config import settings
 from src.config.const import (
     EVAL_PASS_THRESHOLD,
+    EVAL_RELEVANCY_MAX_CONTEXTS,
     EVAL_RETRIEVAL_COVERAGE_MIN,
     LANGFUSE_SCORE_SUFFIX,
     RAGAS_METRIC_COLUMNS,
@@ -876,6 +877,9 @@ def _build_markdown_table(
 def _build_diagnostic_section(df: pd.DataFrame) -> list[str]:
     """渲染「诊断指标」段；诊断不进主分/门禁。
 
+    段内含逐题表、纯 KB 诊断均值与**独立的**纯 KB 诊断 NaN 计数——
+    诊断 NaN 不与四指标 NaN 合并统计，也不进入 NaN 率门禁。
+
     Args:
         df: 经 apply_sample_masks 处理的结果表
 
@@ -890,7 +894,8 @@ def _build_diagnostic_section(df: pd.DataFrame) -> list[str]:
 
     lines = ["## 诊断指标（不进主分/门禁）", ""]
     lines.append(
-        "> ContextualRelevancy 仅判前 8 条 context（并集顺序，非最相关 8 条）。"
+        f"> ContextualRelevancy 仅判前 {EVAL_RELEVANCY_MAX_CONTEXTS} 条 context"
+        f"（并集顺序，非最相关 {EVAL_RELEVANCY_MAX_CONTEXTS} 条）。"
     )
     lines.append("")
     header = ["Question"] + cols
@@ -917,6 +922,14 @@ def _build_diagnostic_section(df: pd.DataFrame) -> list[str]:
             parts.append(f"{col}={mean:.4f}")
     lines.append("")
     lines.append(f"**Diagnostic means (pure-KB):** {', '.join(parts)}")
+
+    nan_parts: list[str] = []
+    for col in cols:
+        # 显式标注，避免 pandas 存根把列访问推断为 NDArray
+        series: Any = pure[col]
+        nan_count = int(series.isna().sum())
+        nan_parts.append(f"{col}={nan_count}/{len(series)}")
+    lines.append(f"**Diagnostic NaN (pure-KB):** {', '.join(nan_parts)}")
     return lines
 
 
