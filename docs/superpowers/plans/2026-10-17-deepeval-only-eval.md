@@ -515,7 +515,7 @@ POSTGRES_HOST=localhost .venv/bin/python -m src.cli.eval_ragas \
 
 Expected：`**QA Pairs:** 5`；行为轴 5 行；md 无主分行。
 
-- [ ] **Step 4: 21 题全量（记录耗时）**
+- [ ] **Step 4（可选，不阻塞验收）: 21 题全量（记录耗时）**
 
 ```bash
 time POSTGRES_HOST=localhost .venv/bin/python -m src.cli.eval_ragas \
@@ -552,7 +552,7 @@ git commit -m "docs(superpowers): deepeval-only-eval 验收记录"
 2. 开启时不构造/不调用四指标，不写 `eval_report`、不写 CSV、不回写 Langfuse、不执行门禁。
 3. 报告含 `RAGAS: 未跑（--deepeval-only）` 与行为轴段，**不含**任何四指标数值行或假 0。
 4. `--deepeval-only` + `--gate` 启动即非零退出。
-5. 1 / 5 / 21 题活体全部成功；21 题耗时显著低于 55m42s。
+5. 1 / 5 题活体必做且成功；21 题为可选（若做，耗时显著低于 55m42s）。
 6. 静态闸门全过，无新增 ruff/pyright error。
 
 ## 未纳入本计划

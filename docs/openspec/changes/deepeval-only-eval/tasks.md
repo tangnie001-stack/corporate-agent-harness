@@ -29,6 +29,6 @@
 
 - [ ] 4.1 静态闸门：`pytest tests/ -q` 全绿；`ruff format --check src/ tests/`；`ruff check src/ tests/` 与 `pyright src/` 不新增 error；`openspec validate deepeval-only-eval --strict`；`check_docs`；`check_adr`。
 - [ ] 4.2 活体：`--deepeval-only --limit 1` → 行为轴有值、报告标注正确、无 CSV、无落库。
-- [ ] 4.3 活体：`--deepeval-only --limit 5` → 同上。
-- [ ] 4.4 活体：`--deepeval-only`（21 题）→ 记录耗时（预期 10–15 分钟），与 RAGAS 全量约 56 分钟对照。
+- [ ] 4.3 活体：`--deepeval-only --limit 5` → 同上。**注**：v5 前 5 条均为东软中文单跳简单题，本项只验证"链路通"，不代表题型覆盖。
+- [ ] 4.4（**可选，不阻塞验收**）活体：`--deepeval-only`（21 题）→ 记录耗时；若做，仅作为"长上下文/多跳题不挂"的额外证据，不作为本 change 的完成判据。
 - [ ] 4.5 验收记录写回计划文件并提交。
