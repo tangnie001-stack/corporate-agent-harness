@@ -105,8 +105,8 @@
 - [x] 10.1 静态闸门：`ruff check` / `pyright`（不新增 error）/ `openspec validate deepeval-bridge-eval --strict` / `python -m src.cli.check_docs` 全过。（Phase 4 复跑：pytest 全绿；ruff/pyright 仅 BASE 既有债务）
 - [x] 10.2 **首轮用 `--no-gate`**：先跑出全量分布（**不用旧阈值判新尺子**），确认四项指标与行为指标均有值、`NaN` 计数为 0 或已解释、行为分确系从 `test_run_*.json` 的 **`testCases[].metricsData`** 回读（非 `metricsScores`）、**NaN 重试**（4.3）确被触发过或明确未触发。（v5 全量分布见 docs/tmp/deepeval-poc/PHASE4-RUNS.md）
 - [x] 10.3 活体：1 题 → 5 题 → 全量 21 题，逐级确认。（1 → 5 → 21 逐级通过）
-- [ ] 10.4 **阈值重标定**：按 10.2 的分布取保守下界（≥均值×0.9 且 ≥历史同名×0.9，具体在分布出来后定稿），写入单一常量，并更新 `kb_eval` 下发。（**延后至 v6 定稿后**：R11 已证 faithfulness 不可复现，v5 上不标定；见 design D8 的 v6 入口条件）
-- [ ] 10.5 **NaN 阈值复核（对应 4.7 的门禁实现）**：以 10.2 的**实测 NaN 率**复核"经验初值 10%"，必要时改值并同步 spec 与 `check_gate` 常量。（同上，延后至 v6 后）
+- [ ] 10.4 **阈值重标定**：按 10.2 的分布取保守下界（≥均值×0.9 且 ≥历史同名×0.9，具体在分布出来后定稿），写入单一常量，并更新 `kb_eval` 下发。（**已移交后续 change**：RAGAS 四指标的主分/门禁角色待定——2026-10-17 决定先收敛 DeepEval；若届时仍采用 RAGAS 桥，则按 design D8 在 v6 定稿后标定——R11 已证 faithfulness 不可复现、v5 不标定）
+- [ ] 10.5 **NaN 阈值复核（对应 4.7 的门禁实现）**：以 10.2 的**实测 NaN 率**复核"经验初值 10%"，必要时改值并同步 spec 与 `check_gate` 常量。（同上：随 RAGAS 主分角色的决策进行；v5 的 NaN 率仅作基线）
 - [x] 10.6 **行为指标清单已定稿**（第 5 组 5.7 的产出已写回 design D6），且行为轴**不进主分/门禁**已在实现中体现。（Phase 2 已定稿，本轮核实实现与 D6 一致）
 - [x] 10.7 台账新增一行（标注口径版本 = `bridge-0.3.9 / v5`），历史行不改。（台账 #5：bridge-0.3.9 / v5）
 - [x] 10.8 验收记录写回计划文件并提交。（验收记录见 docs/tmp/deepeval-poc/RESULTS.md「Phase 4」节）
