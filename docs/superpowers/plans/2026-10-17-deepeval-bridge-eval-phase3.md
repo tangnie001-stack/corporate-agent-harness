@@ -606,10 +606,6 @@ git commit -m "feat(eval): Langfuse 回写纳入行为轴并统一带口径后�
 ```python
 def test_read_behaviour_scores_carries_reason(tmp_path):
     """逐题失败证据由 test_run JSON 的 metricsData[].reason 承载（design R9）。"""
-    import json
-
-    from src.cli.eval_scoring import read_behaviour_scores
-
     payload = {
         "testCases": [
             {
@@ -680,7 +676,10 @@ Expected: **FAIL**（`KeyError: 'reasons'`）
                 vals.append(f"{value:.4f}")
             else:
                 note = str(reasons.get(name) or "").strip().replace("|", "/")[:60]
-                vals.append(f"N/A（{note}）" if note else "N/A")
+                if note:
+                    vals.append(f"N/A（{note}）")
+                else:
+                    vals.append("N/A")
         lines.append("| " + " | ".join(vals) + " |")
 ```
 
