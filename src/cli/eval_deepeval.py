@@ -49,11 +49,11 @@ from src.cli.eval_scoring import (
 )
 from src.config import settings
 from src.config.const import (
+    EVAL_METRIC_COLUMNS,
     EVAL_PASS_THRESHOLD,
     EVAL_RELEVANCY_MAX_CONTEXTS,
     EVAL_RETRIEVAL_COVERAGE_MIN,
     LANGFUSE_SCORE_SUFFIX,
-    RAGAS_METRIC_COLUMNS,
     SAMPLE_CLASS_EMPTY,
     SAMPLE_CLASS_PURE_KB,
 )
@@ -162,13 +162,13 @@ def parse_args() -> argparse.Namespace:
         "--size",
         type=int,
         default=None,
-        help="生成测试集的 QA 对数（默认: settings.RAGAS_TEST_SIZE）",
+        help="生成测试集的 QA 对数（默认: 20）",
     )
     parser.add_argument(
         "--model",
         type=str,
         default=None,
-        help="生成测试集用的 LLM 模型名（默认: RAGAS_LLM_MODEL 或 LLM_MODEL）",
+        help="生成测试集用的 LLM 模型名（默认: JUDGE_MODEL 或 LLM_MODEL）",
     )
     args = parser.parse_args()
     if args.deepeval_only and args.gate:
@@ -588,7 +588,7 @@ def _score_metric_with_retry(
     *,
     max_attempts: int | None = None,
 ) -> tuple[float, str]:
-    """打分；**非掩码 NaN** 时重试至多 `settings.RAGAS_METRIC_MAX_ATTEMPTS` 次。
+    """打分；**非掩码 NaN** 时重试至多 `settings.EVAL_METRIC_MAX_ATTEMPTS` 次。
 
     为何判据是 NaN 而不是异常：桥调 `ragas.evaluate(...)` 时未传
     `raise_exceptions`（默认 False），`ragas/executor.py` 对**任何** Exception 都
@@ -607,14 +607,14 @@ def _score_metric_with_retry(
         test_case: 待评用例
         row: 当前行（取 q_index / trace_id 记日志）
         evidence: 可选证据桶（退避时读取 429 的 `Retry-After`）
-        max_attempts: 显式重试次数；None 时取 `settings.RAGAS_METRIC_MAX_ATTEMPTS`
+        max_attempts: 显式重试次数；None 时取 `settings.EVAL_METRIC_MAX_ATTEMPTS`
 
     Returns:
         `(值, 错误说明)`；成功与"未被重试的 NaN"错误说明为 ""；
         重试耗尽时为 `"指标:原因"`。
     """
     if max_attempts is None:
-        attempts = max(1, settings.RAGAS_METRIC_MAX_ATTEMPTS)
+        attempts = max(1, settings.EVAL_METRIC_MAX_ATTEMPTS)
     else:
         attempts = max(1, max_attempts)
     last_note = ""
@@ -1099,7 +1099,7 @@ def save_markdown_report(
 
     if result is not None:
         df = apply_sample_masks(result.to_pandas(), sample_classes)
-        actual_metrics = [c for c in RAGAS_METRIC_COLUMNS if c in df.columns]
+        actual_metrics = [c for c in EVAL_METRIC_COLUMNS if c in df.columns]
         lines.extend(_build_markdown_table(df, actual_metrics, trace_ids, trajectories))
         lines.append("")
 
@@ -1267,7 +1267,7 @@ def main() -> None:
         session_id = args.session_id
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         output_path = (
-            args.output or f"{settings.RAGAS_REPORT_DIR}/ragas_eval_{timestamp}.csv"
+            args.output or f"{settings.EVAL_REPORT_DIR}/ragas_eval_{timestamp}.csv"
         )
 
         # 从 JSON 加载测试集
@@ -1298,7 +1298,7 @@ def main() -> None:
 
         # 选手/裁判分离：
         # - 选手（被测系统）= 生产模型 get_llm()（LLM_MODEL），评估结果反映线上质量
-        # - 裁判（评估器）  = judge 角色绑定（RAGAS_LLM_MODEL 可覆盖），独立于选手
+        # - 裁判（评估器）  = judge 角色绑定（JUDGE_MODEL 可覆盖），独立于选手
         #   评分，避免自我评价偏置；模型名空/None 时由 registry 兜底。
         llm = get_llm()  # 选手：生产模型（含生产 temperature）
         reranker = get_rerank()
@@ -1329,7 +1329,7 @@ def main() -> None:
         # 行为指标按 T2 三项构造；behaviour_out 用与报告同源的 timestamp 建独立目录，
         # 分数事后从 test_run_*.json 回读（eval loop 用副本，metric.score 恒 None）。
         behaviour_metrics = build_behaviour_metrics(judge_llm)
-        behaviour_out = str(Path(settings.RAGAS_REPORT_DIR) / f"behaviour_{timestamp}")
+        behaviour_out = str(Path(settings.EVAL_REPORT_DIR) / f"behaviour_{timestamp}")
 
         # 构建 LangGraph
         prompt_manager = PromptManager()
@@ -1494,7 +1494,7 @@ def _print_metric_averages(df: pd.DataFrame) -> None:
 
     compare_retrieval 通过 subprocess 调用本脚本并用 parse_metrics 解析
     stdout 里的指标均值；logger 只写日志文件，因此均值需显式 print。
-    口径与 check_gate / 报告一致，均为主分；**只打 `RAGAS_METRIC_COLUMNS`
+    口径与 check_gate / 报告一致，均为主分；**只打 `EVAL_METRIC_COLUMNS`
     白名单内的指标**（防止额外数值列混入 stdout），每指标只打一行，行格式
     `指标名: 数值`，便于按指标名前缀匹配取值。
 
@@ -1502,7 +1502,7 @@ def _print_metric_averages(df: pd.DataFrame) -> None:
         df: 经 apply_sample_masks 掩码、含 sample_class 列的结果表
     """
     means = main_score_means(df)
-    for metric in RAGAS_METRIC_COLUMNS:
+    for metric in EVAL_METRIC_COLUMNS:
         if metric not in means:
             continue
         print(f"  {metric}: {means[metric]:.4f}")
@@ -1533,7 +1533,7 @@ def _write_langfuse_scores(
     """
     scores: dict[str, list] = {
         f"{col}{LANGFUSE_SCORE_SUFFIX}": list(masked_df[col])
-        for col in RAGAS_METRIC_COLUMNS
+        for col in EVAL_METRIC_COLUMNS
         if col in masked_df.columns
     }
     if behaviour_rows is not None:
@@ -1576,7 +1576,7 @@ def _build_eval_detail(
     """
     from src.config.const import DIAGNOSTIC_METRIC_COLUMNS
 
-    metric_cols = [col for col in RAGAS_METRIC_COLUMNS if col in df.columns]
+    metric_cols = [col for col in EVAL_METRIC_COLUMNS if col in df.columns]
     diag_cols = [col for col in DIAGNOSTIC_METRIC_COLUMNS if col in df.columns]
 
     detail: list[dict] = []
@@ -1684,13 +1684,13 @@ def _save_eval_report(
 
 async def _list_knowledge_bases() -> None:
     """列出 MySQL 中所有知识库的名称和文档数."""
-    from src.config import RAGAS_USER_ID
+    from src.config import EVAL_USER_ID
     from src.services.app_service import AppService
 
     svc = AppService()
 
     # 获取所有知识库（含 doc_count）
-    kbs = await svc._kb_repo.get_all_kb(RAGAS_USER_ID)
+    kbs = await svc._kb_repo.get_all_kb(EVAL_USER_ID)
     if not kbs:
         print("No knowledge bases found.")
         return

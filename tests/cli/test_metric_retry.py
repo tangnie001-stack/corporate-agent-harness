@@ -40,7 +40,7 @@ def test_exc_chain_summary_keeps_root_cause():
 
 def test_no_retry_when_attempts_is_one(monkeypatch):
     """attempts=1 时退化为「不重试」，只 measure 一次并记 error。"""
-    monkeypatch.setattr(eval_deepeval.settings, "RAGAS_METRIC_MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(eval_deepeval.settings, "EVAL_METRIC_MAX_ATTEMPTS", 1)
     metric = _Nan()
 
     value, err = eval_deepeval._score_metric_with_retry(

@@ -26,7 +26,7 @@ def test_bridge_judge_binds_both_clients_with_fine_grained_timeout():
     assert judge.http_async_client.timeout == judge.http_client.timeout
     assert judge.request_timeout == judge.http_client.timeout
     # 超时值必须是配置层那一个（防回落到 SDK 默认 read=600s）
-    assert judge.http_client.timeout.read == settings.RAGAS_HTTP_TIMEOUT_READ
+    assert judge.http_client.timeout.read == settings.JUDGE_HTTP_TIMEOUT_READ
 
 
 def test_bridge_judge_pins_temperature_zero_and_zero_retries(monkeypatch):

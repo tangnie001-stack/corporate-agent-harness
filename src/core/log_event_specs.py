@@ -238,7 +238,7 @@ EVENT_SPECS: dict[str, EventSpec] = {
     "rag component init": EventSpec("rag component init", "cli", "info"),
     "vector store check": EventSpec("vector store check", "cli", "info", ("kb_id",)),
     "vector store empty": EventSpec("vector store empty", "cli", "error", ("kb_id",)),
-    "ragas model missing": EventSpec("ragas model missing", "cli", "error"),
+    "judge model missing": EventSpec("judge model missing", "cli", "error"),
     "answers generation": EventSpec("answers generation", "cli", "info", ("count",)),
     "question answer start": EventSpec(
         "question answer start", "cli", "info", ("index", "query")

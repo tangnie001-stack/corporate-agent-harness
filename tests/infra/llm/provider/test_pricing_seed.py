@@ -101,8 +101,8 @@ def _pin_env(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "fake")
     monkeypatch.setenv("CLASSIFY_PROVIDER", "fake")
     monkeypatch.setenv("SUMMARY_PROVIDER", "fake")
-    monkeypatch.setenv("RAGAS_PROVIDER", "fake")
-    for key in ("LLM_MODEL", "CLASSIFY_MODEL", "SUMMARY_MODEL", "RAGAS_LLM_MODEL"):
+    monkeypatch.setenv("JUDGE_PROVIDER", "fake")
+    for key in ("LLM_MODEL", "CLASSIFY_MODEL", "SUMMARY_MODEL", "JUDGE_MODEL"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(pricing_seed.settings, "LANGFUSE_ENABLE", True)
 

@@ -5,7 +5,7 @@
 """
 
 from src.cli import eval_deepeval
-from src.config.const import RAGAS_METRIC_COLUMNS
+from src.config.const import EVAL_METRIC_COLUMNS
 
 
 class _FakeMetric:
@@ -20,7 +20,7 @@ def test_score_rows_output_shape_is_replaceable_contract():
 
     `metrics` 由调用方注入 ⇒ 替代实现只需提供同形入参，无需改这里的编排。
     """
-    metrics = {name: _FakeMetric() for name in RAGAS_METRIC_COLUMNS}
+    metrics = {name: _FakeMetric() for name in EVAL_METRIC_COLUMNS}
     rows = [
         {
             "q_index": 0,
@@ -36,7 +36,7 @@ def test_score_rows_output_shape_is_replaceable_contract():
     assert len(scored) == 1
     assert scored[0]["q_index"] == 0
     assert "error" in scored[0]
-    for name in RAGAS_METRIC_COLUMNS:
+    for name in EVAL_METRIC_COLUMNS:
         assert name in scored[0]
 
 

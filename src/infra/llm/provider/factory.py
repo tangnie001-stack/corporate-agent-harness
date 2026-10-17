@@ -138,18 +138,18 @@ def build_bridge_judge(*, evidence: HookEvidence) -> ChatOpenAI:
     from src.config import settings
 
     timeout = httpx.Timeout(
-        connect=settings.RAGAS_HTTP_TIMEOUT_CONNECT,
-        read=settings.RAGAS_HTTP_TIMEOUT_READ,
-        write=settings.RAGAS_HTTP_TIMEOUT_WRITE,
-        pool=settings.RAGAS_HTTP_TIMEOUT_POOL,
+        connect=settings.JUDGE_HTTP_TIMEOUT_CONNECT,
+        read=settings.JUDGE_HTTP_TIMEOUT_READ,
+        write=settings.JUDGE_HTTP_TIMEOUT_WRITE,
+        pool=settings.JUDGE_HTTP_TIMEOUT_POOL,
     )
     async_client = make_logging_client(timeout=timeout, evidence=evidence)
     sync_client = httpx.Client(timeout=timeout)
     return build_chat(
         "judge",
         temperature=0,
-        thinking=settings.RAGAS_JUDGE_THINKING,
-        max_tokens=settings.RAGAS_JUDGE_MAX_TOKENS,
+        thinking=settings.JUDGE_THINKING,
+        max_tokens=settings.JUDGE_MAX_TOKENS,
         http_client=sync_client,
         http_async_client=async_client,
         request_timeout=timeout,

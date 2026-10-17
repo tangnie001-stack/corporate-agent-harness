@@ -6,7 +6,7 @@ import json
 import re
 from pathlib import Path
 
-from src.config import RAGAS_TESTSET_DIR  # Task 8 会统一改名为 EVAL_TESTSET_DIR
+from src.config import EVAL_TESTSET_DIR
 
 
 def load_testset_samples(kb_id: str, version: int | None = None) -> list[dict]:
@@ -24,7 +24,7 @@ def load_testset_samples(kb_id: str, version: int | None = None) -> list[dict]:
         FileNotFoundError: 没有找到该知识库的测试集文件
     """
     pattern = re.compile(rf"^testset_{re.escape(kb_id)}_v(\d+)\.json$")
-    testset_dir = Path(RAGAS_TESTSET_DIR)
+    testset_dir = Path(EVAL_TESTSET_DIR)
 
     if version is not None:
         target_file = testset_dir / f"testset_{kb_id}_v{version}.json"

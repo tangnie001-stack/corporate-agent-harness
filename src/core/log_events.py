@@ -139,7 +139,7 @@ class Event(str, Enum):
     RAG_COMPONENT_INIT = "rag component init"
     VECTOR_STORE_CHECK = "vector store check"
     VECTOR_STORE_EMPTY = "vector store empty"
-    RAGAS_MODEL_MISSING = "ragas model missing"
+    JUDGE_MODEL_MISSING = "judge model missing"
     ANSWERS_GENERATION = "answers generation"
     QA_ANSWER_START = "question answer start"
     QA_ANSWER_DONE = "question answer done"

@@ -84,7 +84,7 @@ _PROVIDER_ENV = {
     "main": "LLM_PROVIDER",
     "classify": "CLASSIFY_PROVIDER",
     "summary": "SUMMARY_PROVIDER",
-    "judge": "RAGAS_PROVIDER",
+    "judge": "JUDGE_PROVIDER",
     "embedding": "EMBEDDING_PROVIDER",
     "rerank": "RERANK_PROVIDER",
 }
@@ -92,7 +92,7 @@ _MODEL_ENV = {
     "main": "LLM_MODEL",
     "classify": "CLASSIFY_MODEL",
     "summary": "SUMMARY_MODEL",
-    "judge": "RAGAS_LLM_MODEL",
+    "judge": "JUDGE_MODEL",
     "embedding": "EMBEDDING_MODEL",
     "rerank": "RERANK_MODEL",
 }

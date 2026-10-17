@@ -28,6 +28,41 @@ os.environ.setdefault("DEEPEVAL_TELEMETRY_OPT_OUT", "1")
 # 加载项目根目录的 .env 文件（如存在），将键值对注入 os.environ
 load_dotenv()
 
+# 旧评测配置键 → 新键对照表。检测放在 load_dotenv() 之后：`.env` 里的旧键也会被拦下。
+# 只报错、不 fallback —— 线上留着旧键说明部署配置未迁移，静默兜底会掩盖问题。
+_LEGACY_ENV_MAP = {
+    "RAGAS_LLM_MODEL": "JUDGE_MODEL",
+    "RAGAS_PROVIDER": "JUDGE_PROVIDER",
+    "RAGAS_JUDGE_TIMEOUT": "JUDGE_TIMEOUT",
+    "RAGAS_HTTP_TIMEOUT_CONNECT": "JUDGE_HTTP_TIMEOUT_CONNECT",
+    "RAGAS_HTTP_TIMEOUT_READ": "JUDGE_HTTP_TIMEOUT_READ",
+    "RAGAS_HTTP_TIMEOUT_WRITE": "JUDGE_HTTP_TIMEOUT_WRITE",
+    "RAGAS_HTTP_TIMEOUT_POOL": "JUDGE_HTTP_TIMEOUT_POOL",
+    "RAGAS_METRIC_MAX_ATTEMPTS": "EVAL_METRIC_MAX_ATTEMPTS",
+    "RAGAS_JUDGE_MAX_TOKENS": "JUDGE_MAX_TOKENS",
+    "RAGAS_JUDGE_THINKING": "JUDGE_THINKING",
+    "RAGAS_DATA_DIR": "EVAL_DATA_DIR",
+    "RAGAS_TESTSET_DIR": "EVAL_TESTSET_DIR",
+    "RAGAS_REPORT_DIR": "EVAL_REPORT_DIR",
+    "RAGAS_LLM_CACHE_DIR": "EVAL_LLM_CACHE_DIR",
+    "RAGAS_USER_ID": "EVAL_USER_ID",
+    "RAGAS_METRIC_COLUMNS": "EVAL_METRIC_COLUMNS",
+    "RAGAS_HTTP_MAX_RETRIES": "删除（裁判固定 max_retries=0）",
+    "RAGAS_TEST_SIZE": "删除（出题路退役）",
+    "RAGAS_DOC_WHITELIST": "删除（出题路退役）",
+}
+_LEGACY_RAGAS_ENV = sorted(key for key in os.environ if key.startswith("RAGAS_"))
+if _LEGACY_RAGAS_ENV:
+    hints = [
+        f"{key} -> {_LEGACY_ENV_MAP.get(key, 'JUDGE_*/EVAL_*')}"
+        for key in _LEGACY_RAGAS_ENV
+    ]
+    raise RuntimeError(
+        "检测到已废弃的 RAGAS_* 环境变量："
+        + "；".join(hints)
+        + "（对照表见 docs/agents/deploy-runbook.md）"
+    )
+
 
 # ====== DashScope API ======
 # 阿里云 DashScope 平台 API Key，必填项，用于调用 LLM / Embedding / Rerank 模型
@@ -158,66 +193,54 @@ ASK_USER_MODE_DSH: bool = os.getenv("ASK_USER_MODE_DSH", "true").lower() in (
     "yes",
     "on",
 )  # ask_user 澄清模式：true=dsh 全自由；false=KB dimension 注入 + 非 KB 自由
-# RAGAS 评估专用模型（独立于生产 LLM，temperature 固定为 0）
+# 评测裁判专用模型（独立于生产 LLM，temperature 固定为 0）
 # 「无思考/非推理模型」的限制属于上方 CLASSIFY_MODEL（分类/路由小模型），
-# 与 RAGAS 评估模型无关。RAGAS_LLM_MODEL 经 LangchainLLMWrapper(bypass_n=True)
+# 与评测裁判模型无关。JUDGE_MODEL 经 LangchainLLMWrapper(bypass_n=True)
 # 包装后强制 n=1，推理模型（如 qwen3.7-max）可正常使用（已实测）。
-RAGAS_LLM_MODEL: str = os.getenv("RAGAS_LLM_MODEL", "")
-# RAGAS 裁判/embedding 客户端请求超时秒数（思考模型偶尔 >30s，超时不足会把分数变成失败）
-RAGAS_JUDGE_TIMEOUT: float = float(os.getenv("RAGAS_JUDGE_TIMEOUT", "300"))
-# ── RAGAS native 客户端（裁判 / embedding）的细粒度 HTTP 超时（秒）──
+JUDGE_MODEL: str = os.getenv("JUDGE_MODEL", "")
+# 裁判/embedding 客户端请求超时秒数（思考模型偶尔 >30s，超时不足会把分数变成失败）
+JUDGE_TIMEOUT: float = float(os.getenv("JUDGE_TIMEOUT", "300"))
+# ── 评测 native 客户端（裁判 / embedding）的细粒度 HTTP 超时（秒）──
 # 依据（实测 5 题 69 次裁判调用）：p50=7.6s · p95=66s · p99=111s（111s ≈ 跑满 8192 输出上限）。
 # 原先平铺 300s：一次挂死调用白等 300s，再叠加 openai SDK 默认 2 次重试 = 900s 空转
 # （全量 21 题 91 分钟里约 80 分钟是这种空转）。细粒度后把死等压到 read 上限。
 # 参考：OpenAI SDK 默认 Timeout(connect=5, read=600, write=600, pool=600)；业界常见
 # 细粒度写法 connect=10 / read=60 / write=20 / pool=10。
-RAGAS_HTTP_TIMEOUT_CONNECT: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_CONNECT", "10"))
+JUDGE_HTTP_TIMEOUT_CONNECT: float = float(os.getenv("JUDGE_HTTP_TIMEOUT_CONNECT", "10"))
 # 正常调用 p99=111s ⇒ 取 150s（高于 p99 约 35%，误杀少；死等上限仅 150s）
-RAGAS_HTTP_TIMEOUT_READ: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_READ", "150"))
-RAGAS_HTTP_TIMEOUT_WRITE: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_WRITE", "30"))
-RAGAS_HTTP_TIMEOUT_POOL: float = float(os.getenv("RAGAS_HTTP_TIMEOUT_POOL", "10"))
-# SDK 自身重试次数：**实测唯一的重试放大层**。默认 2 且会重试 APITimeoutError
-# （⊂ APIConnectionError）⇒ 一个逻辑调用实际发出 1+2=3 次 HTTP 请求。
-# 设 0：整条链路只发 1 次、不重试（实测 mock transport：max_retries=2 → 3 次；=0 → 1 次）。
-# 注：instructor.from_openai 无 max_retries 参数，其自身只做 1 次尝试、不叠加。
-RAGAS_HTTP_MAX_RETRIES: int = int(os.getenv("RAGAS_HTTP_MAX_RETRIES", "0"))
+JUDGE_HTTP_TIMEOUT_READ: float = float(os.getenv("JUDGE_HTTP_TIMEOUT_READ", "150"))
+JUDGE_HTTP_TIMEOUT_WRITE: float = float(os.getenv("JUDGE_HTTP_TIMEOUT_WRITE", "30"))
+JUDGE_HTTP_TIMEOUT_POOL: float = float(os.getenv("JUDGE_HTTP_TIMEOUT_POOL", "10"))
 # 单指标最大尝试次数（我们自己这层的有界重试，替代被关掉的 SDK 重试）。
+# 裁判客户端的 SDK 重试已固定为 0（只发 1 次 HTTP 请求），重试完全由本层控制。
 # 依据：失败主因是模型偶发「吐空结构」（`finish_reason=stop`、输出仅 148–215 token、
 # raw=`{"classifications":[{},{},{}]}`）——**快（7–16s）且随机**，重试成功率高；
 # 而不重试会把失败行踢出均值，造成乐观偏差 + 分母不齐。取 3（两次重试）。
 # 超时也重试（实测抓到一次 150s 超时重试后成功恢复）。代价上界 = attempts × read 上限。
-RAGAS_METRIC_MAX_ATTEMPTS: int = int(os.getenv("RAGAS_METRIC_MAX_ATTEMPTS", "3"))
+EVAL_METRIC_MAX_ATTEMPTS: int = int(os.getenv("EVAL_METRIC_MAX_ATTEMPTS", "3"))
 # 裁判单次生成的最大输出 token。RAGAS 内建默认仅 **1024**，会截断正常输出 → 必须上调。
 # 取 **8192** 而非 4096：两处独立观测都显示 8192 的失败**不多于** 4096
 # （A/B 探针 15 次/档：4096 失败 1、8192 失败 0；真实 21 题全量：4096 → 5/21、8192 → 3/21），
 # 且**均耗时无差异**（35s vs 33s；跑飞的调用本就稀有）⇒ 大 cap 不付时间代价。
 # 注意：cap 只是"缓解"——失败根因是模型偶发退化成吐空对象，与 cap 无关（详见 ADR-0024）。
-RAGAS_JUDGE_MAX_TOKENS: int = int(os.getenv("RAGAS_JUDGE_MAX_TOKENS", "8192"))
+JUDGE_MAX_TOKENS: int = int(os.getenv("JUDGE_MAX_TOKENS", "8192"))
 # 裁判是否开思考。定稿 = **关**（2026-10-15 A/B：关思考显著更快；开思考在 21 题全量下
 # 出现 5/21 行 `Request timed out`、耗时 1h31m）。
-RAGAS_JUDGE_THINKING: bool = os.getenv("RAGAS_JUDGE_THINKING", "false").lower() in (
+JUDGE_THINKING: bool = os.getenv("JUDGE_THINKING", "false").lower() in (
     "1",
     "true",
     "yes",
 )
-# RAGAS 测试集生成条数
-RAGAS_TEST_SIZE: int = int(os.getenv("RAGAS_TEST_SIZE", "20"))
-# RAGAS 测试集存储目录
-RAGAS_DATA_DIR: str = os.getenv("RAGAS_DATA_DIR", "data/ragas")
-# RAGAS 测试集 JSON 文件存放目录
-RAGAS_TESTSET_DIR: str = os.getenv("RAGAS_TESTSET_DIR", "data/ragas/testset")
-# RAGAS 评估报告输出目录
-RAGAS_REPORT_DIR: str = os.getenv("RAGAS_REPORT_DIR", "data/ragas/reports")
-# RAGAS LLM 缓存目录（DiskCacheBackend，用于提速重复生成）
-RAGAS_LLM_CACHE_DIR: str = os.getenv("RAGAS_LLM_CACHE_DIR", "data/ragas/llm_cache")
-# RAGAS 默认用户 ID（查询知识库时使用）
-RAGAS_USER_ID: str = os.getenv("RAGAS_USER_ID", "24a93c0e-3c9b-4d8d-a371-2d8b3607892a")
-# RAGAS 文档白名单：只处理白名单中的文档 ID
-# 用于跳过不需要参与测试集生成的文档（如扫描件、不相关文档）
-RAGAS_DOC_WHITELIST: list[str] = [
-    "2150df73-2a68-4f60-ac33-6ee2c2519394",  # neusoft_2025_q1.pdf
-    "74b293b6-063e-454f-8d60-e4921cbe39b1",  # tencent_2024_annual.pdf
-]
+# 评测数据根目录（测试集 / 报告 / 缓存均在其下）
+EVAL_DATA_DIR: str = os.getenv("EVAL_DATA_DIR", "data/deepeval")
+# 评测测试集 JSON 文件存放目录
+EVAL_TESTSET_DIR: str = os.getenv("EVAL_TESTSET_DIR", "data/deepeval/testset")
+# 评测报告输出目录
+EVAL_REPORT_DIR: str = os.getenv("EVAL_REPORT_DIR", "data/deepeval/reports")
+# 评测 LLM 缓存目录（DiskCacheBackend，用于提速重复生成）
+EVAL_LLM_CACHE_DIR: str = os.getenv("EVAL_LLM_CACHE_DIR", "data/deepeval/llm_cache")
+# 评测默认用户 ID（查询知识库时使用）
+EVAL_USER_ID: str = os.getenv("EVAL_USER_ID", "24a93c0e-3c9b-4d8d-a371-2d8b3607892a")
 
 # --- PostgreSQL（应用关系型库；LangfSuse 用同实例的另一个 database）---
 POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "localhost")
@@ -368,7 +391,7 @@ DELEGATE_TOTAL_TIMEOUT_THINKING_S: float = float(
 # 宁宽不宁紧；配合 `delegate skip` 的命中率观测，上线一版数据后再收紧。
 DELEGATE_MAX_PER_SESSION: int = int(os.getenv("DELEGATE_MAX_PER_SESSION", "50"))
 
-# ====== 生产链路角色级超时（自有键名；评测链用 RAGAS_* 族，两者不共享）======
+# ====== 生产链路角色级超时（自有键名；评测链用 JUDGE_*/EVAL_* 族，两者不共享）======
 # 依据：change timeout-and-degradation-hardening 的 design D2/D11。
 # ⚠ 这些值待真实分位校准（D11 取值表标注"待校准"）；全部可被 .env 覆盖。
 HTTP_TIMEOUT_CONNECT: float = float(os.getenv("HTTP_TIMEOUT_CONNECT", "10"))

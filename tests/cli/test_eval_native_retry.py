@@ -87,7 +87,7 @@ def test_exhausted_retries_report_error_and_return_nan():
 
     assert math.isnan(value)
     assert err.startswith("faithfulness:")
-    assert m.calls == 3, "有界：RAGAS_METRIC_MAX_ATTEMPTS=3"
+    assert m.calls == 3, "有界：EVAL_METRIC_MAX_ATTEMPTS=3"
 
 
 def test_measure_raises_chain_survives_into_error_and_retries():
@@ -97,7 +97,7 @@ def test_measure_raises_chain_survives_into_error_and_retries():
     )
 
     assert math.isnan(value)
-    assert m.calls == 3, "有界：RAGAS_METRIC_MAX_ATTEMPTS=3"
+    assert m.calls == 3, "有界：EVAL_METRIC_MAX_ATTEMPTS=3"
     # 异常链须完整存活进错误串：外层类 + 根因类 + 根因消息，而非退化回 ":nan"
     assert "RuntimeError" in err and "TimeoutError" in err
     assert "boom" in err, "根因消息必须存活进错误串"

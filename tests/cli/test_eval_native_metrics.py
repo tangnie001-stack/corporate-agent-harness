@@ -47,9 +47,9 @@ def test_build_metrics_passes_judge_explicitly():
 
 
 def test_metric_columns_are_unchanged():
-    from src.config.const import CONTEXT_METRIC_COLUMNS, RAGAS_METRIC_COLUMNS
+    from src.config.const import CONTEXT_METRIC_COLUMNS, EVAL_METRIC_COLUMNS
 
-    assert RAGAS_METRIC_COLUMNS == (
+    assert EVAL_METRIC_COLUMNS == (
         "faithfulness",
         "answer_relevancy",
         "context_precision",

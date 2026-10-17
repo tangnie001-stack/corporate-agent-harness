@@ -22,7 +22,7 @@ from loguru import logger
 from src.config.const import (
     CONTEXT_METRIC_COLUMNS,
     DIAGNOSTIC_METRIC_COLUMNS,
-    RAGAS_METRIC_COLUMNS,
+    EVAL_METRIC_COLUMNS,
     SAMPLE_CLASS_EMPTY,
     SAMPLE_CLASS_PURE_KB,
     SAMPLE_CLASS_WEB,
@@ -144,7 +144,7 @@ def nan_cell_stats(df: pd.DataFrame) -> dict:
         {"nan_cells": int, "denominator_cells": int, "nan_rate": float}
     """
     pure = df[df["sample_class"] == SAMPLE_CLASS_PURE_KB]
-    cols = [c for c in RAGAS_METRIC_COLUMNS if c in df.columns]
+    cols = [c for c in EVAL_METRIC_COLUMNS if c in df.columns]
     denom = len(pure) * len(cols)
     nan_cells = int(pure.loc[:, cols].isna().to_numpy().sum()) if denom else 0
     return {
@@ -157,7 +157,7 @@ def nan_cell_stats(df: pd.DataFrame) -> dict:
 def main_score_means(df: pd.DataFrame) -> dict[str, float]:
     """计算主分：仅纯 KB 样本行的各指标均值。
 
-    指标集合在函数内收窄到 `RAGAS_METRIC_COLUMNS` 白名单（不依赖调用方过滤），
+    指标集合在函数内收窄到 `EVAL_METRIC_COLUMNS` 白名单（不依赖调用方过滤），
     以免结果表混入额外数值列（如 chunk_size）时被静默计入主分。
     均值口径为"纯 KB 且非 NaN"（`Series.mean()` 默认 `skipna=True`，即本口径；
     **不得**改为 `skipna=False`）。
@@ -170,7 +170,7 @@ def main_score_means(df: pd.DataFrame) -> dict[str, float]:
     """
     mask = df["sample_class"] == SAMPLE_CLASS_PURE_KB
     result: dict[str, float] = {}
-    for col in RAGAS_METRIC_COLUMNS:
+    for col in EVAL_METRIC_COLUMNS:
         if col not in df.columns:
             continue
         if pd.api.types.is_numeric_dtype(df[col]):

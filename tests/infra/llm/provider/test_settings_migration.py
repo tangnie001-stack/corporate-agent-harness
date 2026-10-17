@@ -24,7 +24,7 @@ _MODEL_ENVS = (
     "SUMMARY_MODEL",
     "EMBEDDING_MODEL",
     "RERANK_MODEL",
-    "RAGAS_LLM_MODEL",
+    "JUDGE_MODEL",
 )
 
 
@@ -50,7 +50,7 @@ def test_model_defaults_are_empty(monkeypatch):
         assert reloaded.CLASSIFY_MODEL == ""
         assert reloaded.EMBEDDING_MODEL == ""
         assert reloaded.RERANK_MODEL == ""
-        assert reloaded.RAGAS_LLM_MODEL == ""
+        assert reloaded.JUDGE_MODEL == ""
         # SUMMARY_MODEL 仍"跟随 main"：main 空则 summary 也空
         assert reloaded.SUMMARY_MODEL == reloaded.LLM_MODEL == ""
 
