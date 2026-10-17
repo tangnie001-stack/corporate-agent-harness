@@ -217,7 +217,7 @@
 
 #### Scenario: Thresholds are recalibrated, not inherited
 
-- **WHEN** 本次口径下首次跑出全量分布
+- **WHEN** **v6 定稿后**的全量分布产出（v5 分布仅作基线记录、**不用于标定**，见 design D8 的 v6 接手点）
 - **THEN** 门禁阈值 SHALL 按该分布重新取值，且报告/台账 SHALL 标注口径版本与标定轮次
 
 ### Requirement: QA test pair coverage

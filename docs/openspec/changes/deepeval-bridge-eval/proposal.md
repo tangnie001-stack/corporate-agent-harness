@@ -36,7 +36,7 @@
 - **文档**：**追加新 ADR** 取代 `docs/adr/0024-ragas-judge-client-policy.md` 的裁判 client 政策，并在旧 ADR 的 Status 加**反向指针** + 更新 ADR 索引；`docs/agents/logging-rules.md` 的 `judge call` / `metric retry` 事件口径随埋点位置重述。
 - **依赖**：新增 `deepeval`（4.2.9 量级）；`ragas` 由 **0.4.3 → 0.3.9**；连带 `click`、`huggingface_hub` 下移（见 design D1）。**这是本次唯一的"不可逆"动作**（`pyproject.toml` 的 pin 要改）⇒ **必须写明回滚路径**（恢复 `ragas==0.4.3` + `datasets==4.0.0`，并同时放弃 deepeval 与行为轴；触发条件见 design D1）。
 - **数据**：**`eval_report` 表无 schema 迁移**（订正：该表**本就无** `answer_correctness` 列，且已有四列正是经典四指标——见 `src/infra/db/models/eval_report.py`）。会随指标名/阈值变的是 `detail_json` 口径与报告；`data/ragas/reports/` 旧报告**不再作为基线**。
-- **行为**：门禁阈值必须在重跑后重新标定；报告与台账的指标名从"现代五指标"变为"经典四指标 + agentic 族"。
+- **行为**：门禁阈值必须重新标定（**标定时点延后至 v6 定稿后**，见 design D8 的 v6 接手点；v5 分布仅作基线记录）；报告与台账的指标名从"现代五指标"变为"经典四指标 + agentic 族"。
 - **观测**：**DeepEval 无 Langfuse 集成**（其 Integrations 清单不含 Langfuse；Langfuse 侧那份配方用的是 v3/v4 API，与本项目自托管 v2 不匹配），故回写沿用**项目自建通道**（`langfuse_context.client_instance` + `client.score`）；**行为轴指标一并回写**；`NaN` **不写**（SHALL NOT 以 `0` 代替）；新口径 score 名**带后缀**（如 `faithfulness@bridge-0.3.x`），不与历史同名覆盖。
 - **被测图侵入面**：行为轴要求被测图标配 `EvaluationDataset.evals_iterator(...)` 驱动的循环，并在循环体内 `graph.ainvoke(..., config={"callbacks": [CallbackHandler()]})`（**handler 不挂 metrics**）；生产链路不动。**订正**：原文"`Golden` / `evals_iterator` 在基本路径上不需要"**是错的**——`evals_iterator` 是**必需**的驱动（实测只挂 handler 时 `metric.score=None`）。
 - **不改**：Agent 图与生产链路（`src/agents/**`）、`kb_eval` API 的形状、前端。
