@@ -1229,3 +1229,85 @@ git commit -m "docs(superpowers): Phase 3 收口 —— tasks 勾选 + 执行记
 - **R11 的处置**（faithfulness 不可复现：①D+双 judge / ②降级）——待新题集定稿后拍板。
 - **Phase 2 遗留 minor 清尾**——本轮范围已明确排除，单列后续。
 - **逃生门替代实现**（DeepEval 采样 + 项目侧直调 ragas 0.3）——首次启用时实现并冒烟。
+
+## Phase 3 执行记录与交接（2026-10-17 完成）
+
+**状态**：9/9 任务完成（Task 1–9）。分支 `feat/deepeval-bridge-eval`；基点 `b99cbb0d`；收口前 **18** 个提交（清单见下），含本收口提交共 **19** 个。
+
+**提交清单（`git log --oneline b99cbb0d..HEAD`）**：
+
+```text
+2f45c8e3 fix(test): Task 8 的 5.1 回归测试改为真重入守卫（run_until_complete）
+bfacb811 docs(superpowers): Phase 3 计划 Task 8 的 5.1 回归测试改为真重入守卫
+89a7d7af docs(superpowers): Phase 3 计划 Task 8 的死引用判据排除反向断言 guard
+43674810 test(eval): 钉住 evals_iterator 单 loop 重入形态（tasks 5.1；5.6 免做已记明）
+24959e88 docs(adr): 修正 ADR-0026 代价③与复查编号（响应体摘要未落地）
+a4235037 docs(adr): 修正 ADR-0026 决策 6 的落地现状 + 旋钮①取证 + 索引单表
+26efdc71 docs(adr): 新增 ADR-0026 取代 ADR-0024 的裁判 client 政策（tasks 9.7）
+aa53521b docs(eval): 修正 Task 6 复核发现 —— provider 日志描述说真话 + 三处旧口径同步 + 台账分代
+ee0c327a docs(superpowers): Phase 3 计划 Task 6 的 grep 判据收窄到当代文档
+585c09ce docs(eval): 日志事件口径重述 + 残留核实 + 删失义并发常量（tasks 9.4/9.5 + 4.6 尾注）
+3980bf7e docs(superpowers): Phase 3 计划 Task 4 修正沉淀（去三元 + 去测试内重复 import）
+795a419d refactor(provider): 删除现代 RAGAS 工厂（build_ragas_judge/embeddings/native_client）（tasks 9.3/9.6）
+d7e73472 fix(eval): Task 4 风格修正 —— 去三元表达式与测试内重复 import
+baef1528 docs+feat(eval): 行为轴归因边界收敛 —— 失败证据走 test_run JSON reason（design R9）
+501cf3c5 feat(eval): Langfuse 回写纳入行为轴并统一带口径后缀（tasks 组 8）
+a7ad31ee docs(superpowers): 修正 Phase 3 计划 Task 2 的 pyright 隐患（retrieval_context Optional）
+7714ff76 docs(eval): 逃生门可替换边界显式化 + 台账逃生门列 + 需求池登记（tasks 组 7）
+0d0a107c feat(eval): --generate 硬护栏 + 出题路调用状态标注（tasks 组 6）
+```
+
+**闸门证据（2026-10-17 实测）**：
+
+| 闸门 | 命令 | 结果 |
+|---|---|---|
+| 全量测试 | `POSTGRES_HOST=localhost pytest tests/ -q` | **1880 passed, 3 skipped, 39 warnings in 80.63s** |
+| 格式（改动域） | `ruff format --check src/ tests/` | `499 files already formatted`（exit 0） |
+| Lint（改动域） | `ruff check src/ tests/` | exit 1，仅 **1** 条：`src/infra/db/engine.py:33:11` UP047（BASE 既有，见下节） |
+| 类型（窄域） | `.venv/bin/pyright src/cli src/infra/llm/provider` | `2 errors`，均在 `eval_ragas_generate.py`（BASE 既有，见下节） |
+| 规格校验 | `openspec validate deepeval-bridge-eval --strict` | `Change 'deepeval-bridge-eval' is valid`（exit 0） |
+| 文档校验 | `python -m src.cli.check_docs` | `23 篇文档，0 error, 95 warn`（exit 0） |
+| ADR 校验 | `python -m src.cli.check_adr` | `26 条 ADR，0 error`（exit 0） |
+
+3 条 skip 均为既知条件：2 条 dashscope 未安装、1 条为 `ragas 0.3.9` 无 `default_transforms_for_prechunked`（出题路保留未调用）。
+`pyright` 按 brief 收窄到本阶段实际改动域（全量 `pyright src/` 在本仓极慢，且不产出额外判据）。
+
+**BASE 既有闸门欠账（非本阶段引入，未修）**：
+
+1. `ruff format --check .` → 报 `docs/agents/api_contract.md:469`（Markdown 代码围栏内被本版 ruff 当作 Python 排版），全仓 `112 files would be reformatted, 1165 files already formatted`（exit 1）。BASE `b99cbb0d` 同样报出；对全仓跑 format 会波及 112 篇文档，超出本阶段范围。
+2. `ruff check .` → `src/infra/db/engine.py:33:11` UP047（`run_and_dispose` 未用 PEP 695 类型参数），`Found 1 error`（exit 1）。BASE 同样报出，单点存量。
+3. `pyright src/cli` → `src/cli/eval_ragas_generate.py:290:46`（`llm_context` 无此参数）与 `:313:50`（`default_transforms_for_prechunked` 未知符号）。BASE 原行为 `284` / `307`，属出题路 0.4.x 保留引用的必然产物，随 R11 / v6 前迁一并处置。
+
+**关键裁决（逐条，避免后人重开）**：
+
+- **Task 1 接受 `SKIP=pyright` 提交**：上述两处 pyright error 在 BASE `b99cbb0d` 即存在，该任务 diff 只触及文件头 docstring，未引入新 error；pre-commit 只查改动文件正是为不让存量 error 阻塞所有提交。代价：清零须待出题路前迁（R11 / v6）。
+- **计划文件曾被全仓 `ruff format` 破坏并重建（`3980bf7e`）**：Task 5 实施者的 `ruff format .` 波及 112 篇 docs，并误复原 Task 4 的 if/else 修正；已从 HEAD 恢复、重新应用并单独提交，内容已核对。此后禁止对全仓跑 format，也禁止触碰 `docs/superpowers/plans/`。
+- **死引用 grep 排除 `tests/infra/llm/provider/test_no_modern_factories.py`**：该 guard 的 `assert not hasattr(...)` 反向断言天然含被删符号名，排除后只查 `*.py`，避免把防线当残留。
+- **`RAGAS_EVAL_CONCURRENCY` 判据限定 `src/ tests/ docs/agents/`**：ADR-0024（不可变）与 plans / archive / research 属历史记录，SHALL NOT 改；残留只允许出现在标注了口径版本的历史文档里。
+
+**本阶段未证明（勿当成已验证）**：
+
+- **无全量活体**（1 题 → 5 题 → 21 题）：四项指标与行为指标的真实分布、行为分是否稳定从 `test_run_*.json` 回读，均未在真实题集上跑过。
+- **无阈值重标定**：`check_gate` 仍用换尺子前的阈值，新尺子的合理下界未知。
+- **无 NaN 率复核**：4.7 的 `10%` 是经验初值，未用实测 NaN 率验证。
+- 以上三项同属组 10，**须待新题集**（design R11），不构成本阶段（组 6–9）的欠账。
+
+**诚实的遗留**：
+
+- **5.6 未勾选（免做）**：行为轴循环现为串行（每题独立 handler + 逐题 `ainvoke`），无并发可验；Phase 2 已有"每题独立 handler"的结构断言。将来并行化该循环时**必须**补此负向验证（已在 tasks.md 原行写明）。
+- **D13 落地范围缺口**：`http_async_client` 的 hooks 当前只记 `url` / `status` / `body_bytes` / `json_ok` / `finish_reason`（不可解析时另有 `body_exc`），且**仅在失败时产日志行**；`model` / 耗时由外层 `eval model init` / `judge call` 承载。**请求体摘要 / 响应体摘要 / 成功路径日志未落地**，已在 design D13「落地现状」与 ADR-0026 复查触发条件 ④ 登记，需要完整形态时另立项。
+- **各任务 deferred minor（一行一条，均不阻塞交付）**：
+  - Task 1：护栏位于 `kb_id` 必填校验之后（不带 `--kb-id` 会先撞必填）；`test_generate_guard` 用 `inspect.getsource` 文本包含断言；`--size` / `--model` 的 help 仍引用 `settings.RAGAS_TEST_SIZE`。
+  - Task 2：契约测试单行输入 ⇒ "行序"断言实际不可验；`build_metrics` 仅以 `callable()` 钉住、键序未断言；台账「逃生门」列无取值图例。
+  - Task 3：对齐测试单行、无法检出重排；NaN 测试直调 `write_scores`，未证明 `_write_langfuse_scores` 不把 NaN 替换为 0（靠阅读确认）；`scores: dict[str, list]` 注解偏松；行为行 ↔ `trace_ids` 仅长度校验（依赖 DeepEval JSON 顺序）；1 条 warning 未溯源。
+  - Task 4：`reason` 内换行未消毒；N/A 回退分支（缺 `reasons` / `None` / 空串 / 截断）无测试；`eval_scoring.py` 的 `metricsData` 字段清单未含 `reason`；`metricsData` 双遍历；`test_behaviour_report.py` 函数内 import。**原"design R9 旧措辞"一项已在本阶段消除**。
+  - Task 5：删除 `test_native_client` 后 `RAGAS_HTTP_TIMEOUT_*` 细粒度值在测试中零覆盖；`factory.py` docstring 措辞不准；warning 未溯源；回归闸门未覆盖 `build_rerank` / `_TimeoutReRankAdapter`（spec 标记 SHALL NOT 删）。
+  - Task 6：三处文档「…`finish_reason`…仅失败时进日志」可被读成失败日志含 `finish_reason`；`logging-rules` 的 note「成功时为空串」与桥 NaN 失败路径不符；`troubleshooting` §10 案例与现机制不一致；`troubleshooting.md:133` 残留旧口径（**必交最终 review triage**）。
+  - Task 7：无剩余（ADR-0026 决策 6 的字段清单与落地范围不符，已由 D13「落地现状」+ 复查触发条件 ④ 承接）。
+  - Task 8：无（review 后 clean）。
+
+**交接**：
+
+- **下一步 = Phase 4（组 10）**，前置是 **v6 题集**（独立 change，建议名 `deepeval-synthesizer-testset`，入口条件见 design D8「v6 接手点」）。Phase 4 需完成：`--no-gate` 首轮全量分布 → 阈值重标定 → NaN 阈值复核 → 台账记 `bridge-0.3.9 / v6` 行 → 验收记录回写。
+- **R11（faithfulness 不可复现）的处置仍待拍板**：①D+双 judge / ②降级，须在新题集定稿后决定；本阶段未触碰。
+- Phase 2 遗留 minor 清尾与逃生门替代实现，按「未纳入本阶段」清单另行安排。
