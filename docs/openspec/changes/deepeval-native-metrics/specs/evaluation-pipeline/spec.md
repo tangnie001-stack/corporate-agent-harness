@@ -8,10 +8,17 @@ Evaluation SHALL be invoked via `python -m src.cli.eval_deepeval`. The Markdown 
 
 When `--deepeval-only` is set, only the Markdown summary SHALL be written (no CSV), and it SHALL NOT contain four-metric rows or main-score lines.
 
+Historical `eval_report.report_path` rows pointing at the retired `data/ragas/` directory SHALL NOT be rewritten; the field has no consumer. The runbook and the evaluation ledger SHALL note that those historical paths are stale.
+
 #### Scenario: Evaluation saves CSV and Markdown
 
 - **WHEN** the user runs `python -m src.cli.eval_deepeval --kb-id <uuid>`
 - **THEN** a CSV file and a Markdown summary SHALL be created under the configured report directory
+
+#### Scenario: Historical report paths are not migrated
+
+- **WHEN** the data directory is renamed to `data/deepeval/`
+- **THEN** historical `eval_report.report_path` values SHALL remain unchanged, and the runbook/ledger SHALL state they are stale and have no consumer
 
 #### Scenario: DeepEval-only writes Markdown only
 
@@ -140,7 +147,7 @@ The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as pr
 
 判定「通过」的阈值 SHALL 由**单一常量**提供 —— SHALL NOT 在评测落库与前端各硬编码一份。阈值取值 SHALL 在 **v6 定稿后**重新标定（换尺子后历史阈值作废；v5 分布仅作基线）。
 
-**Baseline 语义（新口径首轮）**：首次以 `deep-eval-native` 口径跑出的全量 SHALL 以 `run_type="baseline"` 落库；`kb_eval` 对该 `run_type` SHALL 返回 `passed=None`（SHALL NOT 用未标定的阈值判红/绿），前端 SHALL NOT 显示通过/不通过。
+**Baseline 语义（新口径首轮）**：首次以 `deep-eval-native` 口径跑出的全量 SHALL 以 `run_type="baseline"` 落库；`run_type` SHALL 由 CLI 参数 `--run-type` 写入（默认 `manual`），SHALL NOT 由"是否首轮"自动推断。`kb_eval` 对该 `run_type` SHALL 返回 `passed=None`（SHALL NOT 用未标定的阈值判红/绿），前端 SHALL 以**三态**渲染：`passed=null` 显示"未标定"（灰色，SHALL NOT 显示 ✓/✗），`true` 显示通过，`false` 显示不通过；前端 SHALL NOT 用 `overall_score >= 阈值` 自行重算通过态。
 
 跨口径分数 SHALL NOT 被直接比较：报告与台账 SHALL 标注「口径版本」（`deep-eval-native`），历史（modern-0.4.x / bridge-0.3.x）的分数不得作为回归判据。
 
@@ -155,6 +162,16 @@ The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as pr
 
 - **WHEN** 首轮 `deep-eval-native` 全量以 `run_type="baseline"` 落库
 - **THEN** `kb_eval` SHALL 返回 `passed=None`，且前端 SHALL NOT 渲染通过/不通过
+
+#### Scenario: Frontend renders the unknown pass state as neutral
+
+- **WHEN** `kb_eval` 返回 `passed=None`
+- **THEN** KB 徽标与评估弹窗 SHALL 显示"未标定"（灰色），且 SHALL NOT 显示 ✓ / ✗，也 SHALL NOT 依据 `overall_score` 重新判定
+
+#### Scenario: Run type comes from the CLI argument
+
+- **WHEN** 用户以 `--run-type baseline` 运行评测
+- **THEN** 新写入的 `eval_report` 行 SHALL 为 `run_type="baseline"`；未传该参数时 SHALL 为 `manual`
 
 #### Scenario: Pass threshold is defined once
 
@@ -242,6 +259,9 @@ The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as pr
 
 - **复用（改嫁到 provider 层）**：`JUDGE_MAX_TOKENS` / `JUDGE_THINKING` SHALL 经 `build_chat("judge", max_tokens=…, thinking=…)` 传入；`EVAL_METRIC_MAX_ATTEMPTS` SHALL 保留（判据见「Metric failures」）；`JUDGE_HTTP_TIMEOUT_*` 与 `JUDGE_HTTP_MAX_RETRIES` SHALL 经 **`http_async_client` + `max_retries=0`** 保留。
 - **删除**：`build_ragas_judge()` / `build_ragas_embeddings()` / `build_native_client()` SHALL 已删除；`ragas` 依赖 SHALL 已从 `pyproject.toml` 移除；所有 `RAGAS_*` 配置 SHALL 已重命名（`JUDGE_*` / `EVAL_*`）或删除（出题专用）。
+- **旧配置不兼容**：启动期 SHALL 检测残留的 `RAGAS_*` 环境变量并**立即失败**，错误信息 SHALL 列出「旧名 → 新名」映射；SHALL NOT 回退读取旧名。环境模板 SHALL 只写新名（迁移对照表放 runbook）。
+- **旧目录保留**：部署脚本 SHALL 只创建 `data/deepeval/`，SHALL NOT 自动删除旧 `data/ragas/`；runbook SHALL 提示人工确认后清理。
+- **命名收尾**：CLI 模块 SHALL 为 `src/cli/eval_deepeval.py`，测试 SHALL 为 `test_eval_deepeval*` / `test_eval_native_*`，台账 SHALL 为 `docs/agents/eval-ledger.md`，Langfuse `--session-id` 默认值 SHALL 为 `deepeval_eval_session`。
 - **改写**：`eval_scoring.build_metrics()` SHALL 改为原生四指标；`judge call` / `metric retry` 日志事件口径 SHALL 随之重述；`--generate` 文案 SHALL 指向 DeepEval `Synthesizer`。
 - **ADR**：SHALL 追加新 ADR（0027）取代 ADR-0026 的桥相关部分与 ADR-0022/0023 的出题决策，并在旧 ADR 的 Status 加**反向指针**、更新索引。
 
@@ -256,6 +276,16 @@ The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as pr
 
 - **WHEN** 审阅裁判构造处
 - **THEN** token 上限、思考开关、细粒度超时 SHALL 以 `ChatOpenAI` 参数形式落到裁判上
+
+#### Scenario: Legacy environment names fail fast
+
+- **WHEN** 启动时环境中仍存在任一 `RAGAS_*` 变量
+- **THEN** 进程 SHALL 以明确错误退出，错误信息 SHALL 含旧名到新名的映射，SHALL NOT 静默回退到旧名
+
+#### Scenario: The old data directory is not deleted automatically
+
+- **WHEN** 部署脚本创建 `data/deepeval/`
+- **THEN** SHALL NOT 删除 `data/ragas/`，且 runbook SHALL 提示人工确认后清理
 
 #### Scenario: Superseded ADRs get reverse pointers
 
@@ -273,6 +303,8 @@ The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as pr
 **边界（明写）**：DeepEval 的轨迹（span 树）SHALL NOT 被期望出现在 Langfuse 上；行为指标的轨迹 SHALL 以**报告 / 台账 / 本地日志**为准。
 
 `NaN` SHALL **不写入** Langfuse（维持"缺失"语义）；SHALL NOT 以 `0` 代替 NaN。
+
+评测运行 SHALL 使用 `--session-id` 指定 Langfuse session，默认值 SHALL 为 `deepeval_eval_session`；历史 session 不重命名。
 
 新口径 score 名 SHALL 带**口径后缀** `@deep-eval-native`，SHALL NOT 与历史口径同名覆盖。
 
@@ -425,10 +457,17 @@ NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提�
 
 诊断指标的 `NaN` SHALL 与四指标的 `NaN` 分开计数，SHALL NOT 影响 NaN 率门禁。
 
+诊断指标的逐题值 SHALL 写入 `eval_report.detail_json`，键名使用**裸指标名**（`contextual_relevancy` / `non_advice` / `tool_correctness`），与四指标同级；`tool_correctness` 在本 change SHALL 写 `null`（键存在、值为空）。`kb_eval` API SHALL NOT 返回这三个键（只存不读）。"不进主分"SHALL 由 `EVAL_METRIC_COLUMNS` 白名单保证，SHALL NOT 依赖键名前缀。
+
 #### Scenario: Diagnostic metrics are not part of the main score
 
 - **WHEN** 审阅主分聚合与门禁
 - **THEN** `contextual_relevancy` / `non_advice` / `tool_correctness` SHALL NOT 出现在 `EVAL_METRIC_COLUMNS` 或门禁判据中
+
+#### Scenario: Diagnostics are stored for drill-down but not exposed
+
+- **WHEN** 一次评测落库
+- **THEN** `detail_json` 的逐题条目 SHALL 含三个裸键名，`tool_correctness` SHALL 为 `null`，且 `kb_eval` 响应 SHALL NOT 含这些键
 
 #### Scenario: Relevancy is truncated and labeled
 
