@@ -737,7 +737,10 @@ def _build_behaviour_section(behaviour_rows: list[dict]) -> list[str]:
                 vals.append(f"{value:.4f}")
             else:
                 note = str(reasons.get(name) or "").strip().replace("|", "/")[:60]
-                vals.append(f"N/A（{note}）" if note else "N/A")
+                if note:
+                    vals.append(f"N/A（{note}）")
+                else:
+                    vals.append("N/A")
         lines.append("| " + " | ".join(vals) + " |")
     return lines
 

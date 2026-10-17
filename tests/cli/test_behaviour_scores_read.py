@@ -59,10 +59,6 @@ def test_missing_json_fails_loud(tmp_path):
 
 def test_read_behaviour_scores_carries_reason(tmp_path):
     """逐题失败证据由 test_run JSON 的 metricsData[].reason 承载（design R9）。"""
-    import json
-
-    from src.cli.eval_scoring import read_behaviour_scores
-
     payload = {
         "testCases": [
             {
