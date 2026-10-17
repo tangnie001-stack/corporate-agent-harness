@@ -21,6 +21,10 @@
 - 主分口径：仅 `pure_kb` 样本的四项均值（`src/cli/eval_scoring.py`）
 - 门禁阈值：`faithfulness≥0.85` · `context_precision≥0.80` · `context_recall≥0.70` · `answer_relevancy≥0.85`
 
+## 口径说明：`deepeval-only` 运行
+
+以 `--deepeval-only` 跑的评测**不产出 RAGAS 四指标**，故不进入运行台账的分数对照；如需登记，口径版本列记 `deepeval-only`，并在「主要异常」注明"仅行为轴"。它只用于 DeepEval 功能的迭代验收，**不参与发布门禁与跨轮分数比较**。
+
 ## 运行台账（全量 21 题）
 
 | # | 开始（CST） | 报告文件 | 裁判配置 | 有效纯 KB | faithfulness | answer_relevancy | context_precision | context_recall | answer_correctness | 门禁 | 主要异常 | 口径版本 | 逃生门 |

@@ -104,9 +104,13 @@ python -m src.cli.eval_ragas --kb-id <知识库UUID> --testset-version 4
 python -m src.cli.eval_ragas --kb-id <知识库UUID> --output /path/report.csv
 
 python -m src.cli.eval_ragas --kb-id <知识库UUID> --testset-version 5 --limit 1   # 冒烟：只跑前 1 题（勿配 --gate）
+
+python -m src.cli.eval_ragas --kb-id <kb-uuid> --testset-version 5 --deepeval-only   # 只跑行为轴（无主分/门禁）
 ```
 
 `--limit N` 只用于逐级活体（1 → 5 → 21），**不要与 `--gate` 同用**——少数题上的门禁没有统计意义；全量口径仍是不加 `--limit`。
+
+`--deepeval-only` 跳过 RAGAS 四指标：**不产出主分、不写 CSV、不写 `eval_report`、不回写 Langfuse、不执行门禁**，报告只含 Agent 行为轴。它用于 DeepEval 功能的快速迭代验收，**不要用于 A/B 对比或发布判定**。与 `--gate` 互斥。
 
 ### 内部流程
 
