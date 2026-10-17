@@ -545,28 +545,36 @@ def _exc_chain_summary(exc: BaseException, limit: int = 140) -> str:
     return f"{chain}: {msg}" if msg else chain
 
 
-def _retry_delay(attempt: int, evidence) -> float:
+def _retry_delay(attempt: int, evidence, event_start: int = 0) -> float:
     """计算第 attempt 次失败后的等待秒数。
 
-    429 优先采用响应头 `Retry-After`；否则指数退避 + 0~0.25s jitter，上限 8s。
+    只扫描 `evidence.events[event_start:]`（本次 attempt 产生的事件），避免把
+    前序指标 / 前序 attempt 留下的 429 套到本次无关失败上。命中 429 时优先采用
+    响应头 `Retry-After`（仅接受有限且 >= 0 的数值，上限 30s）；否则指数退避
+    + 0~0.25s jitter，上限 8s。
 
     Args:
         attempt: 1-based 尝试序号
-        evidence: 可选证据桶（含 response 事件）
+        evidence: 可选证据桶（含 response 事件）；None 表示无观测
+        event_start: 本次 attempt 的起始事件下标；之前的事件不参与判定
 
     Returns:
-        等待秒数
+        等待秒数（非负）
     """
     if evidence is not None:
-        for event in reversed(evidence.events):
+        for event in reversed(evidence.events[event_start:]):
             if event.get("status") != 429:
                 continue
             retry_after = event.get("retry_after")
-            if retry_after:
-                try:
-                    return min(float(retry_after), 30.0)
-                except (TypeError, ValueError):
-                    pass
+            if retry_after is None:
+                continue
+            try:
+                delay = float(retry_after)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(delay) or delay < 0:
+                continue
+            return min(delay, 30.0)
     base = min(0.5 * (2 ** (attempt - 1)), 8.0)
     return base + random.uniform(0.0, 0.25)
 
@@ -611,6 +619,10 @@ def _score_metric_with_retry(
         attempts = max(1, max_attempts)
     last_note = ""
     for attempt in range(1, attempts + 1):
+        if evidence is None:
+            event_start = 0
+        else:
+            event_start = len(evidence.events)
         started = time.monotonic()
         try:
             value = metric.measure(test_case)
@@ -643,7 +655,7 @@ def _score_metric_with_retry(
             trace_id=row.get("trace_id"),
             reason=last_note,
         )
-        time.sleep(_retry_delay(attempt, evidence))
+        time.sleep(_retry_delay(attempt, evidence, event_start))
     return float("nan"), f"{metric_name}:{last_note}"
 
 
