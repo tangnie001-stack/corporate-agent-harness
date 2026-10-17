@@ -72,6 +72,34 @@ GATE_THRESHOLDS: dict[str, float] = {
 }
 
 
+def _limit_testset(
+    questions: list[str], ground_truth: list[str], limit: int | None
+) -> tuple[list[str], list[str]]:
+    """按冒烟轮次截取前 `limit` 题；`None` 表示不截断。
+
+    仅用于逐级活体（1 → 5 → 21）。`limit` 超过题数时原样返回，便于同一命令
+    在不同规模的题集上复用；`limit <= 0` 是调用错误，直接失败。
+
+    Args:
+        questions: 题面列表
+        ground_truth: 参考答案列表（与 questions 等长同序）
+        limit: 保留的题数；None 表示全量
+
+    Returns:
+        (questions, ground_truth) 的截断副本或原对象
+
+    Raises:
+        ValueError: `limit` 非正
+    """
+    if limit is None:
+        return questions, ground_truth
+    if limit <= 0:
+        raise ValueError(f"--limit 必须为正整数，得到 {limit}")
+    if limit >= len(questions):
+        return questions, ground_truth
+    return questions[:limit], ground_truth[:limit]
+
+
 def parse_args() -> argparse.Namespace:
     """解析命令行参数."""
     parser = argparse.ArgumentParser(
@@ -115,6 +143,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="指定测试集版本号（默认取最新版本）",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="只跑前 N 题（冒烟用；勿与 --gate 同用）",
     )
     parser.add_argument(
         "--size",
@@ -987,6 +1021,8 @@ def main() -> None:
         except FileNotFoundError as e:
             print(f"error: {e}")
             sys.exit(1)
+
+        questions, ground_truth = _limit_testset(questions, ground_truth, args.limit)
 
         core_logging.log_event(Event.TESTSET_LOADED, count=len(questions))
         core_logging.log_event(Event.EVALUATION_RUN, kb_id=kb_id)

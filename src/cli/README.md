@@ -102,7 +102,11 @@ python -m src.cli.eval_ragas --kb-id <知识库UUID> --testset-version 4
 
 # 自定义报告输出路径
 python -m src.cli.eval_ragas --kb-id <知识库UUID> --output /path/report.csv
+
+python -m src.cli.eval_ragas --kb-id <知识库UUID> --testset-version 5 --limit 1   # 冒烟：只跑前 1 题（勿配 --gate）
 ```
+
+`--limit N` 只用于逐级活体（1 → 5 → 21），**不要与 `--gate` 同用**——少数题上的门禁没有统计意义；全量口径仍是不加 `--limit`。
 
 ### 内部流程
 
