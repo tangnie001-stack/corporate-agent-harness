@@ -539,6 +539,14 @@ RAGAS_METRIC_COLUMNS: tuple[str, ...] = (
     "context_precision",
     "context_recall",
 )
+# 诊断指标（不进主分/门禁）：逐题写入 detail_json，NaN 单独统计。
+DIAGNOSTIC_METRIC_COLUMNS: tuple[str, ...] = (
+    "contextual_relevancy",
+    "non_advice",
+)
+# ContextualRelevancy 每条 context 单独调一次裁判；截断到前 8 条以控制成本与
+# gather 的失败面。报告必须标注"仅判前 8 条（并集顺序，非最相关 8 条）"。
+EVAL_RELEVANCY_MAX_CONTEXTS: int = 8
 # 门禁：检索覆盖率下限（低于此值判失败，杜绝"不检索即跳空 context 指标"的规避）
 EVAL_RETRIEVAL_COVERAGE_MIN: float = 0.5
 # NaN 率门禁：分母 = 纯 KB 样本 × 四指标（格数）；分子 = 纯 KB 格里的全部 NaN。

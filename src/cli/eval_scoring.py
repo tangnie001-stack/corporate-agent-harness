@@ -61,6 +61,29 @@ def build_metrics(judge: Any) -> dict:
     }
 
 
+def build_diagnostic_metrics(judge: Any) -> dict:
+    """构造两项诊断指标（不进主分/门禁）。
+
+    `ContextualRelevancy` 不需要 reference；`NonAdvice` 只判 input/actual_output。
+    两者都必须显式传 `model=judge`，否则会初始化 DeepEval 默认的 gpt-3.5-turbo。
+
+    Args:
+        judge: `BridgeDeepEvalLLM` 包装后的裁判实例
+
+    Returns:
+        指标名 -> 诊断度量实例
+    """
+    # isort: off
+    import src.config.settings  # noqa: F401
+    from deepeval.metrics import ContextualRelevancyMetric, NonAdviceMetric
+    # isort: on
+
+    return {
+        "contextual_relevancy": ContextualRelevancyMetric(model=judge),
+        "non_advice": NonAdviceMetric(advice_types=["financial"], model=judge),
+    }
+
+
 def classify_sample(contexts: list[RAGContext]) -> str:
     """按检索来源把单个样本分为纯 KB / 含 web / 无检索 三类。
 

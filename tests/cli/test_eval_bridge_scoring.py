@@ -70,3 +70,35 @@ def test_score_rows_maps_test_case_fields_for_the_bridge():
         "expected_output": "g0",
         "retrieval_context": ["c0"],
     }
+
+
+def test_diagnostics_run_serially_after_main_metrics_in_question_order():
+    """诊断指标排主指标之后、仍在同一题内串行执行，逐题推进。"""
+    calls: list[str] = []
+
+    class _NamedMetric:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def measure(self, test_case) -> float:
+            calls.append(f"{test_case.input}:{self.name}")
+            return 0.5
+
+    metrics = {"faithfulness": _NamedMetric("faithfulness")}
+    diagnostics = {
+        "contextual_relevancy": _NamedMetric("contextual_relevancy"),
+        "non_advice": _NamedMetric("non_advice"),
+    }
+
+    out = score_rows(_rows(), metrics, diagnostic_metrics=diagnostics)
+
+    assert calls == [
+        "q0:faithfulness",
+        "q0:contextual_relevancy",
+        "q0:non_advice",
+        "q1:faithfulness",
+        "q1:contextual_relevancy",
+        "q1:non_advice",
+    ]
+    assert [r["contextual_relevancy"] for r in out] == [0.5, 0.5]
+    assert [r["non_advice"] for r in out] == [0.5, 0.5]

@@ -36,6 +36,7 @@ from src.cli.eval_scoring import (
     apply_sample_masks,
     assert_behaviour_scores_complete,
     build_behaviour_metrics,
+    build_diagnostic_metrics,
     build_metrics,
     classify_sample,
     main_score_means,
@@ -498,15 +499,26 @@ class _EvalResult:
         return self._df
 
 
-def _bridge_test_case(row: dict):
-    """把一行评测数据包成桥要的 LLMTestCase（四字段恒全部提供）。"""
+def _bridge_test_case(row: dict, *, max_contexts: int | None = None):
+    """把一行评测数据包成 LLMTestCase；可选截断 retrieval_context。
+
+    Args:
+        row: 含 question / answer / ground_truth / contexts 的行
+        max_contexts: 仅诊断指标使用；None 表示使用全量 contexts
+
+    Returns:
+        LLMTestCase：四字段恒全部提供
+    """
     from deepeval.test_case import LLMTestCase
 
+    contexts = list(row["contexts"])
+    if max_contexts is not None:
+        contexts = contexts[:max_contexts]
     return LLMTestCase(
         input=row["question"],
         actual_output=row["answer"],
         expected_output=row["ground_truth"],
-        retrieval_context=list(row["contexts"]),
+        retrieval_context=contexts,
     )
 
 
@@ -532,7 +544,13 @@ def _exc_chain_summary(exc: BaseException, limit: int = 140) -> str:
 
 
 def _score_metric_with_retry(
-    metric_name, metric, test_case, row, evidence=None
+    metric_name,
+    metric,
+    test_case,
+    row,
+    evidence=None,
+    *,
+    max_attempts: int | None = None,
 ) -> tuple[float, str]:
     """打分；**非掩码 NaN** 时重试至多 `settings.RAGAS_METRIC_MAX_ATTEMPTS` 次。
 
@@ -546,11 +564,22 @@ def _score_metric_with_retry(
     为何不做"合法缺值 / 裁判失败"子分类：桥只回一个 float，HTTP 200 的 envelope
     恒为合法 JSON ⇒ 该分类不可实现（design D4，第 5 轮评审证实）。
 
+    Args:
+        metric_name: 指标名（仅用于日志与错误串）
+        metric: 指标实例（需实现 `measure(test_case)`）
+        test_case: 待评用例
+        row: 当前行（取 q_index / trace_id 记日志）
+        evidence: 可选证据桶（429 判定）
+        max_attempts: 显式重试次数；None 时取 `settings.RAGAS_METRIC_MAX_ATTEMPTS`
+
     Returns:
         `(值, 错误说明)`；成功与"未被重试的 NaN"错误说明为 ""；
         重试耗尽时为 `"指标:原因"`。
     """
-    attempts = max(1, settings.RAGAS_METRIC_MAX_ATTEMPTS)
+    if max_attempts is None:
+        attempts = max(1, settings.RAGAS_METRIC_MAX_ATTEMPTS)
+    else:
+        attempts = max(1, max_attempts)
     last_note = ""
     for attempt in range(1, attempts + 1):
         started = time.monotonic()
@@ -591,22 +620,31 @@ def _score_metric_with_retry(
     return float("nan"), f"{metric_name}:{last_note}"
 
 
-def score_rows(rows: list[dict], metrics: dict, *, evidence=None) -> list[dict]:
-    """**串行**逐题逐指标打分（并发=1）。
+def score_rows(
+    rows: list[dict], metrics: dict, *, diagnostic_metrics=None, evidence=None
+) -> list[dict]:
+    """**串行**逐题逐指标打分（并发=1），诊断指标走独立通道。
 
     为何串行：桥复用 `ragas.metrics` 的**模块级指标实例**，`ragas.evaluate`
     会在执行期把 `metrics[i].llm` 置为该次裁判、结束时复位 `None`，且
     `LangchainLLMWrapper` 会改写底层 `chat_model.temperature` ⇒ 并发会互踩、
     表现为间歇性错分（design D7）。并发预算留给"跑图"那一侧。
 
+    `ContextualRelevancy` 单独构造截断后的 test_case，共享 test_case 保持全量
+    contexts；`empty` 样本不调用任何指标。
+
     Args:
-        rows: 每题一行（含 q_index/trace_id/question/answer/ground_truth/contexts）。
-        metrics: `eval_scoring.build_metrics` 产物（顺序即评分顺序）。
-        evidence: 可选证据桶（本题评分前 `mark(trace_id)`，用于 429 判定）。
+        rows: 每题一行（含 q_index / trace_id / question / answer /
+            ground_truth / contexts / sample_class）
+        metrics: `build_metrics` 产物（顺序即评分顺序）
+        diagnostic_metrics: `build_diagnostic_metrics` 产物；不进主分
+        evidence: 可选证据桶（本题评分前 `mark(trace_id)`）
 
     Returns:
-        与输入同序的行副本，追加四指标值与 `error`（最终失败时非空）。
+        与输入同序的行副本，追加四指标、诊断值、`tool_correctness` 与 `error`
     """
+    from src.config.const import EVAL_RELEVANCY_MAX_CONTEXTS
+
     out: list[dict] = []
     for row in rows:
         if evidence is not None:
@@ -614,6 +652,18 @@ def score_rows(rows: list[dict], metrics: dict, *, evidence=None) -> list[dict]:
             evidence.mark(row.get("trace_id"))
         scored: dict = {"q_index": row["q_index"], "error": ""}
         errors: list[str] = []
+
+        if row.get("sample_class") == SAMPLE_CLASS_EMPTY:
+            for name in metrics:
+                scored[name] = float("nan")
+            if diagnostic_metrics is not None:
+                for name in diagnostic_metrics:
+                    scored[name] = float("nan")
+            scored["tool_correctness"] = None
+            scored["error"] = "sample_class=empty"
+            out.append(scored)
+            continue
+
         test_case = _bridge_test_case(row)
         for name, metric in metrics.items():
             value, err = _score_metric_with_retry(
@@ -622,6 +672,39 @@ def score_rows(rows: list[dict], metrics: dict, *, evidence=None) -> list[dict]:
             scored[name] = value
             if err:
                 errors.append(err)
+
+        if diagnostic_metrics is not None:
+            relevancy = diagnostic_metrics.get("contextual_relevancy")
+            if relevancy is not None:
+                relevancy_case = _bridge_test_case(
+                    row, max_contexts=EVAL_RELEVANCY_MAX_CONTEXTS
+                )
+                value, err = _score_metric_with_retry(
+                    "contextual_relevancy",
+                    relevancy,
+                    relevancy_case,
+                    row,
+                    evidence,
+                    max_attempts=1,
+                )
+                scored["contextual_relevancy"] = value
+                if err:
+                    errors.append(err)
+            non_advice = diagnostic_metrics.get("non_advice")
+            if non_advice is not None:
+                value, err = _score_metric_with_retry(
+                    "non_advice",
+                    non_advice,
+                    test_case,
+                    row,
+                    evidence,
+                    max_attempts=1,
+                )
+                scored["non_advice"] = value
+                if err:
+                    errors.append(err)
+
+        scored["tool_correctness"] = None
         scored["error"] = ";".join(errors)
         out.append(scored)
     return out
@@ -630,28 +713,61 @@ def score_rows(rows: list[dict], metrics: dict, *, evidence=None) -> list[dict]:
 # `_EvalResult` 与 `_exc_chain_summary` 是当前桥路径的**活件**（非现代栈残留）：
 # 前者承载产出层 `.to_pandas()` 契约，后者承载评分失败的异常链留证。
 def run_evaluation(
-    questions, ground_truth, answers, contexts, metrics, trace_ids, *, evidence=None
+    questions,
+    ground_truth,
+    answers,
+    contexts,
+    metrics,
+    trace_ids,
+    *,
+    evidence=None,
+    diagnostic_metrics=None,
+    sample_classes=None,
 ) -> _EvalResult:
     """逐题打分并返回带 `.to_pandas()` 的结果（行序与输入一致）。
 
     本函数是评测**评分后端边界**（逃生门接入点，design D10）：`metrics` 由调用方注入，
     替代实现只需提供同签名的 `metrics`（及用例构造）即可替换，无需改这里的编排。
+
+    Args:
+        questions: 题面列表
+        ground_truth: 参考答案列表
+        answers: 被测系统回答列表
+        contexts: 每题检索上下文列表
+        metrics: 主分指标（`build_metrics` 产物）
+        trace_ids: 每题 trace_id
+        evidence: 可选证据桶（429 判定）
+        diagnostic_metrics: 诊断指标（`build_diagnostic_metrics` 产物）；不进主分
+        sample_classes: 每题样本类别；None 表示不分类
+
+    Returns:
+        带 `.to_pandas()` 的结果对象（行序与输入一致）
     """
-    rows = [
-        {
-            "q_index": i,
-            "trace_id": t,
-            "question": q,
-            "answer": a,
-            "ground_truth": g,
-            "contexts": c,
-        }
-        for i, (q, a, g, c, t) in enumerate(
-            zip(questions, answers, ground_truth, contexts, trace_ids, strict=True)
+    rows = []
+    for i, (q, a, g, c, t) in enumerate(
+        zip(questions, answers, ground_truth, contexts, trace_ids, strict=True)
+    ):
+        sample_class = None
+        if sample_classes is not None:
+            sample_class = sample_classes[i]
+        rows.append(
+            {
+                "q_index": i,
+                "trace_id": t,
+                "question": q,
+                "answer": a,
+                "ground_truth": g,
+                "contexts": c,
+                "sample_class": sample_class,
+            }
         )
-    ]
     core_logging.log_event(Event.EVALUATION_START, samples=len(rows))
-    scored = score_rows(rows, metrics, evidence=evidence)
+    scored = score_rows(
+        rows,
+        metrics,
+        diagnostic_metrics=diagnostic_metrics,
+        evidence=evidence,
+    )
     core_logging.log_event(Event.EVALUATION_DONE)
     df = pd.DataFrame(scored).sort_values("q_index").reset_index(drop=True)
     return _EvalResult(df)
@@ -1105,8 +1221,10 @@ def main() -> None:
         bridge_judge = build_bridge_judge(evidence=judge_evidence)
         judge_llm = BridgeDeepEvalLLM(bridge_judge)
         metrics = None
+        diagnostic_metrics = None
         if ragas_enabled:
             metrics = build_metrics(judge_llm)
+            diagnostic_metrics = build_diagnostic_metrics(judge_llm)
         core_logging.log_event(
             Event.EVAL_MODEL_INIT,
             sut=settings.LLM_MODEL,
@@ -1187,6 +1305,8 @@ def main() -> None:
                 metrics,
                 trace_ids,
                 evidence=judge_evidence,
+                diagnostic_metrics=diagnostic_metrics,
+                sample_classes=sample_classes,
             )
 
             # 统一「主分」口径：报告 / stdout / 门禁都读同一张已掩码表（纯 KB 样本）。
