@@ -1097,29 +1097,30 @@ def main() -> None:
         llm = get_llm()  # 选手：生产模型（含生产 temperature）
         reranker = get_rerank()
         # 裁判走 provider 层桥工厂（langchain chat model + http_async_client 细粒度
-        # 超时 + 请求级观测），embeddings 复用既有 build_embeddings()；证据桶跨题复用，
-        # 每题的 mark/reset 在 score_rows 内做。桥裁判全程唯一实例：EVAL_MODEL_INIT
-        # 日志与报告元数据（judge_model）均取自它，不再构造 temperature=0 的旧裁判。
+        # 超时 + 请求级观测）；证据桶跨题复用，每题的 mark/reset 在 score_rows 内做。
+        # 四指标与行为轴共用同一个 BridgeDeepEvalLLM：原生指标要求裁判是
+        # DeepEvalBaseLLM，且全程唯一实例才能让 EVAL_MODEL_INIT 日志、报告元数据
+        # （judge_model）与 hooks 归因指向同一裁判。
         from src.infra.llm.provider.deepeval_llm import BridgeDeepEvalLLM
-        from src.infra.llm.provider.factory import build_bridge_judge, build_embeddings
+        from src.infra.llm.provider.factory import build_bridge_judge
         from src.infra.llm.provider.http_observability import HookEvidence
 
         judge_evidence = HookEvidence()
         bridge_judge = build_bridge_judge(evidence=judge_evidence)
+        judge_llm = BridgeDeepEvalLLM(bridge_judge)
         metrics = None
         if ragas_enabled:
-            metrics = build_metrics(bridge_judge, build_embeddings())
+            metrics = build_metrics(judge_llm)
         core_logging.log_event(
             Event.EVAL_MODEL_INIT,
             sut=settings.LLM_MODEL,
             judge=bridge_judge.model_name,
         )
 
-        # 行为轴：BridgeDeepEvalLLM 复用 provider 层裁判（细粒度超时 + 请求级 hooks），
+        # 行为轴：复用同一 BridgeDeepEvalLLM（细粒度超时 + 请求级 hooks），
         # 行为指标按 T2 三项构造；behaviour_out 用与报告同源的 timestamp 建独立目录，
         # 分数事后从 test_run_*.json 回读（eval loop 用副本，metric.score 恒 None）。
-        behaviour_eval_llm = BridgeDeepEvalLLM(bridge_judge)
-        behaviour_metrics = build_behaviour_metrics(behaviour_eval_llm)
+        behaviour_metrics = build_behaviour_metrics(judge_llm)
         behaviour_out = str(Path(settings.RAGAS_REPORT_DIR) / f"behaviour_{timestamp}")
 
         # 构建 LangGraph

@@ -29,14 +29,8 @@ def test_bridge_judge_binds_both_clients_with_fine_grained_timeout():
     assert judge.http_client.timeout.read == settings.RAGAS_HTTP_TIMEOUT_READ
 
 
-def test_bridge_judge_does_not_pass_temperature_or_top_p(monkeypatch):
-    """本函数自身不得声明采样参数（温度由 ragas 按 n 分档决定），也不得硬写 extra_body。
-
-    用 monkeypatch 钉住「传了什么」，不依赖 env 里 LLM_KWARGS 的取值——
-    后者可能合法地注入 temperature，那是配置层的事，不属本函数的契约。
-    思考开关必须经 thinking= 由 provider 层归一化；若在此另传 extra_body，
-    会因 build_chat 的 **overrides 后置覆盖而静默赢过归一化结果（非 dashscope provider 上失败）。
-    """
+def test_bridge_judge_pins_temperature_zero_and_zero_retries(monkeypatch):
+    """裁判必须显式 temperature=0，且不允许 top_p 从 LLM_KWARGS 漏进来。"""
     captured: dict = {}
 
     def fake_build_chat(role, **kwargs):
@@ -49,14 +43,7 @@ def test_bridge_judge_does_not_pass_temperature_or_top_p(monkeypatch):
     build_bridge_judge(evidence=HookEvidence())
 
     assert captured["role"] == "judge"
-    assert "temperature" not in captured
+    assert captured["temperature"] == 0
     assert "top_p" not in captured
-    assert "extra_body" not in captured  # 思考开关走 provider 层，禁硬写
-    assert captured["http_client"] is not None
-    assert captured["http_async_client"] is not None
-    # httpx 的 Client 构造器内部执行 `Timeout(timeout)`，总会复制出新对象
-    # ⇒ 只能比值（Timeout.__eq__ 逐维比较 connect/read/write/pool），不能比同一性。
-    assert captured["request_timeout"] == captured["http_client"].timeout
-    assert (
-        captured["thinking"] is not None
-    )  # 思考开关走 thinking=，不硬写 enable_thinking
+    assert captured["max_retries"] == 0
+    assert "extra_body" not in captured

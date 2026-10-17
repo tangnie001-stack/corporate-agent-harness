@@ -1,8 +1,52 @@
+from deepeval.models import DeepEvalBaseLLM
+
 from src.cli.eval_scoring import build_metrics
 
 
-def test_metric_columns_drop_answer_correctness():
-    """answer_correctness 已退出评测：RAGAS 白名单收窄到经典四项。"""
+class _FakeJudge(DeepEvalBaseLLM):
+    """满足 DeepEval 类型检查的最小裁判（不发起网络调用）。"""
+
+    def load_model(self):
+        """返回自身，模拟已加载模型。"""
+        return self
+
+    def generate(self, prompt: str, **kwargs) -> str:
+        """返回空 JSON 对象，测试不会真正执行评分。"""
+        return "{}"
+
+    async def a_generate(self, prompt: str, **kwargs) -> str:
+        """异步版本，保持与同步实现一致。"""
+        return "{}"
+
+    def get_model_name(self) -> str:
+        """固定模型名，便于断言。"""
+        return "fake-judge"
+
+
+def test_build_metrics_returns_four_native_metrics():
+    metrics = build_metrics(_FakeJudge())
+
+    assert list(metrics) == [
+        "faithfulness",
+        "answer_relevancy",
+        "context_precision",
+        "context_recall",
+    ]
+    assert [type(m).__name__ for m in metrics.values()] == [
+        "FaithfulnessMetric",
+        "AnswerRelevancyMetric",
+        "ContextualPrecisionMetric",
+        "ContextualRecallMetric",
+    ]
+
+
+def test_build_metrics_passes_judge_explicitly():
+    judge = _FakeJudge()
+    for name, metric in build_metrics(judge).items():
+        assert metric.model is judge, f"{name} 必须显式收裁判（防回落到 gpt-3.5-turbo）"
+
+
+def test_metric_columns_are_unchanged():
     from src.config.const import CONTEXT_METRIC_COLUMNS, RAGAS_METRIC_COLUMNS
 
     assert RAGAS_METRIC_COLUMNS == (
@@ -16,43 +60,3 @@ def test_metric_columns_drop_answer_correctness():
         "context_precision",
         "context_recall",
     )
-
-
-class _FakeJudge:
-    pass
-
-
-class _FakeEmbeddings:
-    pass
-
-
-def test_build_metrics_returns_four_classic_bridge_metrics():
-    metrics = build_metrics(_FakeJudge(), _FakeEmbeddings())
-
-    assert list(metrics) == [
-        "faithfulness",
-        "answer_relevancy",
-        "context_precision",
-        "context_recall",
-    ]
-
-
-def test_build_metrics_passes_judge_explicitly_and_never_uses_aggregate():
-    judge = _FakeJudge()
-    metrics = build_metrics(judge, _FakeEmbeddings())
-
-    for name, m in metrics.items():
-        assert m.model is judge, f"{name} 必须显式收裁判实例（防回落到 gpt-3.5-turbo）"
-    assert type(metrics["answer_relevancy"]).__name__ == "RAGASAnswerRelevancyMetric"
-    # 聚合度量与 entity recall 一律不用（源码 5 项 vs 文档 4 项不一致）
-    assert not any(
-        type(m).__name__ in {"RagasMetric", "RAGASContextualEntitiesRecall"}
-        for m in metrics.values()
-    )
-
-
-def test_build_metrics_rejects_no_embeddings_for_answer_relevancy():
-    import pytest
-
-    with pytest.raises((TypeError, AssertionError)):
-        build_metrics(_FakeJudge(), None)  # answer_relevancy 是唯一需要 embedding 的

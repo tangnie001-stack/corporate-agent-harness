@@ -76,6 +76,9 @@ def build_chat(
     extra_kwargs = _llm_kwargs()
     if thinking is not None:
         extra_kwargs["extra_body"] = thinking_extra_body(resolved.provider, thinking)
+    if role == "judge":
+        # 裁判不接受项目级采样参数；top_p 会与显式 temperature=0 冲突且不可复现
+        extra_kwargs.pop("top_p", None)
     extra_kwargs.update(overrides)
     # 生产链路角色（在 ROLE_TIMEOUT_READ 表内）才注入本阶段默认超时/client；
     # judge 等不在表内的角色不注入（其真源归评测链，D17）；
@@ -114,22 +117,23 @@ def build_chat(
 
 
 def build_bridge_judge(*, evidence: HookEvidence) -> ChatOpenAI:
-    """构造 DeepEval RAGAS 桥用的裁判（langchain `BaseChatModel`）。
+    """构造 DeepEval 原生指标与行为轴共用的裁判（langchain `ChatOpenAI`）。
 
     两个 client 都挂、且与 `request_timeout` 同源：
-    - `http_async_client`：ragas 的异步路径（hooks + 细粒度超时）；
-    - `http_client`：DeepEval 原生指标可能走同步 `generate()`（`BridgeDeepEvalLLM`），
-      只挂异步 client 时该路径会回落到 SDK 默认 `read=600s`、无细粒度超时
-      ⇒ 单题可挂十几分钟（Phase 4 实测 5 题卡住）。
+    - `http_async_client`：原生指标的 `a_measure` 异步路径（hooks + 细粒度超时）；
+    - `http_client`：`BridgeDeepEvalLLM.generate()` 的同步路径，缺它会回落到
+      SDK 默认 `read=600s`（Phase 4 实测单题挂 12 分钟）。
 
-    温度由 ragas 按 `n` 分档决定，本函数不传 `temperature` / `top_p`。
+    温度显式为 0：删掉 ragas 后不再有 `LangchainLLMWrapper` 按 `n` 改写，不设会
+    落到 provider 默认值，裁判 JSON 判定不可复现。SDK 重试固定为 0，由评测层
+    统一做有界重试。
 
     Args:
         evidence: 请求级观测证据桶（挂到异步 client 的 hooks 上）。
 
     Returns:
         ChatOpenAI（`ReasoningPreservingChat`）：两个 client 与 `request_timeout`
-        共用同一 `httpx.Timeout`，`max_retries` 取 `RAGAS_HTTP_MAX_RETRIES`。
+        共用同一 `httpx.Timeout`，`max_retries=0`。
     """
     from src.config import settings
 
@@ -143,12 +147,13 @@ def build_bridge_judge(*, evidence: HookEvidence) -> ChatOpenAI:
     sync_client = httpx.Client(timeout=timeout)
     return build_chat(
         "judge",
+        temperature=0,
         thinking=settings.RAGAS_JUDGE_THINKING,
         max_tokens=settings.RAGAS_JUDGE_MAX_TOKENS,
         http_client=sync_client,
         http_async_client=async_client,
         request_timeout=timeout,
-        max_retries=settings.RAGAS_HTTP_MAX_RETRIES,
+        max_retries=0,
     )
 
 

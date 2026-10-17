@@ -7,12 +7,13 @@ CLI 编排（跑图、写报告文件）留在 eval_ragas.py。
 
 **可替换评分边界（逃生门接入点，design D10）**：评测的「用例构造」与「评分」两步
 各自落在具名函数上——用例构造 = `eval_ragas._bridge_test_case`；评分 = 本模块的
-`build_metrics`（构造桥的四项指标）+ `eval_ragas.score_rows`（串行逐题打分）。
+`build_metrics`（构造原生四项指标）+ `eval_ragas.score_rows`（串行逐题打分）。
 桥为**默认实现**；逃生门替代实现（DeepEval 采样 + 项目侧直调 ragas 0.3 线评分）
 应在**这两个点**接入、保持同签名。本轮只预留边界、不实现替代实现。
 """
 
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 from langchain_core.messages import AIMessage
@@ -29,40 +30,34 @@ from src.config.const import (
 from src.rag.context import RAGContext
 
 
-def build_metrics(judge, embeddings) -> dict:
-    """构造 DeepEval RAGAS 桥的**经典四项**（design D2）。
+def build_metrics(judge: Any) -> dict:
+    """构造 DeepEval 原生四项指标（design D1）。
 
-    只用单项、不用聚合：聚合 `RagasMetric` 在源码里是 5 项算术平均（含
-    `ContextualEntitiesRecall`），与官方文档写四项不一致 ⇒ 口径不可控。
+    四项都不需要 embeddings；裁判必须是 `BridgeDeepEvalLLM`，否则
+    `deepeval.metrics.utils.models.initialize_model` 会拒绝 langchain 模型。
 
     Args:
-        judge: langchain `BaseChatModel`（桥要求）
-        embeddings: langchain Embeddings（`answer_relevancy` 唯一需要）
+        judge: `BridgeDeepEvalLLM` 包装后的裁判实例
 
     Returns:
-        指标名 -> 桥度量实例；**顺序即串行评分顺序**
+        指标名 -> 原生度量实例；**顺序即串行评分顺序**
     """
     # 确保 DEEPEVAL_* 兜底先于 deepeval 被 import（顺序即语义，故禁用 isort 重排）
     # isort: off
     import src.config.settings  # noqa: F401
-    from deepeval.metrics.ragas import (
-        RAGASAnswerRelevancyMetric,
-        RAGASContextualPrecisionMetric,
-        RAGASContextualRecallMetric,
-        RAGASFaithfulnessMetric,
+    from deepeval.metrics import (
+        AnswerRelevancyMetric,
+        ContextualPrecisionMetric,
+        ContextualRecallMetric,
+        FaithfulnessMetric,
     )
     # isort: on
 
-    if embeddings is None:
-        raise AssertionError("answer_relevancy 需要显式 embeddings（不得为 None）")
-
     return {
-        "faithfulness": RAGASFaithfulnessMetric(model=judge),
-        "answer_relevancy": RAGASAnswerRelevancyMetric(
-            model=judge, embeddings=embeddings
-        ),
-        "context_precision": RAGASContextualPrecisionMetric(model=judge),
-        "context_recall": RAGASContextualRecallMetric(model=judge),
+        "faithfulness": FaithfulnessMetric(model=judge),
+        "answer_relevancy": AnswerRelevancyMetric(model=judge),
+        "context_precision": ContextualPrecisionMetric(model=judge),
+        "context_recall": ContextualRecallMetric(model=judge),
     }
 
 
