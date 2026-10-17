@@ -231,7 +231,7 @@ def test_bridge_judge_binds_both_clients_with_fine_grained_timeout():
 ```python
     assert captured["http_client"] is not None
     assert captured["http_async_client"] is not None
-    assert captured["request_timeout"] is captured["http_client"].timeout
+    assert captured["request_timeout"] == captured["http_client"].timeout
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
