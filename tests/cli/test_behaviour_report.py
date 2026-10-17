@@ -32,3 +32,20 @@ def test_report_contains_behaviour_section(tmp_path):
     text = (tmp_path / "r.md").read_text(encoding="utf-8")
     assert "Agent 行为轴" in text
     assert "Task Completion" in text
+
+
+def test_behaviour_section_shows_reason_for_missing_metric():
+    from src.cli.eval_ragas import _build_behaviour_section
+
+    rows = [
+        {
+            "q_index": 0,
+            "input": "Q1",
+            "metrics": {"Task Completion": 1.0, "Step Efficiency": None},
+            "reasons": {"Step Efficiency": "no trace"},
+        }
+    ]
+    lines = _build_behaviour_section(rows)
+    body = "\n".join(lines)
+    assert "1.0000" in body
+    assert "N/A（no trace）" in body

@@ -705,6 +705,9 @@ def _build_behaviour_section(behaviour_rows: list[dict]) -> list[str]:
     （各题可能因裁判失败缺某些指标，缺失记为 N/A）。无任何指标名时
     返回空列表（不写段）。
 
+    指标缺分时以 test_run JSON 的 `reason` 摘要标注（design R9：行为轴不走 hooks
+    逐题归因，失败证据由 JSON 承载）。
+
     Args:
         behaviour_rows: 逐题行为分（见 eval_scoring.read_behaviour_scores 返回形状）
 
@@ -727,12 +730,14 @@ def _build_behaviour_section(behaviour_rows: list[dict]) -> list[str]:
     lines.append("|" + "|".join("---" for _ in header) + "|")
     for i, row in enumerate(behaviour_rows):
         vals = [str(row.get("input") or f"Q{i + 1}")]
+        reasons = row.get("reasons") or {}
         for name in metric_names:
             value = (row.get("metrics") or {}).get(name)
             if isinstance(value, (int, float)):
                 vals.append(f"{value:.4f}")
             else:
-                vals.append("N/A")
+                note = str(reasons.get(name) or "").strip().replace("|", "/")[:60]
+                vals.append(f"N/A（{note}）" if note else "N/A")
         lines.append("| " + " | ".join(vals) + " |")
     return lines
 

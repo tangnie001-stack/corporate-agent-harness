@@ -285,7 +285,9 @@ def read_behaviour_scores(results_folder: str) -> list[dict]:
         results_folder: `DisplayConfig(results_folder=…)` 指定的目录。
 
     Returns:
-        按题序的 `[{"q_index", "input", "metrics": {name: score}}, …]`。
+        按题序的 `[{"q_index", "input", "metrics": {name: score},
+        "reasons": {name: reason}}, …]`。`reasons` 是行为轴的逐题失败证据承载点
+        （design R9：行为轴判官调用不经 hooks 逐题归因，失败证据取此处）。
 
     Raises:
         RuntimeError: 目录下没有 `test_run_*.json`（生成器未耗尽 ⇒ 行为分不可信）。
@@ -305,7 +307,17 @@ def read_behaviour_scores(results_folder: str) -> list[dict]:
         metrics = {
             md.get("name"): md.get("score") for md in (tc.get("metricsData") or [])
         }
-        rows.append({"q_index": idx, "input": tc.get("input", ""), "metrics": metrics})
+        reasons = {
+            md.get("name"): md.get("reason") for md in (tc.get("metricsData") or [])
+        }
+        rows.append(
+            {
+                "q_index": idx,
+                "input": tc.get("input", ""),
+                "metrics": metrics,
+                "reasons": reasons,
+            }
+        )
     return rows
 
 

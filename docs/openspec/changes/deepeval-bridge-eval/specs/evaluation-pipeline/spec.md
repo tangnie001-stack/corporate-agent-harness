@@ -575,7 +575,14 @@ NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提�
 
 ### Requirement: Framework-internal LLM calls are observable by trace id
 
-评测 SHALL 使**框架内部的 LLM 调用**（ragas 桥内部的重试、`answer_relevancy` 的多次生成、DeepEval 行为指标的 judge 调用）在日志中可按该题的 `trace_id` 追溯。
+评测 SHALL 使**框架内部的 LLM 调用**（ragas 桥内部的重试、`answer_relevancy` 的多次生成）在日志中可按该题的 `trace_id` 追溯。
+
+**行为轴判官调用的归因边界（明写，避免误期待；design R9）**：DeepEval 行为指标在
+`evals_iterator` **耗尽之后**才评分（异步路径），届时循环上下文已结束 ⇒ 其判官调用
+**不**经 `http_async_client` 的 hooks 做逐题 `trace_id` 归因（该层 `trace_id` 记为空）；
+行为轴的逐题失败证据 SHALL 由其 `test_run_*.json` 的 `testCases[].metricsData[].reason`
+承载，并在报告「Agent 行为轴」段呈现。本条对行为轴**只**要求"证据可从 JSON 获得"，
+SHALL NOT 读成"行为轴判官调用也须带逐题 trace_id"。
 
 实现手段 SHALL 为：在裁判的 **`http_async_client`**（`httpx.AsyncClient`）上挂**请求级日志**（httpx event hooks，记录模型 / 耗时 / 状态码 / 请求体摘要 / **响应体摘要 + `finish_reason`**）。**SHALL 挂在 `http_async_client` 而非 `http_client`**——ragas 的裁判调用走**异步**，而 langchain 的 `http_client` **只喂同步 client**（`langchain_openai/chat_models/base.py:806`；异步用 `:1273` 的 `http_async_client`）⇒ 挂错字段 hooks **一条都不会响**。该 client 本已因细粒度超时而传入（见 D11 与「0.4.x-era evaluation artifacts」的复用条款），故 SHALL 复用它、SHALL NOT 为此另建客户端。
 

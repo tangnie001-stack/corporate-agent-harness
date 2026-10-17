@@ -55,3 +55,39 @@ def test_picks_the_newest_test_run_file(tmp_path):
 def test_missing_json_fails_loud(tmp_path):
     with pytest.raises(RuntimeError, match="test_run"):
         read_behaviour_scores(str(tmp_path))
+
+
+def test_read_behaviour_scores_carries_reason(tmp_path):
+    """逐题失败证据由 test_run JSON 的 metricsData[].reason 承载（design R9）。"""
+    import json
+
+    from src.cli.eval_scoring import read_behaviour_scores
+
+    payload = {
+        "testCases": [
+            {
+                "input": "Q1",
+                "metricsData": [
+                    {
+                        "name": "Task Completion",
+                        "score": 1.0,
+                        "success": True,
+                        "reason": "ok",
+                    },
+                    {
+                        "name": "Step Efficiency",
+                        "score": None,
+                        "success": False,
+                        "reason": "no trace",
+                    },
+                ],
+            }
+        ]
+    }
+    (tmp_path / "test_run_20260101.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    rows = read_behaviour_scores(str(tmp_path))
+    assert rows[0]["metrics"] == {"Task Completion": 1.0, "Step Efficiency": None}
+    assert rows[0]["reasons"]["Step Efficiency"] == "no trace"
