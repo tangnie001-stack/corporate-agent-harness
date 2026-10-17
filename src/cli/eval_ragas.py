@@ -741,7 +741,9 @@ def _build_behaviour_section(behaviour_rows: list[dict]) -> list[str]:
             if isinstance(value, (int, float)):
                 vals.append(f"{value:.4f}")
             else:
-                note = str(reasons.get(name) or "").strip().replace("|", "/")[:60]
+                note = " ".join(str(reasons.get(name) or "").split()).replace("|", "/")[
+                    :60
+                ]
                 if note:
                     vals.append(f"N/A（{note}）")
                 else:
@@ -1204,7 +1206,7 @@ def _write_langfuse_scores(
     trace，不能依赖「当前 trace」的隐式上下文。值取已掩码表（空材料样本的
     context 指标为 NaN=跳过语义，write_scores 内跳过不写）；列取指标白名单，
     避免额外数值列混入。回写失败（客户端获取或逐条写）由 write_scores 吞掉，
-    不影响评测主流程。
+    不影响评测主流程。行数不齐是程序不变量被破坏（分数会写到别的 trace），故此处 fail-loud，不属"回写失败"的吞异常范围。
 
     score 名统一带口径后缀（`LANGFUSE_SCORE_SUFFIX`，design D9）：新口径与历史同名
     score 并存、SHALL NOT 覆盖；行为轴指标与四项同级、共用同一 trace_id；

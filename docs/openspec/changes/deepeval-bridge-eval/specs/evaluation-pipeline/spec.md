@@ -588,7 +588,14 @@ SHALL NOT 读成"行为轴判官调用也须带逐题 trace_id"。
 
 **hook SHALL 为 `async def` 且以 `await response.aread()` 读体**：异步 client 调用 hook 的形式是 `await hook(response)`（`httpx/_client.py:1697`；同步 client 才是 `hook(response)`，`:982`），传同步 hook 会抛 `TypeError`；同步 `read()` 在异步流上抛 `RuntimeError`（`httpx/_models.py:944`）。
 
-**响应体必须记**：主因失败是 HTTP 200 + 畸形响应体，只记请求与状态码会**看不到它**（原 `_judge_failure_note` 正是靠 `finish_reason` / 输出片段区分"空结构"与"截断"）。
+**响应体必须记**：主因失败是 HTTP 200 + 畸形响应体，只记请求与状态码会**看不到它**（原 `_judge_failure_note` 正是靠 `finish_reason` / 输出片段区分"空结构"与"截断"）（目标形态；当前落地范围见下）。
+
+**落地现状（2026-10-17，避免归档后留下未满足的 SHALL）**：当前 hooks 只记录
+`url` / `status` / `body_bytes` / `json_ok` / `finish_reason`（响应体不可解析时另有 `body_exc`），
+且**仅在失败时产日志行**；模型与耗时分别由 `eval model init` 与四指标路径的 `judge call` 承载。
+**请求体摘要 / 响应体摘要 / 成功路径日志尚未落地**（见 design D13「落地现状」与 ADR-0026 决策 6、
+复查触发条件 ④）。故「A malformed 200 response is diagnosable from the logs」当前依赖
+`json_ok` 与 `finish_reason` 两个信号，**不**依赖响应体摘要。
 
 **该日志只做留证**：SHALL NOT 被当作 `NaN` 子分类的依据（该分类不可实现，见「Metric failures are explicit, not silently dropped」）。若该日志不可用，报告 SHALL 显式标注。
 

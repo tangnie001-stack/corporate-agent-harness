@@ -49,3 +49,21 @@ def test_behaviour_section_shows_reason_for_missing_metric():
     body = "\n".join(lines)
     assert "1.0000" in body
     assert "N/A（no trace）" in body
+
+
+def test_behaviour_section_collapses_newlines_in_reason():
+    from src.cli.eval_ragas import _build_behaviour_section
+
+    rows = [
+        {
+            "q_index": 0,
+            "input": "Q1",
+            "metrics": {"Task Completion": 1.0, "Step Efficiency": None},
+            "reasons": {"Step Efficiency": "a\nb"},
+        }
+    ]
+    lines = _build_behaviour_section(rows)
+    reason_lines = [line for line in lines if "N/A（a b）" in line]
+    assert len(reason_lines) == 1
+    assert "N/A（a b）" in reason_lines[0]
+    assert "\n" not in reason_lines[0]
