@@ -69,3 +69,26 @@ async def test_a_generate_returns_content_text():
 
     assert out == '{"verdict": "yes", "reason": "ok"}'
     assert chat.ainvoked == ["prompt-B"]
+
+
+def test_truncate_prompt_keeps_short_prompt_unchanged():
+    from src.infra.llm.provider.deepeval_llm import _truncate_prompt
+
+    short = "x" * 100
+    assert _truncate_prompt(short) is short
+
+
+def test_truncate_prompt_keeps_head_and_tail_for_oversized_prompt():
+    from src.config.const import DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS
+    from src.infra.llm.provider.deepeval_llm import _truncate_prompt
+
+    head = "H" * 500
+    middle = "M" * (DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS * 2)
+    tail = "T" * 500
+    out = _truncate_prompt(head + middle + tail)
+
+    assert len(out) <= DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS + 200
+    assert out.startswith("H" * 500), "头部（指令）必须保留"
+    assert out.endswith("T" * 500), "尾部（JSON schema）必须保留"
+    assert "[truncated" in out
+    assert middle not in out, "中间的超长数据被截断"

@@ -14,6 +14,36 @@ from typing import Any
 
 from deepeval.models import DeepEvalBaseLLM
 from langchain_core.messages import BaseMessage
+from loguru import logger
+
+from src.config.const import DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS
+
+
+def _truncate_prompt(prompt: str) -> str:
+    """把超长 prompt 截到上限内，保留头尾（指令在头、JSON schema 在尾）。
+
+    超限请求会被服务端以 400 拒绝（`Range of input length should be [1, 991808]`），
+    既拿不到分、又把评测拖到不可接受。截断中间的长工具输出，保留首尾两端的
+    指令与 schema；此路径会记 warning 以便回溯。
+
+    Args:
+        prompt: 原 prompt
+
+    Returns:
+        原对象（未超限）或「头 + 截断标记 + 尾」的新字符串
+    """
+    if len(prompt) <= DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS:
+        return prompt
+    head = int(DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS * 0.6)
+    tail = DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS - head
+    omitted = len(prompt) - head - tail
+    logger.warning(
+        "[provider] bridge prompt truncated len={} limit={} omitted={}",
+        len(prompt),
+        DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS,
+        omitted,
+    )
+    return f"{prompt[:head]}\n...[truncated {omitted} chars]...\n{prompt[-tail:]}"
 
 
 class BridgeDeepEvalLLM(DeepEvalBaseLLM):
@@ -42,7 +72,7 @@ class BridgeDeepEvalLLM(DeepEvalBaseLLM):
         return str(msg.content) if isinstance(msg, BaseMessage) else str(msg)
 
     def generate(self, prompt: str, **kwargs: Any) -> str:
-        return self._content(self._chat.invoke(prompt))
+        return self._content(self._chat.invoke(_truncate_prompt(prompt)))
 
     async def a_generate(self, prompt: str, **kwargs: Any) -> str:
-        return self._content(await self._chat.ainvoke(prompt))
+        return self._content(await self._chat.ainvoke(_truncate_prompt(prompt)))
