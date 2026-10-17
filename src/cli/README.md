@@ -192,6 +192,8 @@ python -m src.cli.compare_retrieval --kb-name <知识库名称>
 | `--testset-version` | 指定测试集版本号（默认取最新） |
 | `--gate` | 评估后检查质量门禁，不达标退出码 1 |
 | `--deepeval-only`（`--behaviour-only`） | 只跑 Agent 行为轴，跳过四指标（无主分/门禁、不写 CSV 与 `eval_report`；与 `--gate` 互斥） |
+| `--run-type` | `manual`（默认）/ `baseline`；`baseline` 不判门禁（与 `--gate` 互斥） |
+| `--limit` | 只跑前 N 题（冒烟用；勿与 `--gate` 同用） |
 | `--output` | CSV 报告输出路径（默认 `data/deepeval/reports/deepeval_eval_<timestamp>.csv`） |
 | `--session-id` | 评估用会话 ID，默认 `deepeval_eval_session` |
 

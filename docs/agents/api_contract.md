@@ -740,7 +740,7 @@ Success:
 
 无评估记录时返回 `{"code": "SUCCESS", "data": null}`。
 
-`run_type` 为 `manual` / `baseline`。`baseline` 是新口径首轮，`passed` 恒为 `null`（前端显示「未标定」），不按阈值判红/绿。
+`run_type` 为 `manual` / `baseline`。`baseline` 是新口径首轮，落库 `passed` 强制 `False`（不写 NULL），本接口对 baseline 归一为 `null`（前端显示「未标定」），不按阈值判红/绿。
 
 `pass_threshold` 下发常量 `EVAL_PASS_THRESHOLD`（见 §3.6），前端据此判定通过，**不得硬编码 `0.7`**。
 
@@ -910,9 +910,9 @@ CASCADE 级联删除：知识库 → 文档 → 对话历史。
 | `report.context_precision` | float | 上下文精确率 |
 | `report.context_recall` | float | 上下文召回率 |
 | `report.overall_score` | float | **纯 KB 掩码后的四项指标均值**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`），与报告**主分**同口径 |
-| `report.passed` | bool\|null | 是否达标（`overall_score >= EVAL_PASS_THRESHOLD`，`src/config/const.py`）；`run_type=baseline` 时落库仍为 `False`，接口层按 `run_type` 归一为 `null` |
+| `report.passed` | bool | 是否达标（`overall_score >= EVAL_PASS_THRESHOLD`，`src/config/const.py`）；`run_type=baseline` 时**强制 `False`（不写 NULL）**，接口层再按 `run_type` 归一为 `null` |
 | `report.report_path` | str\|null | CSV 报告路径 |
-| `report.detail_json` | list\|null | 逐条 QA 得分；每条含 `q_index`、**全部 `EVAL_METRIC_COLUMNS`**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`）、**诊断指标裸键**（`contextual_relevancy` / `non_advice`，不进主分与门禁）与可选 `retrieval_details`（该 query 精排后 `[{source, score, kind}, ...]`）。诊断键只存在于 `detail_json`，**不出现于接口顶层响应**。明细保留**全部样本行**：`empty` 样本的三项 context 指标与诊断指标被掩码为 `NaN`。`NaN` 亦在裁判对该题该指标失败（如超时/额度耗尽）时出现。注意 `NaN` 是 Python `json.dumps` 的非标准扩展，**严格 JSON 解析器（如浏览器 `JSON.parse`）会拒绝**；见 §8.4 |
+| `report.detail_json` | list\|null | 逐条 QA 得分；每条含 `q_index`、**全部 `EVAL_METRIC_COLUMNS`**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`）、**诊断指标裸键**（`contextual_relevancy` / `non_advice`，不进主分与门禁）、`tool_correctness`（v6 预留，当前恒 `null`）、`error`（评分失败摘要，无失败为空串）与可选 `retrieval_details`（该 query 精排后 `[{source, score, kind}, ...]`）。诊断键只存在于 `detail_json`，**不出现于接口顶层响应**。明细保留**全部样本行**：`empty` 样本的三项 context 指标与诊断指标被掩码为 `NaN`。`NaN` 亦在裁判对该题该指标失败（如超时/额度耗尽）时出现。注意 `NaN` 是 Python `json.dumps` 的非标准扩展，**严格 JSON 解析器（如浏览器 `JSON.parse`）会拒绝**；见 §8.4 |
 
 > **口径注（主分）**：落库路径先按样本类别掩码（`apply_sample_masks`），
 > `overall_score` 取**仅 `pure_kb` 样本**的四项指标均值（`main_score_means` 后求均），
@@ -1303,14 +1303,14 @@ DeepEval 原生四指标评测命令行。测试集生成已下线（`--generate
 
 使用示例：
 ```bash
-# 生成测试集
-python -m src.cli.eval_deepeval --kb-id <uuid> --generate --size 20
-
 # 评估（最新测试集）
 python -m src.cli.eval_deepeval --kb-id <uuid>
 
 # 评估（指定测试集版本）
 python -m src.cli.eval_deepeval --kb-id <uuid> --testset-version 4
+
+# 新口径首轮：不判门禁
+python -m src.cli.eval_deepeval --kb-id <uuid> --run-type baseline
 
 # 评估 + 质量门禁
 python -m src.cli.eval_deepeval --kb-id <uuid> --gate
@@ -1321,7 +1321,7 @@ python -m src.cli.eval_deepeval --list-kbs
 
 ### 8.2 测试集 JSON 格式
 
-位置：`data/deepeval/testset_{kb_id}_v<N>.json`
+位置：`data/deepeval/testset/testset_<kb_id>_v<N>.json`
 
 ```json
 {
@@ -1374,25 +1374,31 @@ metadata 中的 ragas_version / synthesizer_name 为历史测试集文件的遗�
 | `web` | 材料中含联网块（降级联网） | ❌ 不进（但 context 指标不置空） |
 | `empty` | 未检索到任何材料 | ❌ 不进，且三项 context 指标置 `NaN` 并记 `skipped` |
 
-**CSV**（`--output`，默认 `{EVAL_REPORT_DIR}/deepeval_eval_<timestamp>.csv`）列
-（**按列名消费，勿按位解析**——`df.to_csv(index=True)` 使**文件首列为 pandas 索引
-列**，故 `question` 起为**第 2 列**，其后依次 `ground_truth`（第 3 列）、
-`trace_id`（第 4 列））：
+**CSV**（`--output`，默认 `{EVAL_REPORT_DIR}/deepeval_eval_<timestamp>.csv`）实际表头
+（`save_results_csv` + `score_rows` 当前实现；`df.to_csv(index=True)` 使**文件首列为
+空白 pandas 索引列**，按列名消费、勿按位解析）：
+
+```text
+,question,ground_truth,trace_id,q_index,error,faithfulness,answer_relevancy,context_precision,context_recall,contextual_relevancy,non_advice,tool_correctness,sample_class,skipped,trajectory
+```
 
 | 列 | 说明 |
 |----|------|
 | `question` / `ground_truth` | 题面与参考答案 |
 | `trace_id` | 该题 trace，可按 trace 回溯 / 定位回写的分数 |
-| 四个指标列 | `faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`；**CSV 按评分写入顺序**（主分四指标依 `EVAL_METRIC_COLUMNS` 顺序，诊断指标紧随其后），**与 MD / stdout / 落库的排序口径一致** |
+| `q_index` | 题号（0 起） |
+| `error` | 该题评分失败摘要；无失败为空串 |
+| 四个指标列 | `faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`，按 `EVAL_METRIC_COLUMNS` 顺序 |
+| `contextual_relevancy` / `non_advice` | **诊断指标**：写 CSV 但不进主分与门禁（`--deepeval-only` 不产出） |
+| `tool_correctness` | v6 预留；当前**恒为 null** |
 | `sample_class` | 该题样本类别（上表三类之一） |
 | `skipped` | 被掩码跳过的指标名，`;` 分隔；未跳过为空串 |
 | `trajectory` | Agent 轨迹诊断摘要 JSON：`{"tool_calls":[{"name","args"}, ...], "iterations":N}`，**不含工具输出正文** |
-| 其余既有列 | `user_input` / `retrieved_contexts` / `response` / `reference` 为历史测试集原始字段，沿用不改 |
 
-**MD**（与 CSV 同路径的 `.md`）：含新增列（`trace_id` / `sample_class` / `skipped` /
-`trajectory`）与 CSV 同名同义，**不含** CSV 的 `ground_truth` / `user_input` /
-`retrieved_contexts` / `response` / `reference`；指标列按 `EVAL_METRIC_COLUMNS`
-排序。末尾一行 `**Main scores (pure-KB):** <指标=值, ...>`，与 stdout / 门禁同口径。
+**MD**（与 CSV 同路径的 `.md`）：逐题表含 `Question`、四个主分指标、`error`、`trace_id`、
+`sample_class`、`skipped`、`trajectory`；**不含** `ground_truth`，诊断指标另起「诊断指标」段。
+指标列按 `EVAL_METRIC_COLUMNS` 排序。末尾一行 `**Main scores (pure-KB):** <指标=值, ...>`，
+与 stdout / 门禁同口径。
 
 **stdout 口径 = 主分（契约，勿改）**：主分 = **仅 `pure_kb` 样本**的指标均值
 （`web` / `empty` 不计入），每指标**只打一行**，行形如
@@ -1407,7 +1413,7 @@ metadata 中的 ragas_version / synthesizer_name 为历史测试集文件的遗�
 `avg` 均含**全部** `EVAL_METRIC_COLUMNS`；落库前先按
 样本类别掩码（`apply_sample_masks`），表内四列指标与 `overall_score` 均为**仅
 `pure_kb` 样本**的指标均值（`main_score_means`），`passed` 取 `EVAL_PASS_THRESHOLD`
-—— 与 §3.6 一致。
+（`run_type=baseline` 时强制 `False`）—— 与 §3.6 一致。
 
 **DB 与 stdout 同为「主分」口径**：落库读的是**已掩码**的表，DB 的四列指标与
 `overall_score` 同为**仅 `pure_kb` 样本**的指标均值，与 CSV / MD / stdout / 门禁的

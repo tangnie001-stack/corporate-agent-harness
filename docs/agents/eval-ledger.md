@@ -20,6 +20,8 @@
 - 测试集：`data/deepeval/testset/testset_4a1dcb8bb340473c8149ead5b7f75873_v5.json`（21 条；四轮全量的题面集合已核对一致）
 - 主分口径：仅 `pure_kb` 样本的四项均值（`src/cli/eval_scoring.py`）
 - 门禁阈值：`faithfulness≥0.85` · `context_precision≥0.80` · `context_recall≥0.70` · `answer_relevancy≥0.85`
+- 报告文件：`data/deepeval/reports/deepeval_eval_<timestamp>.csv` / 同名 `.md`（`--deepeval-only` 只产 `.md`）
+- 历史 `report_path`：早期行指向 `data/ragas/`，该目录已不自动迁移且无消费方（仅作留档）；历史行不改写
 - 当前口径版本：`deep-eval-native`（DeepEval 原生四指标；历史行的口径以「口径版本」列为准）
 
 ## 口径说明：`deepeval-only` 运行

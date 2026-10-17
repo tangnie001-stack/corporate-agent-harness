@@ -1643,6 +1643,7 @@ def _save_eval_report(
 
     `overall_score` 统一到**主分口径**（纯 KB 四项均值，design D11），替换原先
     「四项加权、未掩码」的旧口径；`passed` 取常量 `EVAL_PASS_THRESHOLD`。
+    `run_type=baseline` 时 `passed` 强制为 `False`（新口径阈值未标定，不判红/绿）。
     传入 `sample_classes` 时先按样本类别掩码，使落库的逐题明细与各指标均值
     同为主分口径。
 
@@ -1670,6 +1671,12 @@ def _save_eval_report(
         present = [v for v in means.values() if pd.notna(v)]
         overall = float(sum(present) / len(present)) if present else None
 
+        passed_value: bool
+        if run_type == "baseline":
+            passed_value = False
+        else:
+            passed_value = overall is not None and overall >= EVAL_PASS_THRESHOLD
+
         async def _do_insert():
             entity = eval_report_entity(
                 id=str(uuid.uuid4()),
@@ -1681,7 +1688,7 @@ def _save_eval_report(
                 context_precision=means.get("context_precision"),
                 context_recall=means.get("context_recall"),
                 overall_score=overall,
-                passed=overall is not None and overall >= EVAL_PASS_THRESHOLD,
+                passed=passed_value,
                 report_path=output_path,
                 triggered_by=None,
                 detail_json=detail,

@@ -63,6 +63,8 @@ docs/adr/NNNN-<kebab-case-短标题>.md
 
 **完全取代**：新 ADR 头部填 `Supersedes：ADR-0003`；旧 ADR 的 `Status` 改为 `Superseded by 0009` —— 该 Status 本身即反向指针。
 
+**例外（第三条完全取代后）**：旧 ADR 的 `Status` 已指向**第三条** ADR（`Superseded by NNNN`），且该第三条的 `Supersedes` 确实声明取代旧 ADR 时，更早的局部取代关系不再要求旧 `Status` 同时指向局部取代者；该历史关系由索引表的「取代关系」列备注承载。若第三条并未声明取代旧 ADR，A5 仍按缺反向指针报错。
+
 **局部取代**（本仓最常见的形态）：只推翻旧 ADR 的**某一条**决策或某一段陈述，其余继续有效。
 
 - 新 ADR 填 `Supersedes：ADR-0003 的「决策 3」（局部）`

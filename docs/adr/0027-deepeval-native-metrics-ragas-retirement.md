@@ -66,7 +66,7 @@ DeepEval 4.2.9 已原生提供输入同构的四指标，且不需要 embeddings
 前端显示"未标定"；v6 阈值标定前所有全量运行都用 baseline。
 
 **理由**：换尺子后 0.70 阈值未标定，判红/绿会误导。
-**代价**：`eval_report.passed` 仍写 False，靠 `run_type` 约定区分。
+**代价**：`eval_report.passed` 落库为 bool（baseline 强制 `False`，不写 NULL）；接口层对 baseline 归一为 `null`，靠 `run_type` 约定区分。
 
 ## 继续生效的约束（来自被取代 ADR）
 

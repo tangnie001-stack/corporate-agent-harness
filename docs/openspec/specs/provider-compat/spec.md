@@ -166,7 +166,7 @@ TBD - created by archiving change provider-compat-layer. Update Purpose after ar
 
 超时与重试的**取值** SHALL 按**角色**（`main` / `classify` / `summary` / `embedding` / `rerank`）区分，SHALL 住 `src/config/settings.py` 并可被 `.env` 覆盖；SHALL NOT 写入 `registry.yaml`（该文件承载 provider 的**固有事实**，超时属**部署态策略**，见本规格「配置覆盖规则」）。
 
-**`judge` 角色显式排除**：其超时真源属评测链（`JUDGE_*` / `EVAL_*` 族），由在途 change `deepeval-bridge-eval` 处置 —— 本变更 SHALL NOT 为其新增角色级取值、亦 SHALL NOT 接管其现有键（与 `timeout-policy` 规格同口径）。
+**`judge` 角色显式排除**：其超时真源属评测链（`JUDGE_*` / `EVAL_*` 族），由已归档 change `deepeval-bridge-eval` 与 ADR-0027 处置 —— 本变更 SHALL NOT 为其新增角色级取值、亦 SHALL NOT 接管其现有键（与 `timeout-policy` 规格同口径）。
 
 **键名归属（第三轮 I6）**：生产侧角色的超时/重试 SHALL 使用**自有键名**，**SHALL NOT 复用评测链的 `JUDGE_*` / `EVAL_*` 键** —— 否则评测链调整那些键会**静默改到生产**。「沿用 ADR-0024」仅指沿用其**取值与形状**（细粒度 `connect/read/write/pool` + 关 SDK 重试），**不含键名**。
 

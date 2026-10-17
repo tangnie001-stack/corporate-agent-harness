@@ -39,3 +39,55 @@ def test_overall_score_is_pure_kb_four_metric_mean(monkeypatch):
 
     assert captured["overall"] == 1.0
     assert captured["passed"] is (1.0 >= EVAL_PASS_THRESHOLD)
+
+
+def test_baseline_forces_passed_false(monkeypatch):
+    """run_type=baseline 时即使 overall 很高，落库 passed 也强制为 False。"""
+    captured = {}
+
+    class _Svc:
+        async def insert_eval_report(self, entity):
+            captured["overall"] = entity.overall_score
+            captured["passed"] = entity.passed
+
+    class _Entity:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    monkeypatch.setattr(
+        eval_deepeval, "_eval_report_deps", lambda: (_Svc(), _Entity), raising=False
+    )
+
+    df = pd.DataFrame(
+        {
+            "faithfulness": [1.0],
+            "answer_relevancy": [1.0],
+            "context_precision": [1.0],
+            "context_recall": [1.0],
+            "error": [""],
+        }
+    )
+
+    eval_deepeval._save_eval_report(
+        "kb",
+        df,
+        1,
+        "r.csv",
+        None,
+        sample_classes=["pure_kb"],
+        run_type="baseline",
+    )
+    assert captured["overall"] == 1.0
+    assert captured["passed"] is False
+
+    eval_deepeval._save_eval_report(
+        "kb",
+        df,
+        1,
+        "r.csv",
+        None,
+        sample_classes=["pure_kb"],
+        run_type="manual",
+    )
+    assert captured["overall"] == 1.0
+    assert captured["passed"] is (1.0 >= EVAL_PASS_THRESHOLD)
