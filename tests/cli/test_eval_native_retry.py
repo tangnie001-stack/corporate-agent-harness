@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from src.cli.eval_ragas import _score_metric_with_retry
+from src.cli.eval_deepeval import _score_metric_with_retry
 from src.infra.llm.provider.http_observability import HookEvidence
 
 
@@ -106,7 +106,7 @@ def test_measure_raises_chain_survives_into_error_and_retries():
 
 def test_rate_limit_retries_with_retry_after(monkeypatch):
     sleeps: list[float] = []
-    monkeypatch.setattr("src.cli.eval_ragas.time.sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr("src.cli.eval_deepeval.time.sleep", lambda s: sleeps.append(s))
 
     ev = HookEvidence()
     ev.mark("t0")
@@ -123,7 +123,7 @@ def test_rate_limit_retries_with_retry_after(monkeypatch):
 def test_stale_429_does_not_leak_into_later_failure(monkeypatch):
     """前序 429 的 Retry-After 只属于前序 attempt，本次失败必须走指数退避。"""
     sleeps: list[float] = []
-    monkeypatch.setattr("src.cli.eval_ragas.time.sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr("src.cli.eval_deepeval.time.sleep", lambda s: sleeps.append(s))
 
     ev = HookEvidence()
     ev.mark("t0")
@@ -150,7 +150,7 @@ def test_stale_429_does_not_leak_into_later_failure(monkeypatch):
 def test_invalid_retry_after_values_fall_back_to_backoff(monkeypatch):
     """负数 / NaN 不能传给 time.sleep（会抛 ValueError 打断整场评测）。"""
     sleeps: list[float] = []
-    monkeypatch.setattr("src.cli.eval_ragas.time.sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr("src.cli.eval_deepeval.time.sleep", lambda s: sleeps.append(s))
 
     for bad in ("-1", "nan"):
         ev = HookEvidence()
@@ -170,7 +170,7 @@ def test_invalid_retry_after_values_fall_back_to_backoff(monkeypatch):
 def test_retry_after_zero_retries_immediately(monkeypatch):
     """`Retry-After: 0` 是合法的「立即重试」，不得被真假值判断吞掉。"""
     sleeps: list[float] = []
-    monkeypatch.setattr("src.cli.eval_ragas.time.sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr("src.cli.eval_deepeval.time.sleep", lambda s: sleeps.append(s))
 
     ev = HookEvidence()
     ev.mark("t0")
@@ -185,7 +185,7 @@ def test_retry_after_zero_retries_immediately(monkeypatch):
 
 def test_diagnostic_max_attempts_one(monkeypatch):
     sleeps: list[float] = []
-    monkeypatch.setattr("src.cli.eval_ragas.time.sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr("src.cli.eval_deepeval.time.sleep", lambda s: sleeps.append(s))
     m = _Seq([None, 0.8])
 
     value, _err = _score_metric_with_retry(

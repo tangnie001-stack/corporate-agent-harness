@@ -160,7 +160,7 @@ channel），业务不手写。channel 取值见 `src/config/const.py` 的 `Chan
 agent 事件（触顶 ∪ 检索 ∪ 完整性检查）的 trace"。应读作"在有 agent 行为的请求里有多少触顶"，
 纯闲聊类请求不进分母；三个指标共用这一分母以便互相参照。
 
-⚠ **检索次数为什么不取 `retrieval_signal`**：eval 链路（`src/cli/eval_ragas.py`）全程不设置
+⚠ **检索次数为什么不取 `retrieval_signal`**：eval 链路（`src/cli/eval_deepeval.py`）全程不设置
 `RequestContext` → `retrieve_call_seq` 恒 0，`empty_result` / `reretrieve` 行为信号在 eval 请求下
 **不产生**；而 `retrieve done` 是检索工具内无条件落的事件，生产与 eval 两条路径下都可用。
 

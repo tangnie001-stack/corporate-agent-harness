@@ -461,7 +461,7 @@ async def test_retrieve_kb_reads_turn_count_when_state_is_mapping(monkeypatch):
 async def test_retrieve_kb_cli_style_entry_without_request_context(monkeypatch):
     """CLI 入口只把参数放进图输入、不建 ctx ⇒ 装配 seed 的 kb_id 仍被取到。
 
-    等价于 src/cli/check_abstain.py:127 / eval_ragas.py:129：kb_id 只在图输入里，
+    等价于 src/cli/check_abstain.py:127 / eval_deepeval.py:129：kb_id 只在图输入里，
     工具不得依赖 current_request_ctx 取 kb_id（否则退化为空、不检索）。
     """
     assert current_request_ctx.get() is None, "本用例刻意不建 ctx"

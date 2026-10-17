@@ -4,7 +4,7 @@
 本轮只**预留边界**、不实现替代实现；本测试把边界的两个可替换点钉成契约。
 """
 
-from src.cli import eval_ragas
+from src.cli import eval_deepeval
 from src.config.const import RAGAS_METRIC_COLUMNS
 
 
@@ -32,7 +32,7 @@ def test_score_rows_output_shape_is_replaceable_contract():
         }
     ]
 
-    scored = eval_ragas.score_rows(rows, metrics)
+    scored = eval_deepeval.score_rows(rows, metrics)
     assert len(scored) == 1
     assert scored[0]["q_index"] == 0
     assert "error" in scored[0]
@@ -42,7 +42,7 @@ def test_score_rows_output_shape_is_replaceable_contract():
 
 def test_bridge_test_case_is_the_case_construction_boundary():
     """用例构造侧边界：`_bridge_test_case` 产出桥要的四字段 LLMTestCase。"""
-    tc = eval_ragas._bridge_test_case(
+    tc = eval_deepeval._bridge_test_case(
         {
             "question": "Q",
             "answer": "A",
@@ -58,8 +58,8 @@ def test_bridge_test_case_is_the_case_construction_boundary():
 
 def test_scoring_boundary_functions_are_module_level():
     """两个边界点须是可替换的模块级函数（替代实现据此接入）。"""
-    assert callable(eval_ragas._bridge_test_case)
-    assert callable(eval_ragas.score_rows)
+    assert callable(eval_deepeval._bridge_test_case)
+    assert callable(eval_deepeval.score_rows)
     from src.cli.eval_scoring import build_metrics
 
     assert callable(build_metrics)

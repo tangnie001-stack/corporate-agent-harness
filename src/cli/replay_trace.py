@@ -121,7 +121,7 @@ def main(argv: list[str] | None = None) -> None:
         return
     print(f"trace {args.trace}: {len(rows)} 次检索重放（对当前 KB/配置，非历史快照）")
 
-    # store/reranker 构造沿用 cli 既有先例（eval_ragas.py 构造段）
+    # store/reranker 构造沿用 cli 既有先例（eval_deepeval.py 构造段）
     vector_store = VectorStore()
     reranker = get_rerank()
     asyncio.run(_replay_all(rows, vector_store, reranker))

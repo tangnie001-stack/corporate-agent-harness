@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from src.cli import eval_ragas
+from src.cli import eval_deepeval
 from src.config.const import EVAL_PASS_THRESHOLD
 
 
@@ -20,7 +20,7 @@ def test_overall_score_is_pure_kb_four_metric_mean(monkeypatch):
             self.__dict__.update(kw)
 
     monkeypatch.setattr(
-        eval_ragas, "_eval_report_deps", lambda: (_Svc(), _Entity), raising=False
+        eval_deepeval, "_eval_report_deps", lambda: (_Svc(), _Entity), raising=False
     )
 
     df = pd.DataFrame(
@@ -33,7 +33,7 @@ def test_overall_score_is_pure_kb_four_metric_mean(monkeypatch):
         }
     )
     # 仅 pure_kb 行参与主分 → 四项均 1.0 → overall=1.0
-    eval_ragas._save_eval_report(
+    eval_deepeval._save_eval_report(
         "kb", df, 2, "r.csv", None, sample_classes=["pure_kb", "web"]
     )
 

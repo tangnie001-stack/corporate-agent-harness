@@ -1,4 +1,4 @@
-from src.cli.eval_ragas import score_rows
+from src.cli.eval_deepeval import score_rows
 
 
 class _RecordingMetric:

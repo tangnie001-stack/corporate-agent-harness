@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.cli.eval_ragas import _build_eval_detail, save_markdown_report
+from src.cli.eval_deepeval import _build_eval_detail, save_markdown_report
 from src.config.const import (
     EVAL_RELEVANCY_MAX_CONTEXTS,
     SAMPLE_CLASS_EMPTY,

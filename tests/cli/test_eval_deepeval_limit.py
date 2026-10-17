@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.cli.eval_ragas import _limit_testset
+from src.cli.eval_deepeval import _limit_testset
 
 
 def test_none_returns_unchanged():

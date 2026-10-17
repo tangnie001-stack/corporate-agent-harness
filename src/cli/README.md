@@ -16,7 +16,7 @@ python -m src.cli.<模块名> --help
 
 | 命令 | 用途 |
 |---|---|
-| `eval_ragas` | RAGAS 评估主脚本：执行评估 / 质量门禁 |
+| `eval_deepeval` | RAGAS 评估主脚本：执行评估 / 质量门禁 |
 | `compare_retrieval` | 遍历「检索 top-K × 重排 top-K」参数网格，用 RAGAS 指标对比选参 |
 | `check_retrieval` | 对已有知识库执行语义检索，打印结果供人工检查 |
 
@@ -28,7 +28,7 @@ RAGAS 评估的核心是**先用文档自动生成 QA 测试集，再用测试�
 
 ```
 ① 生成测试集 ──> ② 执行评估 ──> ③ 质量门禁 ──> ④ 参数选优（可选）
-eval_ragas --generate   eval_ragas --kb-id   eval_ragas --gate   compare_retrieval
+eval_deepeval --generate   eval_deepeval --kb-id   eval_deepeval --gate   compare_retrieval
 ```
 
 ## 第一步：生成测试集（怎么生成）
@@ -37,11 +37,11 @@ eval_ragas --generate   eval_ragas --kb-id   eval_ragas --gate   compare_retriev
 
 ```bash
 # 先查出知识库的 UUID（评估与生成都只需要 kb-id）
-python -m src.cli.eval_ragas --list-kbs
+python -m src.cli.eval_deepeval --list-kbs
 
 # 用文档自动生成 20 条 QA 测试集（size 默认取配置 RAGAS_TEST_SIZE）
-python -m src.cli.eval_ragas --kb-id <知识库UUID> --generate
-python -m src.cli.eval_ragas --kb-id <知识库UUID> --generate --size 30
+python -m src.cli.eval_deepeval --kb-id <知识库UUID> --generate
+python -m src.cli.eval_deepeval --kb-id <知识库UUID> --generate --size 30
 ```
 
 ### 内部流程
@@ -94,17 +94,17 @@ python -m src.cli.eval_ragas --kb-id <知识库UUID> --generate --size 30
 
 ```bash
 # 用最新版测试集评估
-python -m src.cli.eval_ragas --kb-id <知识库UUID>
+python -m src.cli.eval_deepeval --kb-id <知识库UUID>
 
 # 指定测试集版本评估
-python -m src.cli.eval_ragas --kb-id <知识库UUID> --testset-version 4
+python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 4
 
 # 自定义报告输出路径
-python -m src.cli.eval_ragas --kb-id <知识库UUID> --output /path/report.csv
+python -m src.cli.eval_deepeval --kb-id <知识库UUID> --output /path/report.csv
 
-python -m src.cli.eval_ragas --kb-id <知识库UUID> --testset-version 5 --limit 1   # 冒烟：只跑前 1 题（勿配 --gate）
+python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 5 --limit 1   # 冒烟：只跑前 1 题（勿配 --gate）
 
-python -m src.cli.eval_ragas --kb-id <知识库UUID> --testset-version 5 --deepeval-only   # 只跑行为轴（无主分/门禁）
+python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 5 --deepeval-only   # 只跑行为轴（无主分/门禁）
 ```
 
 `--limit N` 只用于逐级活体（1 → 5 → 21），**不要与 `--gate` 同用**——少数题上的门禁没有统计意义；全量口径仍是不加 `--limit`。
@@ -118,7 +118,7 @@ python -m src.cli.eval_ragas --kb-id <知识库UUID> --testset-version 5 --deepe
 3. 逐题让 RAG 系统生成回答 `answer` 与检索上下文 `contexts`
 4. 用 RAGAS 对四个指标打分
 
-> **上下文含实体锚点**：评估收集的 `contexts` 与生产 prompt 共用 `RAGContext.to_prompt_text()` 渲染格式（`src/rag/context.py`）。当分块 metadata 带实体（`company`/`report_period`/`sec_code` 等，标签为 `公司`/`期间`/`代码`）时，上下文会多出一行 `实体标签: 值` 锚点，再跟 `内容:` 正文；无实体时保持 `来源 → 内容` 原格式。这保证 RAGAS 的 NLI 裁判看到的上下文与线上生成模型完全一致（实体锚点用于增强忠实度）。评估脚本入口见 `src/cli/eval_ragas.py:157`。
+> **上下文含实体锚点**：评估收集的 `contexts` 与生产 prompt 共用 `RAGContext.to_prompt_text()` 渲染格式（`src/rag/context.py`）。当分块 metadata 带实体（`company`/`report_period`/`sec_code` 等，标签为 `公司`/`期间`/`代码`）时，上下文会多出一行 `实体标签: 值` 锚点，再跟 `内容:` 正文；无实体时保持 `来源 → 内容` 原格式。这保证 RAGAS 的 NLI 裁判看到的上下文与线上生成模型完全一致（实体锚点用于增强忠实度）。评估脚本入口见 `src/cli/eval_deepeval.py:157`。
 
 > **评估模式跳过追问**：批量评估以 `skip_clarify=True` 运行图——即使 classify 判定问题缺实体（如缺年份），也不会停在「追问澄清」分支（生产交互链路会追问，评估不会），而是直接走检索+生成。这样单轮指标才有分数可算；追问分支的真实效果属于多轮/Agent 评估范畴，不在单轮评测内。
 
@@ -184,7 +184,7 @@ MD 摘要末尾会给出整体平均值，例如：
 ## 第三步：质量门禁（怎么判定达标）
 
 ```bash
-python -m src.cli.eval_ragas --kb-id <知识库UUID> --gate
+python -m src.cli.eval_deepeval --kb-id <知识库UUID> --gate
 ```
 
 - 对四个指标逐项打印 `PASS / FAIL`（用全量 QA 的平均值对比阈值）
@@ -204,7 +204,7 @@ python -m src.cli.compare_retrieval --kb-name <知识库名称>
 
 # 命令参考
 
-## eval_ragas — 参数一览
+## eval_deepeval — 参数一览
 
 | 参数 | 说明 |
 |---|---|
@@ -225,7 +225,7 @@ python -m src.cli.compare_retrieval --kb-name <知识库名称>
 python -m src.cli.compare_retrieval --kb-name rag_eval
 ```
 
-- 通过子进程调用 `eval_ragas` 并覆盖环境变量 `TOP_K_RETRIEVAL` / `TOP_K_RERANK`（不改 `.env`）
+- 通过子进程调用 `eval_deepeval` 并覆盖环境变量 `TOP_K_RETRIEVAL` / `TOP_K_RERANK`（不改 `.env`）
 - 指标列：`faithfulness`、`answer_relevancy`、`context_precision`、`context_recall`
 
 ## check_retrieval — 检索质量检查
@@ -248,8 +248,8 @@ python -m src.cli.check_retrieval --kb <知识库名称> --query "<问题>" [--t
 
 ## 典型工作流
 
-1. **生成测试集**：`eval_ragas --kb-id <uuid> --generate --size 20`
-2. **执行评估**：`eval_ragas --kb-id <uuid>` → 查看 `data/ragas/reports/` 下的 CSV 与 MD
-3. **质量门禁**：`eval_ragas --kb-id <uuid> --gate`（CI / 提交前检查，不达标退出码 1）
+1. **生成测试集**：`eval_deepeval --kb-id <uuid> --generate --size 20`
+2. **执行评估**：`eval_deepeval --kb-id <uuid>` → 查看 `data/ragas/reports/` 下的 CSV 与 MD
+3. **质量门禁**：`eval_deepeval --kb-id <uuid> --gate`（CI / 提交前检查，不达标退出码 1）
 4. **参数选优**：`compare_retrieval --kb-name <名称>` → 按指标对比表确定 `TOP_K` 组合
 5. **人工抽检**：`check_retrieval --kb <名称> --query "<问题>"` 验证检索效果

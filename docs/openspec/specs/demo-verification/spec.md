@@ -27,7 +27,7 @@ Before marking MVP as complete, the system SHALL meet minimum RAGAS scores on th
 If any metric falls below the threshold, the evaluation script SHALL exit with a non-zero code and list the failing questions.
 
 #### Scenario: Quality gate passes
-- **WHEN** running `python -m src.eval_ragas --gate`
+- **WHEN** running `python -m src.eval_deepeval --gate`
 - **THEN** the system SHALL output per-metric scores and exit 0 if all pass, or exit 1 with failing questions listed
 
 ### Requirement: RAGAS report archival for sign-off

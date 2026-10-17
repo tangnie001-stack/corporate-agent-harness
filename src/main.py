@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI):
     启动阶段清空残留的 chat_lock:* 键：重启后进程内无任何生成任务，
     残留锁（来自被杀进程，TTL 兜底 180s）会阻塞新请求的并发锁获取。
 
-    tracing 开关生效点（服务侧）：CLI 侧不经 lifespan，由 eval_ragas 自行调用
+    tracing 开关生效点（服务侧）：CLI 侧不经 lifespan，由 eval_deepeval 自行调用
     `configure_tracing()`。configure 必须在任何 flush 之前 —— SDK 的 flush 经
     `LangfuseSingleton` 惰性构造客户端，先 flush 会造出默认 enabled=True 的客户端，
     绕过 `settings.LANGFUSE_ENABLE`。

@@ -4,7 +4,7 @@ import math
 
 import pandas as pd
 
-from src.cli import eval_ragas
+from src.cli import eval_deepeval
 from src.cli.eval_scoring import write_scores
 from src.config.const import LANGFUSE_SCORE_SUFFIX
 
@@ -29,11 +29,11 @@ def test_scores_carry_caliber_suffix_and_include_behaviour(monkeypatch):
         captured["scores"] = scores
         captured["enabled"] = enabled
 
-    monkeypatch.setattr(eval_ragas, "write_scores", _fake_write)
-    monkeypatch.setattr(eval_ragas.settings, "LANGFUSE_ENABLE", True)
+    monkeypatch.setattr(eval_deepeval, "write_scores", _fake_write)
+    monkeypatch.setattr(eval_deepeval.settings, "LANGFUSE_ENABLE", True)
 
     behaviour_rows = [{"q_index": 0, "input": "q", "metrics": {"Task Completion": 1.0}}]
-    eval_ragas._write_langfuse_scores(_df_with_one_row(), ["t0"], behaviour_rows)
+    eval_deepeval._write_langfuse_scores(_df_with_one_row(), ["t0"], behaviour_rows)
 
     names = set(captured["scores"])
     assert f"faithfulness{LANGFUSE_SCORE_SUFFIX}" in names
@@ -46,13 +46,13 @@ def test_scores_carry_caliber_suffix_and_include_behaviour(monkeypatch):
 
 def test_behaviour_row_count_must_match_trace_ids(monkeypatch):
     """行为轴行数与 trace_ids 不齐即 fail-loud（防分数写到别的 trace）。"""
-    monkeypatch.setattr(eval_ragas, "write_scores", lambda *a, **k: None)
-    monkeypatch.setattr(eval_ragas.settings, "LANGFUSE_ENABLE", True)
+    monkeypatch.setattr(eval_deepeval, "write_scores", lambda *a, **k: None)
+    monkeypatch.setattr(eval_deepeval.settings, "LANGFUSE_ENABLE", True)
 
     import pytest
 
     with pytest.raises(RuntimeError):
-        eval_ragas._write_langfuse_scores(
+        eval_deepeval._write_langfuse_scores(
             _df_with_one_row(), ["t0", "t1"], [{"q_index": 0, "metrics": {}}]
         )
 

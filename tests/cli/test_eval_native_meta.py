@@ -1,6 +1,6 @@
 import json
 
-from src.cli.eval_ragas import build_report_meta
+from src.cli.eval_deepeval import build_report_meta
 
 
 def test_report_meta_is_native_and_has_no_temperature_regime():

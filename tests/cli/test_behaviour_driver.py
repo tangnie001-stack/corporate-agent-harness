@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.cli import eval_ragas
+from src.cli import eval_deepeval
 
 
 class _FakeGraph:
@@ -23,7 +23,7 @@ async def test_each_question_gets_its_own_handler(monkeypatch):
     class _H:
         pass
 
-    # CallbackHandler 在函数体内 import ⇒ 必须打**源模块**的属性，打 eval_ragas 的
+    # CallbackHandler 在函数体内 import ⇒ 必须打**源模块**的属性，打 eval_deepeval 的
     # 模块属性会 AttributeError（那里没有这个名字）。
     monkeypatch.setattr("deepeval.integrations.langchain.CallbackHandler", _H)
 
@@ -36,10 +36,10 @@ async def test_each_question_gets_its_own_handler(monkeypatch):
                 yield Golden(input=q)  # type: ignore[reportCallIssue]
 
     monkeypatch.setattr(
-        eval_ragas, "_build_behaviour_dataset", lambda *a, **k: _FakeIterator()
+        eval_deepeval, "_build_behaviour_dataset", lambda *a, **k: _FakeIterator()
     )
 
-    await eval_ragas.generate_answers_and_contexts_with_behaviour(
+    await eval_deepeval.generate_answers_and_contexts_with_behaviour(
         graph,
         "kb",
         "sess",

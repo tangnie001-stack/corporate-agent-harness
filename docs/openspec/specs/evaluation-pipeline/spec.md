@@ -11,7 +11,7 @@ TBD - created by archiving change mvp-core-features. Update Purpose after archiv
 
 #### Scenario: Generate a test set for a knowledge base
 
-- **WHEN** 用户运行 `python -m src.cli.eval_ragas --kb-id <uuid> --generate --size 20`
+- **WHEN** 用户运行 `python -m src.cli.eval_deepeval --kb-id <uuid> --generate --size 20`
 - **THEN** CLI SHALL 以**明确错误信息退出**（说明依赖版本原因与**前迁路径**），SHALL NOT 写出测试集文件、SHALL NOT 抛裸 `ImportError`
 
 #### Scenario: Evaluate against the latest test set
@@ -23,11 +23,11 @@ TBD - created by archiving change mvp-core-features. Update Purpose after archiv
 
 All RAGAS evaluation results SHALL be saved under the configured report directory (`RAGAS_REPORT_DIR`, default `data/ragas/reports/`) as a timestamped CSV file `ragas_eval_<timestamp>.csv` together with a sibling Markdown summary `ragas_eval_<timestamp>.md`.
 
-Evaluation SHALL be invoked via `python -m src.cli.eval_ragas`. The Markdown summary SHALL list the date and configuration, the QA pair count, per-question metric scores, and aggregate metric averages.
+Evaluation SHALL be invoked via `python -m src.cli.eval_deepeval`. The Markdown summary SHALL list the date and configuration, the QA pair count, per-question metric scores, and aggregate metric averages.
 
 #### Scenario: Evaluation saves CSV and Markdown
 
-- **WHEN** the user runs `python -m src.cli.eval_ragas --kb-id <uuid>`
+- **WHEN** the user runs `python -m src.cli.eval_deepeval --kb-id <uuid>`
 - **THEN** a CSV file and a Markdown summary SHALL be created under the configured report directory
 
 ### Requirement: Evaluation passes without crash on empty KB
@@ -303,7 +303,7 @@ system prompt SHALL 在**生产路径与评估路径**下都包含当前日期�
 
 该出题**生成**路径 SHALL NOT 被评测流程调用：评测入口 SHALL NOT 触发测试集生成，测试集 SHALL 以既有版本文件为输入。
 
-**边界（订正：模块内并非全部"不可达"）**：`src/cli/eval_ragas_generate.py` 的**测试集加载器**（`_load_latest_testset`）与 **VertexAI stub**（`_ensure_vertexai_stub`）**仍被评测主流程使用**（`src/cli/eval_ragas.py:803/806/818-820`）⇒ SHALL NOT 删除该模块，SHALL NOT 声称"整个模块不可达"。只有**出题生成入口**（`run_generate` / CLI `--generate`）不可达。
+**边界（订正：模块内并非全部"不可达"）**：`src/cli/eval_ragas_generate.py` 的**测试集加载器**（`_load_latest_testset`）与 **VertexAI stub**（`_ensure_vertexai_stub`）**仍被评测主流程使用**（`src/cli/eval_deepeval.py:803/806/818-820`）⇒ SHALL NOT 删除该模块，SHALL NOT 声称"整个模块不可达"。只有**出题生成入口**（`run_generate` / CLI `--generate`）不可达。
 
 理由（记明，避免后人误判）：出题链依赖 ragas 0.4.x 的 `default_transforms_for_prechunked`；本次评测侧统一下移到 ragas 0.3.9，出题生成因此**暂不可用**（该符号在 `eval_ragas_generate.py:307` 是**函数级导入**，故仅导入模块不会炸）。保留代码是为了不丢失已验证的能力与经验。
 

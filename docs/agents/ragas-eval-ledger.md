@@ -6,7 +6,7 @@
 
 ## 为什么要有它
 
-`data/ragas/reports/*.md` 每轮重新生成，但**不记录裁判配置**（`src/cli/eval_ragas.py` 的报告头只有日期 / TOP_K / 题数）。于是要回答「两次全量为什么分数不同」，只能去 `git log` 反推配置——本台账就是为了消除这个成本。
+`data/ragas/reports/*.md` 每轮重新生成，但**不记录裁判配置**（`src/cli/eval_deepeval.py` 的报告头只有日期 / TOP_K / 题数）。于是要回答「两次全量为什么分数不同」，只能去 `git log` 反推配置——本台账就是为了消除这个成本。
 
 ## 两条硬规则
 
@@ -74,7 +74,7 @@
 1. **各指标的有效样本数不一致**：主分只统计 `pure_kb` 行；但 `answer_correctness` / `answer_relevancy` 不需 context，连空检索题也算；`context_recall` 又会因裁判失败再少一行。读均值前先确认分母。
 2. **报告不落盘裁判配置**（缺口 c）：表中「裁判配置」列对历史行都是推定值，不可当证据。修法：报告头 + 旁挂 `*.meta.json` 记录 judge model / 思考档 / cap / 超时 / attempts / 测试集 / git commit。
 3. **context_precision 不可复现**（缺口 b）：同题面、同 TOP_K，两次运行出现 1.0 → 0.0 的翻转，且有「recall 高但 precision=0」的判错行。跨轮比较该指标时，差异小于 ~0.1 不足为凭。
-4. **喂给 RAGAS 的 context 未去重/截断**（缺口 a）：`src/cli/eval_ragas.py` 把 Agent 全部工具产出原样传入，多轮检索的题 context 数可达 40+，而 context_precision 是「条数越多越吃亏」的 average precision。待调研定论后修。
+4. **喂给 RAGAS 的 context 未去重/截断**（缺口 a）：`src/cli/eval_deepeval.py` 把 Agent 全部工具产出原样传入，多轮检索的题 context 数可达 40+，而 context_precision 是「条数越多越吃亏」的 average precision。待调研定论后修。
 
 ## 怎么用
 

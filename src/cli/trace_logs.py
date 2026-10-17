@@ -7,7 +7,7 @@
 为什么需要它：报告只给出每题的 trace_id；要定位"为什么这题失败"，需要把该 trace 下
 **所有**日志串起来看。按本仓现有分工，判官相关观测分两层：
   - `judge call` / `metric retry` 事件：**外层**对桥度量 `measure` 的调用（尝试次数 /
-    耗时 / 是否拿到分 / 异常链摘要 `note`），由 `src/cli/eval_ragas.py` 埋点；
+    耗时 / 是否拿到分 / 异常链摘要 `note`），由 `src/cli/eval_deepeval.py` 埋点；
   - `HookEvidence` 证据桶：**框架内部**（ragas 桥）的 HTTP 请求级证据（请求 URL、响应
     状态码 / 响应体字节数 / `finish_reason`），由裁判 `http_async_client` 的 event hooks
     收集（`src/infra/llm/provider/http_observability.py`，design D13）。hooks **只在失败

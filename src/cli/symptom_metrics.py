@@ -13,7 +13,7 @@ agent 事件（触顶 ∪ 检索 ∪ 完整性检查）的 trace"。读作"在�
 **不是**"占全部请求的比例"—— 纯闲聊类请求不进分母。三个指标共用这一分母以便互相参照。
 
 ⚠ 为什么检索次数不取 `retrieval_signal`：eval 链路全程不设置 `RequestContext`
-（`src/cli/eval_ragas.py` 不引用 `current_request_ctx`），`retrieve_call_seq` 恒为 0、
+（`src/cli/eval_deepeval.py` 不引用 `current_request_ctx`），`retrieve_call_seq` 恒为 0、
 `empty_result` / `reretrieve` 行为信号在 eval 请求下不产生。`retrieve done` 是工具内
 无条件落的事件，在两条路径下都可用。
 

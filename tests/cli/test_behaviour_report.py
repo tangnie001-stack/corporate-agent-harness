@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pandas as pd
 
-from src.cli.eval_ragas import save_markdown_report
+from src.cli.eval_deepeval import save_markdown_report
 
 
 class _FakeResult:
-    """`save_markdown_report` 只要求 `result.to_pandas()`（`eval_ragas.py:620`）。"""
+    """`save_markdown_report` 只要求 `result.to_pandas()`（`eval_deepeval.py:620`）。"""
 
     def to_pandas(self) -> pd.DataFrame:
         return pd.DataFrame(
@@ -20,7 +22,7 @@ def test_report_contains_behaviour_section(tmp_path):
     out = tmp_path / "r.csv"
 
     save_markdown_report(
-        _FakeResult(),
+        cast(Any, _FakeResult()),
         questions=["Q0"],
         output_path=str(out),
         sample_classes=["pure_kb"],
@@ -35,7 +37,7 @@ def test_report_contains_behaviour_section(tmp_path):
 
 
 def test_behaviour_section_shows_reason_for_missing_metric():
-    from src.cli.eval_ragas import _build_behaviour_section
+    from src.cli.eval_deepeval import _build_behaviour_section
 
     rows = [
         {
@@ -52,7 +54,7 @@ def test_behaviour_section_shows_reason_for_missing_metric():
 
 
 def test_behaviour_section_collapses_newlines_in_reason():
-    from src.cli.eval_ragas import _build_behaviour_section
+    from src.cli.eval_deepeval import _build_behaviour_section
 
     rows = [
         {

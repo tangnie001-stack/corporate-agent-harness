@@ -1004,7 +1004,7 @@ dense 路 top-k，按余弦距离（pgvector `<=>`）升序。`similarity_search
 
 ### 4.9 `async VectorStore.get_all_chunks(kb_id) → list[ChunkResult]`
 
-取整个知识库的全部分块（空库检查 / 全量读取用）。调用方：`src/cli/eval_ragas.py`（空库检查）、`scripts/rebuild_kb_data.py`（清空前的存在性读取）。
+取整个知识库的全部分块（空库检查 / 全量读取用）。调用方：`src/cli/eval_deepeval.py`（空库检查）、`scripts/rebuild_kb_data.py`（清空前的存在性读取）。
 
 ### 4.10 `async VectorStore.delete_document(kb_id, doc_id, session=None) → int`
 
@@ -1274,9 +1274,9 @@ agent（外层节点：组装首轮 → seed 装配产物 → ainvoke）
 
 ---
 
-## 8. CLI 接口：eval_ragas 命令行
+## 8. CLI 接口：eval_deepeval 命令行
 
-### 8.1 `python -m src.cli.eval_ragas`
+### 8.1 `python -m src.cli.eval_deepeval`
 
 RAGAS 评估与测试集生成命令行。
 
@@ -1297,19 +1297,19 @@ RAGAS 评估与测试集生成命令行。
 使用示例：
 ```bash
 # 生成测试集
-python -m src.cli.eval_ragas --kb-id <uuid> --generate --size 20
+python -m src.cli.eval_deepeval --kb-id <uuid> --generate --size 20
 
 # 评估（最新测试集）
-python -m src.cli.eval_ragas --kb-id <uuid>
+python -m src.cli.eval_deepeval --kb-id <uuid>
 
 # 评估（指定测试集版本）
-python -m src.cli.eval_ragas --kb-id <uuid> --testset-version 4
+python -m src.cli.eval_deepeval --kb-id <uuid> --testset-version 4
 
 # 评估 + 质量门禁
-python -m src.cli.eval_ragas --kb-id <uuid> --gate
+python -m src.cli.eval_deepeval --kb-id <uuid> --gate
 
 # 列出知识库
-python -m src.cli.eval_ragas --list-kbs
+python -m src.cli.eval_deepeval --list-kbs
 ```
 
 ### 8.2 测试集 JSON 格式
@@ -1412,7 +1412,7 @@ python -m src.cli.eval_ragas --list-kbs
 是**容器内**服务名，宿主（WSL）侧直接跑 CLI 必须覆写为宿主可达地址：
 
 ```bash
-POSTGRES_HOST=localhost LANGFUSE_HOST=http://localhost:3000 python -m src.cli.eval_ragas --kb-id <uuid>
+POSTGRES_HOST=localhost LANGFUSE_HOST=http://localhost:3000 python -m src.cli.eval_deepeval --kb-id <uuid>
 ```
 
 `RAGAS_TESTSET_DIR` / `RAGAS_REPORT_DIR` 默认是 cwd 相对路径（`data/ragas/...`）；

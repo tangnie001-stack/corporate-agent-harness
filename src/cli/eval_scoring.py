@@ -1,13 +1,13 @@
 """评测打分辅助：样本分类、主分聚合、跳过掩码、检索覆盖率、分数回写/回读。
 
-与 eval_ragas.py 的分工：本模块放评测辅助逻辑与可单测的纯函数；
+与 eval_deepeval.py 的分工：本模块放评测辅助逻辑与可单测的纯函数；
 含外部 I/O 的有两个：`write_scores`（把每题分数回写 Langfuse）与
 `read_behaviour_scores`（从 `test_run_*.json` 回读逐题行为分）；
-CLI 编排（跑图、写报告文件）留在 eval_ragas.py。
+CLI 编排（跑图、写报告文件）留在 eval_deepeval.py。
 
 **可替换评分边界（逃生门接入点，design D10）**：评测的「用例构造」与「评分」两步
-各自落在具名函数上——用例构造 = `eval_ragas._bridge_test_case`；评分 = 本模块的
-`build_metrics`（构造原生四项指标）+ `eval_ragas.score_rows`（串行逐题打分）。
+各自落在具名函数上——用例构造 = `eval_deepeval._bridge_test_case`；评分 = 本模块的
+`build_metrics`（构造原生四项指标）+ `eval_deepeval.score_rows`（串行逐题打分）。
 桥为**默认实现**；逃生门替代实现（DeepEval 采样 + 项目侧直调 ragas 0.3 线评分）
 应在**这两个点**接入、保持同签名。本轮只预留边界、不实现替代实现。
 """

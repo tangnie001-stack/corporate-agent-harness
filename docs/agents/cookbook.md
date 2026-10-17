@@ -40,8 +40,8 @@
 
 **场景**：需要量化某个知识库的检索+生成质量
 **步骤**：
-1. 生成测试集：`python -m src.cli.eval_ragas --kb-id <kb_id> --generate --size 20`
-2. 执行评估：`python -m src.cli.eval_ragas --kb-id <kb_id>`
+1. 生成测试集：`python -m src.cli.eval_deepeval --kb-id <kb_id> --generate --size 20`
+2. 执行评估：`python -m src.cli.eval_deepeval --kb-id <kb_id>`
 3. 需要质量门禁时加 `--gate`
 **验证**：检查输出 CSV/Markdown，确认 `eval_report` 表有记录
 **注意事项**：需要 `DASHSCOPE_API_KEY`；测试集生成前会脱敏
@@ -50,13 +50,13 @@
 
 **场景**：改动 system prompt（段正文 / 模板）后记录当时的**绝对水平**，作为阶段性留档。
 **步骤**：
-1. RAGAS：`POSTGRES_HOST=localhost .venv/bin/python -m src.cli.eval_ragas --kb-id <kb_id> --testset-version <N> --output data/ragas/reports/<name>`
+1. RAGAS：`POSTGRES_HOST=localhost .venv/bin/python -m src.cli.eval_deepeval --kb-id <kb_id> --testset-version <N> --output data/ragas/reports/<name>`
 2. 三症状指标：`python -m src.cli.symptom_metrics --log-dir logs --out docs/tmp/<name>-symptoms.txt`
 3. 段体积：从同批请求日志取 `section_chars` —— `grep -o 'section_chars={[^}]*}' logs/app_*.log | tail -20`
 **验证**：留档文件里四类数据（RAGAS / 三症状 / 段体积 / 环境）都有值；`symptom_metrics` 的
 `traces_total ≠ 0`（为 0 说明日志目录读错了）
 **注意事项**：
-- ⚠ **跑完先看 `contexts=` 是不是 0** —— 截至 2026-09-22，`eval_ragas` 不设置 `RequestContext`，
+- ⚠ **跑完先看 `contexts=` 是不是 0** —— 截至 2026-09-22，`eval_deepeval` 不设置 `RequestContext`，
   `agent_finalize` 取不到检索上下文，导致 `context_precision` / `context_recall` 恒 0、
   `faithfulness`=nan（详见 `requirements_pool.md` 的 F-32）。**这几项在修复前不可用作质量结论。**
 - 宿主跑必须 `POSTGRES_HOST=localhost`（`.env` 里是 compose 服务名 `postgres`，宿主解析不了）

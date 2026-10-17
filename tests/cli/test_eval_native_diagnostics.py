@@ -2,7 +2,7 @@ import math
 
 from deepeval.models import DeepEvalBaseLLM
 
-from src.cli.eval_ragas import _bridge_test_case, score_rows
+from src.cli.eval_deepeval import _bridge_test_case, score_rows
 from src.cli.eval_scoring import build_diagnostic_metrics
 from src.config.const import EVAL_RELEVANCY_MAX_CONTEXTS
 

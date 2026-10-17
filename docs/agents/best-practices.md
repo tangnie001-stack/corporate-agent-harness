@@ -69,7 +69,7 @@
 | 实践点 | 业界最佳实践（出处） | 我们的现状 | 状态 |
 |--------|--------------------|-----------|------|
 | 三层独立评估 | 检索层（Recall@k / nDCG / MRR）→ 生成层（Faithfulness 等）→ 归因层（ChunkAttribution / Utilization） | 部分：RAGAS 四指标 + 检索对比 CLI（`src/cli/compare_retrieval.py`）；**无归因层** | ⚠️ 部分 |
-| RAGAS 四指标不聚合 | Faithfulness / Answer Relevancy / Context Precision / Context Recall 分列，不合并为单一分 | **已落地**：`src/cli/eval_ragas.py` 四指标分列、保留单值 | ✅ 对齐 |
+| RAGAS 四指标不聚合 | Faithfulness / Answer Relevancy / Context Precision / Context Recall 分列，不合并为单一分 | **已落地**：`src/cli/eval_deepeval.py` 四指标分列、保留单值 | ✅ 对齐 |
 | 生产监控黄金信号 | TTFT / TPOT / 单请求成本 / 守卫命中率 / 隐式反馈 | 部分：Langfuse trace（生成 span + token + 成本）+ `src/cli/symptom_metrics.py`；TTFT / TPOT 未单列指标 | ⚠️ 部分 |
 | Span 级追踪 | 每请求展开检索 / 生成 / 守卫 / 路由 span（Langfuse 或 Phoenix） | 部分：Langfuse v2 `@observe` + `src/infra/llm/tool_trace.py`（ADR-0015）覆盖生成与工具；守卫 / 路由 span 无 | ⚠️ 部分 |
 | CI/CD 门禁 | Golden set 每次 PR 跑 RAGAS，按阈值卡口（如 faithfulness ≥ 0.90） | **无 CI**（`D-02`）；`--gate` 存在但**不作唯一发布门禁**（见 §5） | ❌ |

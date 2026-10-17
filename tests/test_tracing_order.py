@@ -7,7 +7,7 @@
 
 两条入口各一例：
   - 服务侧：`src/main.py` 的 lifespan —— configure 在 yield 前，flush 在关停半段；
-  - CLI 侧：`src/cli/eval_ragas.py` 的 main() —— 不经 lifespan，自行 configure/flush。
+  - CLI 侧：`src/cli/eval_deepeval.py` 的 main() —— 不经 lifespan，自行 configure/flush。
 
 断言用记录器替换两个真实函数，全程不触碰 SDK、不发网络。
 """
@@ -59,7 +59,7 @@ def test_cli_main_configures_before_flushing(monkeypatch):
     这条路径会走 `sys.exit(1)` → `finally: flush_tracing()`。断言序列恰为
     configure → flush，即可证明 flush 没有先于 configure 构造客户端。
     """
-    import src.cli.eval_ragas as cli
+    import src.cli.eval_deepeval as cli
     from src.cli import testset_io
 
     calls: list[str] = []

@@ -38,7 +38,7 @@
 
 #### Scenario: CLI 评测链路的 id 对齐
 
-- **WHEN** 运行 `eval_ragas` 评估并产出 CSV
+- **WHEN** 运行 `eval_deepeval` 评估并产出 CSV
 - **THEN** CSV 中每个问题的 `trace_id`（形如 `eval_<hex>`）各自对应 Langfuse 中的一条 trace
 - **AND** 该 id 与评估期间该问题全部日志行的 `trace_id` 一致
 
@@ -101,7 +101,7 @@ trace 根 SHALL 覆盖"准备就绪后的整轮生成"（图事件循环的完�
 
 #### Scenario: CLI 链路同样受控
 
-- **WHEN** 以 `LANGFUSE_ENABLE=false` 运行 `eval_ragas` 评估
+- **WHEN** 以 `LANGFUSE_ENABLE=false` 运行 `eval_deepeval` 评估
 - **THEN** Langfuse 侧不新增任何 trace
 - **AND** 评估流程照常完成并产出 CSV（不因开关关闭而中断）
 

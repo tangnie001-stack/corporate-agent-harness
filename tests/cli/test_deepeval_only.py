@@ -6,12 +6,12 @@ import sys
 
 import pytest
 
-from src.cli import eval_ragas
+from src.cli import eval_deepeval
 
 
 def _parse(monkeypatch, argv):
-    monkeypatch.setattr(sys, "argv", ["eval_ragas", *argv])
-    return eval_ragas.parse_args()
+    monkeypatch.setattr(sys, "argv", ["eval_deepeval", *argv])
+    return eval_deepeval.parse_args()
 
 
 def test_deepeval_only_defaults_to_false(monkeypatch):
@@ -26,17 +26,17 @@ def test_deepeval_only_flag_is_accepted(monkeypatch):
 
 def test_deepeval_only_and_gate_are_mutually_exclusive(monkeypatch, capsys):
     monkeypatch.setattr(
-        sys, "argv", ["eval_ragas", "--kb-id", "kb-x", "--deepeval-only", "--gate"]
+        sys, "argv", ["eval_deepeval", "--kb-id", "kb-x", "--deepeval-only", "--gate"]
     )
     with pytest.raises(SystemExit) as excinfo:
-        eval_ragas.parse_args()
+        eval_deepeval.parse_args()
     assert excinfo.value.code == 2
     # argparse 的未知参数同样是 exit 2；须确认是互斥校验本身给出的错误
     assert "不能同用" in capsys.readouterr().err
 
 
 def test_report_meta_without_ragas_marks_skipped():
-    from src.cli.eval_ragas import build_report_meta
+    from src.cli.eval_deepeval import build_report_meta
 
     meta = build_report_meta(
         judge_model="qwen-test",
@@ -51,7 +51,7 @@ def test_report_meta_without_ragas_marks_skipped():
 
 
 def test_markdown_report_without_ragas_has_no_metric_rows(tmp_path):
-    from src.cli.eval_ragas import build_report_meta, save_markdown_report
+    from src.cli.eval_deepeval import build_report_meta, save_markdown_report
 
     out = tmp_path / "r.csv"
     save_markdown_report(
@@ -89,11 +89,11 @@ def test_deepeval_only_skips_all_ragas_side_effects(monkeypatch, tmp_path):
 
         return _fn
 
-    # 模块级 import 的符号：直接打在 eval_ragas 命名空间上
-    monkeypatch.setattr(eval_ragas, "build_metrics", _bomb("build_metrics"))
-    monkeypatch.setattr(eval_ragas, "run_evaluation", _bomb("run_evaluation"))
-    monkeypatch.setattr(eval_ragas, "_save_eval_report", _bomb("_save_eval_report"))
-    monkeypatch.setattr(eval_ragas, "save_results_csv", _bomb("save_results_csv"))
+    # 模块级 import 的符号：直接打在 eval_deepeval 命名空间上
+    monkeypatch.setattr(eval_deepeval, "build_metrics", _bomb("build_metrics"))
+    monkeypatch.setattr(eval_deepeval, "run_evaluation", _bomb("run_evaluation"))
+    monkeypatch.setattr(eval_deepeval, "_save_eval_report", _bomb("_save_eval_report"))
+    monkeypatch.setattr(eval_deepeval, "save_results_csv", _bomb("save_results_csv"))
 
     # main() 函数体内的 import 必须打在源模块上
     monkeypatch.setattr(
@@ -137,23 +137,23 @@ def test_deepeval_only_skips_all_ragas_side_effects(monkeypatch, tmp_path):
     monkeypatch.setattr("src.infra.db.engine.run_and_dispose", _run_and_dispose)
 
     # 其余模块级符号（行为轴链路）全部就地打桩
-    monkeypatch.setattr(eval_ragas, "configure_tracing", lambda: None)
-    monkeypatch.setattr(eval_ragas, "flush_tracing", lambda: None)
-    monkeypatch.setattr(eval_ragas, "build_behaviour_metrics", lambda llm: [])
+    monkeypatch.setattr(eval_deepeval, "configure_tracing", lambda: None)
+    monkeypatch.setattr(eval_deepeval, "flush_tracing", lambda: None)
+    monkeypatch.setattr(eval_deepeval, "build_behaviour_metrics", lambda llm: [])
 
     async def _fake_generate(*args, **kwargs):
         return (["answer"], [["ctx"]], ["trace-1"], [[]], ["pure_kb"], [{}], [])
 
     monkeypatch.setattr(
-        eval_ragas, "generate_answers_and_contexts_with_behaviour", _fake_generate
+        eval_deepeval, "generate_answers_and_contexts_with_behaviour", _fake_generate
     )
     monkeypatch.setattr(
-        eval_ragas,
+        eval_deepeval,
         "read_behaviour_scores",
         lambda out: [{"q_index": 0, "input": "q", "metrics": {"x": 1.0}}],
     )
     monkeypatch.setattr(
-        eval_ragas, "assert_behaviour_scores_complete", lambda *a, **k: None
+        eval_deepeval, "assert_behaviour_scores_complete", lambda *a, **k: None
     )
 
     out_csv = tmp_path / "r.csv"
@@ -161,7 +161,7 @@ def test_deepeval_only_skips_all_ragas_side_effects(monkeypatch, tmp_path):
         sys,
         "argv",
         [
-            "eval_ragas",
+            "eval_deepeval",
             "--kb-id",
             "kb-x",
             "--testset-version",
@@ -174,7 +174,7 @@ def test_deepeval_only_skips_all_ragas_side_effects(monkeypatch, tmp_path):
         ],
     )
 
-    eval_ragas.main()
+    eval_deepeval.main()
 
     assert called == []
     out_md = tmp_path / "r.md"

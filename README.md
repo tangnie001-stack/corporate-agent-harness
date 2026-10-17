@@ -97,7 +97,7 @@ Langfuse 2.x (:3000) → 与 app 复用同一 PostgreSQL 实例（独立 databas
 | 3. 知识库管理 | 创建（名称去重）/ 列表 / 删除（软删文档 + 清理向量） | `POST /api/kbs/list`、`POST /api/kbs`、`POST /api/kbs/delete` |
 | 4. 会话管理 | 列表 / 消息历史与过程回放 / 删除 / 取消在途生成 | `POST /api/sessions/list`、`POST /api/sessions/messages`、`POST /api/sessions/delete` |
 | 5. 认证 | 登录（首次自动注册）/ 校验 / 登出；token 存 Redis | `POST /api/auth/login`、`POST /api/auth/verify`、`POST /api/auth/logout` |
-| 6. RAGAS 质量评估（CLI） | 测试集生成 + 评估 + 可选质量门禁 | `python -m src.cli.eval_ragas` |
+| 6. RAGAS 质量评估（CLI） | 测试集生成 + 评估 + 可选质量门禁 | `python -m src.cli.eval_deepeval` |
 | 7. 分块质量评估 | 嵌入在链路 1 中，由 `CHUNK_EVAL_ENABLED` 开关控制 | `src/chunking/scorer.py` |
 | 8. 企业微信通道 | 多机器人长连接收发消息 → 复用问答链路 → Markdown 回复；HTTP 回调为单机器人 legacy | `WECOM_BOT_MODE=long_connection` / `GET`、`POST /api/wecom/callback`（callback 模式） |
 | 9. 告警接入 | Grafana 告警 → 路径 token 鉴权 → 按指纹去重 → 分析轮次 → 推送企微群（失败兜底转发） | `POST /api/alerts/webhook/{token}` |
@@ -361,13 +361,13 @@ Nginx 已预配 SSE 支持（`proxy_buffering off` + 300s 读超时），确保�
 
 ```bash
 # 生成测试集（需先创建知识库并上传测试文档）
-python -m src.cli.eval_ragas --kb-id <KB_ID> --generate --size 20
+python -m src.cli.eval_deepeval --kb-id <KB_ID> --generate --size 20
 
 # 运行评估（加 --gate 启用质量门禁，不达标退出码为 1）
-python -m src.cli.eval_ragas --kb-id <KB_ID>
+python -m src.cli.eval_deepeval --kb-id <KB_ID>
 
 # 列出可用知识库
-python -m src.cli.eval_ragas --list-kbs
+python -m src.cli.eval_deepeval --list-kbs
 ```
 
 > 宿主侧执行需加 `POSTGRES_HOST=localhost` 前缀（`.env` 里写的是 compose 服务名）。

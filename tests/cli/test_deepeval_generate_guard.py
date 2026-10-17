@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from src.cli import eval_ragas
+from src.cli import eval_deepeval
 
 
 def test_generate_flag_exits_with_migration_hint(monkeypatch, capsys):
@@ -18,7 +18,7 @@ def test_generate_flag_exits_with_migration_hint(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["eval_deepeval", "--kb-id", "kb-x", "--generate"])
 
     with pytest.raises(SystemExit) as excinfo:
-        eval_ragas.main()
+        eval_deepeval.main()
 
     assert excinfo.value.code == 1
     out = capsys.readouterr().out

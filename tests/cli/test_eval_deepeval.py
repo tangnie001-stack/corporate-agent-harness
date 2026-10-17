@@ -51,7 +51,7 @@ async def test_f32_seeded_ctx_populates_tool_contexts(eval_graph_factory) -> Non
     Args:
         eval_graph_factory: conftest 提供的真图工厂（注入真工具 + 真 ctx 传播）
     """
-    from src.cli.eval_ragas import generate_answers_and_contexts
+    from src.cli.eval_deepeval import generate_answers_and_contexts
 
     graph = eval_graph_factory([_fake_retrieve_kb])
     (
@@ -77,7 +77,7 @@ async def test_f32_no_retrieval_leaves_contexts_empty(eval_graph_factory) -> Non
     Args:
         eval_graph_factory: conftest 提供的真图工厂（空工具 = agent 直答）
     """
-    from src.cli.eval_ragas import generate_answers_and_contexts
+    from src.cli.eval_deepeval import generate_answers_and_contexts
 
     graph = eval_graph_factory([])  # 无工具，agent 直答
     (
@@ -106,7 +106,7 @@ async def test_propagation_graph_populates_state_tool_contexts(
     Args:
         eval_graph_factory: conftest 提供的真图工厂（注入真工具 + 真 ctx 传播）
     """
-    from src.cli.eval_ragas import _answer_one_question
+    from src.cli.eval_deepeval import _answer_one_question
 
     graph = eval_graph_factory([_fake_retrieve_kb])
     ctx = RequestContext(session_id="s1", kb_id="kb1")
@@ -129,7 +129,7 @@ async def test_propagation_no_tool_keeps_state_contexts_empty(
     Args:
         eval_graph_factory: conftest 提供的真图工厂（空工具 = agent 直答）
     """
-    from src.cli.eval_ragas import _answer_one_question
+    from src.cli.eval_deepeval import _answer_one_question
 
     graph = eval_graph_factory([])  # 无工具，agent 直答
     ctx = RequestContext(session_id="s1", kb_id="kb1")
@@ -146,10 +146,10 @@ async def test_propagation_no_tool_keeps_state_contexts_empty(
 class TestParseArgs:
     """命令行参数解析测试。"""
 
-    @patch("sys.argv", ["eval_ragas.py", "--kb-id", "test-uuid"])
+    @patch("sys.argv", ["eval_deepeval.py", "--kb-id", "test-uuid"])
     def test_default_args(self) -> None:
         """默认参数应按预期设置。"""
-        from src.cli.eval_ragas import parse_args
+        from src.cli.eval_deepeval import parse_args
 
         args = parse_args()
         assert args.kb_id == "test-uuid"
@@ -157,11 +157,11 @@ class TestParseArgs:
 
     @patch(
         "sys.argv",
-        ["eval_ragas.py", "--kb-id", "test-uuid", "--session-id", "custom_session"],
+        ["eval_deepeval.py", "--kb-id", "test-uuid", "--session-id", "custom_session"],
     )
     def test_custom_args(self) -> None:
         """应正确解析自定义参数。"""
-        from src.cli.eval_ragas import parse_args
+        from src.cli.eval_deepeval import parse_args
 
         args = parse_args()
         assert args.kb_id == "test-uuid"
@@ -169,11 +169,11 @@ class TestParseArgs:
 
     @patch(
         "sys.argv",
-        ["eval_ragas.py", "--kb-id", "test-uuid", "--output", "/tmp/result.csv"],
+        ["eval_deepeval.py", "--kb-id", "test-uuid", "--output", "/tmp/result.csv"],
     )
     def test_output_arg(self) -> None:
         """应正确解析输出路径参数。"""
-        from src.cli.eval_ragas import parse_args
+        from src.cli.eval_deepeval import parse_args
 
         args = parse_args()
         assert args.output == "/tmp/result.csv"
@@ -184,7 +184,7 @@ class TestGenerateAnswers:
 
     def test_generate_success(self) -> None:
         """正常情况应返回答案列表和上下文列表。"""
-        from src.cli.eval_ragas import generate_answers_and_contexts
+        from src.cli.eval_deepeval import generate_answers_and_contexts
 
         mock_graph = MagicMock()
 
@@ -248,7 +248,7 @@ class TestGenerateAnswers:
 
     def test_generate_partial_failure(self) -> None:
         """部分问题失败时应返回错误标记，不中断整体流程。"""
-        from src.cli.eval_ragas import generate_answers_and_contexts
+        from src.cli.eval_deepeval import generate_answers_and_contexts
 
         mock_graph = MagicMock()
         call_count = 0
@@ -310,7 +310,7 @@ class TestGenerateAnswers:
         """
         from langchain_core.messages import AIMessage, ToolMessage
 
-        from src.cli.eval_ragas import generate_answers_and_contexts
+        from src.cli.eval_deepeval import generate_answers_and_contexts
 
         mock_graph = MagicMock()
 
@@ -396,7 +396,7 @@ class TestRunEvaluation:
 
     def test_evaluation_runs(self) -> None:
         """评估流程应逐行产出四项指标分数，行序与输入一致。"""
-        from src.cli.eval_ragas import run_evaluation
+        from src.cli.eval_deepeval import run_evaluation
 
         result = run_evaluation(
             ["Q1", "Q2"],
@@ -421,7 +421,7 @@ class TestRunEvaluation:
 
     def test_evaluation_empty_contexts(self) -> None:
         """空上下文列表不应导致崩溃。"""
-        from src.cli.eval_ragas import run_evaluation
+        from src.cli.eval_deepeval import run_evaluation
 
         result = run_evaluation(
             ["Q1"],
@@ -443,7 +443,7 @@ class TestSaveResults:
         """CSV 应含掩码新列（sample_class/skipped）与轨迹列。"""
         import pandas as pd
 
-        from src.cli.eval_ragas import save_results_csv
+        from src.cli.eval_deepeval import save_results_csv
         from src.config.const import SAMPLE_CLASS_EMPTY, SAMPLE_CLASS_PURE_KB
 
         mock_df = pd.DataFrame(
@@ -493,7 +493,7 @@ class TestSaveResults:
         """Benchmark 模式 CSV 应记录 chunk_size。"""
         import pandas as pd
 
-        from src.cli.eval_ragas import save_results_csv
+        from src.cli.eval_deepeval import save_results_csv
         from src.config.const import SAMPLE_CLASS_PURE_KB
 
         mock_df = pd.DataFrame(
@@ -529,7 +529,7 @@ class TestSaveResults:
         """MD 报告应含 sample_class、skipped、trajectory 列，且不含已退出的 answer_correctness。"""
         import pandas as pd
 
-        from src.cli.eval_ragas import save_markdown_report
+        from src.cli.eval_deepeval import save_markdown_report
         from src.config.const import SAMPLE_CLASS_EMPTY, SAMPLE_CLASS_PURE_KB
 
         mock_df = pd.DataFrame(
@@ -576,7 +576,7 @@ class TestSaveResults:
         """MD 均值行只含白名单指标，额外数值列（如 chunk_size）不得出现。"""
         import pandas as pd
 
-        from src.cli.eval_ragas import save_markdown_report
+        from src.cli.eval_deepeval import save_markdown_report
         from src.config.const import SAMPLE_CLASS_PURE_KB
 
         mock_df = pd.DataFrame(
@@ -625,7 +625,7 @@ def test_print_metric_averages_only_whitelist_metrics(capsys) -> None:
     """
     import pandas as pd
 
-    from src.cli.eval_ragas import _print_metric_averages
+    from src.cli.eval_deepeval import _print_metric_averages
     from src.cli.eval_scoring import apply_sample_masks
     from src.config.const import SAMPLE_CLASS_PURE_KB
 
@@ -655,7 +655,7 @@ def test_save_markdown_report_requires_sample_classes() -> None:
     """sample_classes 为必填：缺省调用触发 TypeError（默认值语义不可再误导）。"""
     import pandas as pd
 
-    from src.cli.eval_ragas import save_markdown_report
+    from src.cli.eval_deepeval import save_markdown_report
 
     mock_result = MagicMock()
     mock_result.to_pandas.return_value = pd.DataFrame({"faithfulness": [0.9]})
@@ -668,7 +668,7 @@ def test_save_results_csv_requires_sample_classes() -> None:
     """sample_classes 为必填：缺省调用触发 TypeError。"""
     import pandas as pd
 
-    from src.cli.eval_ragas import save_results_csv
+    from src.cli.eval_deepeval import save_results_csv
 
     mock_result = MagicMock()
     mock_result.to_pandas.return_value = pd.DataFrame({"faithfulness": [0.9]})
@@ -689,7 +689,7 @@ def test_gate_passes_with_high_scores() -> None:
     """--gate 在全为纯 KB 且主分达标时 exits 0。"""
     import pandas as pd
 
-    from src.cli.eval_ragas import check_gate
+    from src.cli.eval_deepeval import check_gate
     from src.cli.eval_scoring import apply_sample_masks
     from src.config.const import SAMPLE_CLASS_PURE_KB
 
@@ -713,7 +713,7 @@ def test_gate_fails_with_low_scores() -> None:
     """--gate 在主分低于阈值时 exits 1。"""
     import pandas as pd
 
-    from src.cli.eval_ragas import check_gate
+    from src.cli.eval_deepeval import check_gate
     from src.cli.eval_scoring import apply_sample_masks
     from src.config.const import SAMPLE_CLASS_PURE_KB
 
@@ -736,7 +736,7 @@ def test_gate_fails_when_main_score_empty() -> None:
     """无纯 KB 样本时门禁必须失败（不能因全量均值而通过）。"""
     import pandas as pd
 
-    from src.cli.eval_ragas import check_gate
+    from src.cli.eval_deepeval import check_gate
 
     df = pd.DataFrame(
         {
@@ -766,7 +766,7 @@ def test_save_eval_report_tolerates_nan_metric() -> None:
 
     import pandas as pd
 
-    from src.cli.eval_ragas import _save_eval_report
+    from src.cli.eval_deepeval import _save_eval_report
 
     mock_df = pd.DataFrame(
         {
@@ -823,7 +823,7 @@ def test_gate_fails_when_retrieval_coverage_below_min() -> None:
     """检索覆盖率低于下限时门禁失败（否则会拿空 context 指标蒙混过关）。"""
     import pandas as pd
 
-    from src.cli.eval_ragas import check_gate
+    from src.cli.eval_deepeval import check_gate
     from src.cli.eval_scoring import apply_sample_masks
     from src.config.const import SAMPLE_CLASS_EMPTY, SAMPLE_CLASS_PURE_KB
 

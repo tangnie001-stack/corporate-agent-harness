@@ -8,10 +8,10 @@
   - context_precision: 检索到的上下文中有多少是真正有用的
 
 运行方式：
-  python -m src.cli.eval_ragas --kb-id <kb-uuid>                          # 评估（最新测试集）
-  python -m src.cli.eval_ragas --kb-id <kb-uuid> --testset-version 4       # 评估（指定测试集版本）
-  python -m src.cli.eval_ragas --kb-id <kb-uuid> --gate                    # 评估并检查质量门禁
-  python -m src.cli.eval_ragas --list-kbs                                  # 列出可用知识库
+  python -m src.cli.eval_deepeval --kb-id <kb-uuid>                          # 评估（最新测试集）
+  python -m src.cli.eval_deepeval --kb-id <kb-uuid> --testset-version 4       # 评估（指定测试集版本）
+  python -m src.cli.eval_deepeval --kb-id <kb-uuid> --gate                    # 评估并检查质量门禁
+  python -m src.cli.eval_deepeval --list-kbs                                  # 列出可用知识库
 
 出题生成入口已下线（`--generate` 保留参数、命中即报错）。
 """

@@ -46,7 +46,7 @@ async def _resolve_kb_id(kb_name: str) -> str:
 
 
 def run_eval(retrieval_k: int, rerank_k: int, kb_id: str) -> dict:
-    """通过环境变量覆盖 TOP_K 值后运行 eval_ragas。
+    """通过环境变量覆盖 TOP_K 值后运行 eval_deepeval。
 
     在子进程环境中设置 TOP_K_RETRIEVAL 和 TOP_K_RERANK，
     从而在不修改 .env 文件的情况下让应用读取覆盖后的值。
@@ -64,7 +64,7 @@ def run_eval(retrieval_k: int, rerank_k: int, kb_id: str) -> dict:
     env["TOP_K_RETRIEVAL"] = str(retrieval_k)
     env["TOP_K_RERANK"] = str(rerank_k)
     result = subprocess.run(
-        ["python", "-m", "src.cli.eval_ragas", "--kb-id", kb_id],
+        ["python", "-m", "src.cli.eval_deepeval", "--kb-id", kb_id],
         capture_output=True,
         text=True,
         env=env,
@@ -80,13 +80,13 @@ def run_eval(retrieval_k: int, rerank_k: int, kb_id: str) -> dict:
 
 
 def parse_metrics(stdout: str) -> dict[str, float]:
-    """从 eval_ragas 的标准输出中解析 RAGAS 指标均值。
+    """从 eval_deepeval 的标准输出中解析 RAGAS 指标均值。
 
-    口径说明：eval_ragas 的 stdout 只打「主分」一行/指标（仅纯 KB 样本的
+    口径说明：eval_deepeval 的 stdout 只打「主分」一行/指标（仅纯 KB 样本的
     指标均值，与报告 / 门禁一致），故此处解析到的即主分。
 
     Args:
-        stdout: eval_ragas 的原始标准输出。
+        stdout: eval_deepeval 的原始标准输出。
 
     Returns:
         指标名（faithfulness, answer_relevancy,
@@ -116,7 +116,7 @@ def main() -> None:
     parser.add_argument("--kb-name", default="rag_eval", help="知识库名称")
     args = parser.parse_args()
 
-    # 名称 → UUID（eval_ragas 只接受 --kb-id）
+    # 名称 → UUID（eval_deepeval 只接受 --kb-id）
     try:
         kb_id = asyncio.run(_resolve_kb_id(args.kb_name))
     except ValueError as e:

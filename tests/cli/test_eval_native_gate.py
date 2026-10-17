@@ -4,7 +4,7 @@ import math
 import pandas as pd
 import pytest
 
-from src.cli.eval_ragas import check_gate
+from src.cli.eval_deepeval import check_gate
 
 
 def _df(n_pure: int, n_nan: int, value: float = 0.99) -> pd.DataFrame:

@@ -3,7 +3,7 @@
 本模块只做三件事，不含任何业务语义：
 
 1. **开关**：把 `settings.LANGFUSE_ENABLE` 翻译成 SDK 的启用状态。服务侧由
-   `src/main.py` 的 lifespan 调用，CLI 侧由 `src/cli/eval_ragas.py` 自行调用
+   `src/main.py` 的 lifespan 调用，CLI 侧由 `src/cli/eval_deepeval.py` 自行调用
    —— CLI 不经 lifespan，漏掉它会让 CLI 完全脱离开关控制。
 2. **flush**：SDK 默认批量上报，进程退出前不 flush 会丢最后一批缓冲事件。
 3. **trace id 校验**：入站 `X-Trace-ID` / `?trace_id` 是不可信输入，接线后它会
