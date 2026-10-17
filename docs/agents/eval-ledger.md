@@ -37,6 +37,7 @@
 | 3 | 2026-10-15 16:03 | `ragas_eval_20261015_080359` | 报告未记录（推定：思考 OFF · cap 4096 · attempts=3） | 19 | 0.8530 | 0.8644 | 0.5227 | 0.8500 | 0.6071 | ❌ cp | 5 行 `IncompleteOutputException`（cap 顶格） | N/A | 未启用 |
 | 4 | 2026-10-15 16:47 | `ragas_eval_20261015_084734` | 报告未记录（推定：思考 OFF · cap 8192 · attempts=3 · 细粒度超时 · temp=0） | 19 | 0.7813 | 0.8537 | 0.5004 | 0.8412 | 0.6164 | ❌ faith + cp | 1 行 `IncompleteOutputException`（Q16）+ Q4 空检索 | N/A | 未启用 |
 | 5 | 2026-10-17 13:55 | `ragas_eval_20261017_055527` | 报告未记录（推定：桥裁判 · 思考 OFF · cap 8192 · 细粒度 `http_async_client`/`http_client` 超时 · SDK retries=0 · 串行评分；依据 `settings.py` 默认值与工厂透传）；`judge=qwen3.8-flash`（报告头已记录） | 19 | 0.8263 | 0.8848 | 0.5073 | 0.8195 | N/A | 未跑（首轮 --no-gate） | Q8（`web`）context_precision 三次 attempt 均约 182s 超时后 NaN，不入纯 KB 主分（主分 NaN 0/76） | bridge-0.3.9 / v5 | 未启用 |
+| 6 | 2026-10-18 00:22 | `deepeval_eval_20261017_162242` | `caliber=deep-eval-native · judge=qwen3.8-flash · deepeval=4.2.9 · metrics=native`（报告头已记录） | 21 | 0.9726 | 0.9304 | 0.7395 | 0.8769 | N/A（原生四项不含） | 未启用（baseline） | 首轮 baseline，`--run-type baseline`，不判门禁；无失败样本（error 列全空）；主分 NaN 0/84，诊断 NaN 各 0/21；诊断 contextual_relevancy=0.3282 / non_advice=0.9683 | `deep-eval-native / v5` | 未启用 |
 
 > **#1–#5 都卡在 context_precision**（0.7571 → 0.5303 → 0.5227 → 0.5004 → 0.5073），且它在两次配置间逐题剧烈翻转——见下方「已知口径与坑」。
 

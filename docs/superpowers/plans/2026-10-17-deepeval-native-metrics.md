@@ -2369,6 +2369,46 @@ git add docs/agents/eval-ledger.md docs/superpowers/plans/2026-10-17-deepeval-na
 git commit -m "chore(eval): 记录 deep-eval-native baseline 验收结果"
 ```
 
+### 验收记录（Task 13，2026-10-18 CST）
+
+**静态闸门**
+
+| 命令 | 结果 |
+|---|---|
+| `POSTGRES_HOST=localhost pytest tests/ -q` | 1903 passed, 2 skipped（首跑与末跑一致） |
+| `ruff format --check src/ tests/` | 502 files already formatted |
+| `ruff check src/ tests/` | 1 error：`UP047 src/infra/db/engine.py:33`（**存量**，该文件本变更未改动，merge-base `838eccaf` 上同样报错）→ 不新增 |
+| `pyright src/` | 0 errors, 0 warnings |
+
+**5 题冒烟**（子集 index 0/2/7/13/14，`--testset-version 99 --limit 5 --run-type baseline`）
+
+- 报告：`data/deepeval/reports/deepeval_eval_20261017_161513.md`；耗时 7m05s
+- 主分：faithfulness=0.8433 / answer_relevancy=0.9167 / context_precision=0.8153 / context_recall=1.0000；主分 NaN 0/16
+- 诊断：contextual_relevancy=0.2538 / non_advice=1.0000；诊断 NaN 各 0/4
+- 空样本（Q4，`empty`）四项主分与诊断均显示 `N/A`，`error` 列显示 `sample_class=empty`，掩码生效；诊断段含截断说明（“仅判前 8 条 context”）
+- 无评分失败样本、无 400、无超时；临时子集 `_v99.json` 已删除
+
+**21 题 baseline 全量**（`--run-type baseline`，未加 `--gate`）
+
+- 报告：`data/deepeval/reports/deepeval_eval_20261017_162242.md` / `.csv`；开始 2026-10-18 00:22 CST，结束 00:54 CST，耗时 32m19s
+- 四项均值：faithfulness=0.9726 / answer_relevancy=0.9304 / context_precision=0.7395 / context_recall=0.8769
+- 诊断均值：contextual_relevancy=0.3282 / non_advice=0.9683
+- NaN：主分 0/84（21 题 × 4 指标，报告头 `NaN cells: 0/84`）；诊断 contextual_relevancy 0/21、non_advice 0/21
+- 21 题全部 `pure_kb`，`error` 列全空，无 400/超时
+- 5 题冒烟中被判为 `empty` 的样本（index 13）在全量中正常检索：空检索是被测 Agent 的运行时行为，不是测试集固有属性
+
+**API / DB**
+
+- `POSTGRES_HOST=localhost pytest tests/api/test_kb_eval.py -q`：4 passed（baseline → `passed=None`；0.0 不被转成 `null`）
+- DB 最新行（`eval_report`）：`run_type=baseline`、`passed=f`、`overall_score=0.8798312103065145`、四指标非空、`qa_count=21`
+- `detail_json[0]` 含裸键 `contextual_relevancy` / `non_advice`
+
+**遗留项**
+
+- 前端徽标（“评测”/“未标定”灰色、不显示 ✗）属人工目检项，本次未做浏览器验证
+- `ruff check` 的 `UP047` 为存量问题（ruff 0.16.2 新规则），不在本变更范围
+- baseline 不判门禁；`context_precision=0.7395` 低于历史阈值 0.80，仅记录、不作结论
+
 ---
 
 ## Self-Review
