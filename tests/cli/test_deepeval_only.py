@@ -1,4 +1,4 @@
-"""`--deepeval-only` 的参数与互斥语义。"""
+"""`--deepeval-only`（别名 `--behaviour-only`）的参数与互斥语义。"""
 
 from __future__ import annotations
 
@@ -21,6 +21,11 @@ def test_deepeval_only_defaults_to_false(monkeypatch):
 
 def test_deepeval_only_flag_is_accepted(monkeypatch):
     args = _parse(monkeypatch, ["--kb-id", "kb-x", "--deepeval-only"])
+    assert args.deepeval_only is True
+
+
+def test_behaviour_only_is_an_alias(monkeypatch):
+    args = _parse(monkeypatch, ["--kb-id", "kb-x", "--behaviour-only"])
     assert args.deepeval_only is True
 
 

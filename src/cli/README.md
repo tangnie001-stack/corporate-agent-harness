@@ -109,7 +109,7 @@ python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 5 --de
 
 `--limit N` 只用于逐级活体（1 → 5 → 21），**不要与 `--gate` 同用**——少数题上的门禁没有统计意义；全量口径仍是不加 `--limit`。
 
-`--deepeval-only` 跳过 RAGAS 四指标：**不产出主分、不写 CSV、不写 `eval_report`、不回写 Langfuse、不执行门禁**，报告只含 Agent 行为轴。它用于 DeepEval 功能的快速迭代验收，**不要用于 A/B 对比或发布判定**。与 `--gate` 互斥。
+`--deepeval-only`（别名 `--behaviour-only`）跳过四指标：**不产出主分、不写 CSV、不写 `eval_report`、不回写 Langfuse、不执行门禁**，报告只含 Agent 行为轴。它用于 DeepEval 功能的快速迭代验收，**不要用于 A/B 对比或发布判定**。与 `--gate` 互斥。
 
 ### 内部流程
 
@@ -130,8 +130,8 @@ python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 5 --de
 
 | 文件 | 内容 |
 |---|---|
-| `ragas_eval_<timestamp>.csv` | **逐条明细**：每行一条 QA 及其四项指标得分 |
-| `ragas_eval_<timestamp>.md` | **摘要报告**：评估日期、配置（TOP_K_RETRIEVAL / TOP_K_RERANK）、QA 对数、每行指标表、平均值 |
+| `deepeval_eval_<timestamp>.csv` | **逐条明细**：每行一条 QA 及其四项指标得分 |
+| `deepeval_eval_<timestamp>.md` | **摘要报告**：评估日期、配置（TOP_K_RETRIEVAL / TOP_K_RERANK）、QA 对数、每行指标表、平均值 |
 
 CSV 每行结构（`question`、`ground_truth` 为原测试集内容，`trace_id` 为该问题链路追踪 ID，后四列是逐条得分）：
 
@@ -210,13 +210,13 @@ python -m src.cli.compare_retrieval --kb-name <知识库名称>
 |---|---|
 | `--kb-id` | 知识库 UUID（与 `--list-kbs` 互斥） |
 | `--list-kbs` | 列出所有可用知识库后退出 |
-| `--generate` | 生成测试集模式 |
-| `--size` | 生成的 QA 对数，默认取配置 `RAGAS_TEST_SIZE` |
-| `--model` | 生成测试集用的 LLM 模型名 |
+| `--generate` | 已下线（保留参数，命中即报错并指向 DeepEval Synthesizer） |
+| `--size` | 出题已下线（保留参数，当前无效果） |
+| `--model` | 出题已下线（保留参数，当前无效果） |
 | `--testset-version` | 指定测试集版本号（默认取最新） |
 | `--gate` | 评估后检查质量门禁，不达标退出码 1 |
-| `--deepeval-only` | 只跑 Agent 行为轴，跳过 RAGAS 四指标（无主分/门禁、不写 CSV 与 `eval_report`；与 `--gate` 互斥） |
-| `--output` | CSV 报告输出路径 |
+| `--deepeval-only`（`--behaviour-only`） | 只跑 Agent 行为轴，跳过四指标（无主分/门禁、不写 CSV 与 `eval_report`；与 `--gate` 互斥） |
+| `--output` | CSV 报告输出路径（默认 `data/deepeval/reports/deepeval_eval_<timestamp>.csv`） |
 | `--session-id` | 评估用会话 ID，默认 `deepeval_eval_session` |
 
 ## compare_retrieval — 检索参数对比实验
@@ -243,7 +243,7 @@ python -m src.cli.check_retrieval --kb <知识库名称> --query "<问题>" [--t
 | 目录 | 内容 |
 |---|---|
 | `testset/` | 测试集 JSON：`testset_<kb_id>_v<N>.json`，按版本递增 |
-| `reports/` | 评估报告：`ragas_eval_<timestamp>.csv`（逐条）+ 同名 `.md`（摘要） |
+| `reports/` | 评估报告：`deepeval_eval_<timestamp>.csv`（逐条）+ 同名 `.md`（摘要） |
 | `llm_cache/` | LLM 响应磁盘缓存（重复生成提速，支持中断恢复） |
 
 ## 典型工作流

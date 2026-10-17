@@ -552,9 +552,9 @@ EVAL_RETRIEVAL_COVERAGE_MIN: float = 0.5
 # NaN 率门禁：分母 = 纯 KB 样本 × 四指标（格数）；分子 = 纯 KB 格里的全部 NaN。
 # 10% 为**经验初值**（依据仅换尺子前 21 题 1 例 ≈4.8%，样本薄），首轮全量后复核定稿。
 EVAL_NAN_RATE_MAX: float = 0.10
-# Langfuse score 名的口径后缀：新口径（DeepEval 桥 + ragas 0.3.9）与历史
-# （modern-0.4.x）并存，SHALL NOT 同名覆盖（design D9）。四项与行为轴共用此后缀。
-LANGFUSE_SCORE_SUFFIX: str = "@bridge-0.3.9"
+# Langfuse score 名的口径后缀：DeepEval 原生口径与历史口径并存，
+# SHALL NOT 同名覆盖（design D9）。四项与行为轴共用此后缀。
+LANGFUSE_SCORE_SUFFIX: str = "@deep-eval-native"
 # DeepEval 桥裁判的单次 prompt 字符上限。DashScope 对超长输入直接 400
 # （`Range of input length should be [1, 991808]`，2026-10-17 实测）；行为轴的
 # StepEfficiency 会带完整轨迹，长上下文题可超限。取报错上限的 ~40% 留余量。

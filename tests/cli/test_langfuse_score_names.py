@@ -9,6 +9,12 @@ from src.cli.eval_scoring import write_scores
 from src.config.const import LANGFUSE_SCORE_SUFFIX
 
 
+def test_langfuse_suffix_is_native():
+    from src.config.const import LANGFUSE_SCORE_SUFFIX
+
+    assert LANGFUSE_SCORE_SUFFIX == "@deep-eval-native"
+
+
 def _df_with_one_row():
     return pd.DataFrame(
         {

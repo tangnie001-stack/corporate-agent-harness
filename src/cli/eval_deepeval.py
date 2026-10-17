@@ -1,6 +1,6 @@
-"""RAGAS 评估脚本 — 对 RAG 系统的检索和生成质量进行标准化评估.
+"""DeepEval 评测脚本 — 对 RAG 系统的检索和生成质量进行标准化评估.
 
-本脚本使用 RAGAS 库计算四个核心指标（报告 / stdout / 门禁统一采用「主分」口径，
+本脚本用 DeepEval 原生四指标打分（报告 / stdout / 门禁统一采用「主分」口径，
 即仅纯 KB 样本的指标均值；含联网或无检索的样本不计入主分）：
   - faithfulness: 回答是否忠实于检索到的上下文（有无幻觉）
   - answer_relevancy: 回答与问题的相关性
@@ -106,7 +106,7 @@ def _limit_testset(
 def parse_args() -> argparse.Namespace:
     """解析命令行参数."""
     parser = argparse.ArgumentParser(
-        description="RAGAS 评估脚本 — 对 RAG 系统进行标准化评估",
+        description="DeepEval 评测脚本 — 对 RAG 系统进行标准化评估",
     )
     parser.add_argument(
         "--kb-id",
@@ -123,7 +123,7 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=str,
         default=None,
-        help="CSV 输出路径（默认: data/deepeval/reports/ragas_eval_<timestamp>.csv）",
+        help="CSV 输出路径（默认: data/deepeval/reports/deepeval_eval_<timestamp>.csv）",
     )
     parser.add_argument(
         "--session-id",
@@ -149,8 +149,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--deepeval-only",
+        "--behaviour-only",
         action="store_true",
-        help="只跑 Agent 行为轴，跳过 RAGAS 四指标（无主分/门禁；不写 eval_report）",
+        dest="deepeval_only",
+        help="只跑 Agent 行为轴，跳过四指标（无主分/门禁；不写 eval_report）",
     )
     parser.add_argument(
         "--run-type",
@@ -168,13 +170,13 @@ def parse_args() -> argparse.Namespace:
         "--size",
         type=int,
         default=None,
-        help="生成测试集的 QA 对数（默认: 20）",
+        help="生成测试集的 QA 对数（出题已下线，保留参数、当前无效果）",
     )
     parser.add_argument(
         "--model",
         type=str,
         default=None,
-        help="生成测试集用的 LLM 模型名（默认: JUDGE_MODEL 或 LLM_MODEL）",
+        help="生成测试集用的 LLM 模型名（出题已下线，保留参数、当前无效果）",
     )
     args = parser.parse_args()
     if args.deepeval_only and args.gate:
@@ -226,7 +228,7 @@ async def _answer_one_question(
     )
     answer = final_state.get("answer", "")
     # 与生产 prompt（RAGContext.to_prompt_text）保持同一渲染格式，
-    # 让 RAGAS 的 NLI 看到与生成模型一致的上下文（含来源/页码锚点）
+    # 让裁判看到与生成模型一致的上下文（含来源/页码锚点）
     contexts = [c.to_prompt_text() for c in final_state.get("tool_contexts", [])]
     # 结构化检索明细（detail_json 下钻用：rerank 后来源+分数+类型）
     # getattr 兜底：tool_contexts 来自图状态，约定为 RAGContext，防御性
@@ -598,16 +600,15 @@ def _score_metric_with_retry(
 ) -> tuple[float, str]:
     """打分；**非掩码 NaN** 时重试至多 `settings.EVAL_METRIC_MAX_ATTEMPTS` 次。
 
-    为何判据是 NaN 而不是异常：桥调 `ragas.evaluate(...)` 时未传
-    `raise_exceptions`（默认 False），`ragas/executor.py` 对**任何** Exception 都
-    `return np.nan` ⇒ 桥不抛异常，旧的 `except Exception` 判据永不触发（design D4）。
+    为何判据是 NaN 而不是异常：度量失败在本函数内统一归为 NaN（异常文本只作
+    `note` 留证），重试与「缺值」因此走同一判据（design D4）。
 
     为何 429 由外层重试：桥的裁判 client 不再内置重试，限流（429）与其它失败
     同一判据（非掩码 NaN）进入本层重试；退避优先取响应的 `Retry-After`，
     缺失时指数退避 + jitter（见 `_retry_delay`），避免短间隔连打重试放大限流。
 
-    为何不做"合法缺值 / 裁判失败"子分类：桥只回一个 float，HTTP 200 的 envelope
-    恒为合法 JSON ⇒ 该分类不可实现（design D4，第 5 轮评审证实）。
+    为何不做"合法缺值 / 裁判失败"子分类：指标只回一个 float，HTTP 200 的
+    envelope 恒为合法 JSON ⇒ 该分类不可实现（design D4，第 5 轮评审证实）。
 
     Args:
         metric_name: 指标名（仅用于日志与错误串）
@@ -672,9 +673,8 @@ def score_rows(
 ) -> list[dict]:
     """**串行**逐题逐指标打分（并发=1），诊断指标走独立通道。
 
-    为何串行：桥复用 `ragas.metrics` 的**模块级指标实例**，`ragas.evaluate`
-    会在执行期把 `metrics[i].llm` 置为该次裁判、结束时复位 `None`，且
-    `LangchainLLMWrapper` 会改写底层 `chat_model.temperature` ⇒ 并发会互踩、
+    为何串行：四项与诊断指标共用同一组指标实例与裁判，`measure` 期间会写
+    实例自身状态（score / reason / verbose_logs）并共用证据桶 ⇒ 并发会互踩、
     表现为间歇性错分（design D7）。并发预算留给"跑图"那一侧。
 
     `ContextualRelevancy` 单独构造截断后的 test_case，共享 test_case 保持全量
@@ -1203,14 +1203,14 @@ def build_report_meta(
 ) -> dict:
     """报告/台账元数据（口径版本、NaN 计数、模型显式性）。
 
-    `ragas_enabled=False` 时（--deepeval-only）四指标未跑，不产出 NaN 字段，
+    `ragas_enabled=False`（--deepeval-only）时四指标未跑，不产出 NaN 字段，
     报告头显式标注「主分未跑」。
 
     Args:
         judge_model: 裁判模型名
         nan_stats: `nan_cell_stats` 的结果；`ragas_enabled=True` 时不得为 None
         runner_versions: 版本字典，形如 `{"deepeval": "4.2.9", "metrics": "native"}`
-        ragas_enabled: 是否跑了四指标
+        ragas_enabled: 是否跑四指标（False 即 --deepeval-only）
 
     Returns:
         报告元数据字典
@@ -1275,7 +1275,7 @@ def main() -> None:
         session_id = args.session_id
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         output_path = (
-            args.output or f"{settings.EVAL_REPORT_DIR}/ragas_eval_{timestamp}.csv"
+            args.output or f"{settings.EVAL_REPORT_DIR}/deepeval_eval_{timestamp}.csv"
         )
 
         # 从 JSON 加载测试集
@@ -1574,7 +1574,7 @@ def _build_eval_detail(
     吞掉 → 整份报告静默不落库。
 
     Args:
-        df: RAGAS 结果表
+        df: 评测结果表
         qa_count: QA 对数
         retrieval_details: 每 query 的检索明细（与 detail 按 q_index 对齐），
             传入后并入对应明细条目，供低分 query 下钻检索环节
@@ -1648,7 +1648,7 @@ def _save_eval_report(
 
     Args:
         kb_id: 知识库 UUID
-        df: RAGAS 结果表（行序与 sample_classes 对齐）
+        df: 评测结果表（行序与 sample_classes 对齐）
         qa_count: QA 对数
         output_path: CSV 报告文件路径
         retrieval_details: 每 query 的检索明细（与 detail 数组按 q_index 对齐），
