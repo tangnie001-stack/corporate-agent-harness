@@ -27,7 +27,7 @@
 
 ### Modified Capabilities
 
-- `evaluation-pipeline`：① **ADD** 评测打分入口与指标来源（入口 = DeepEval；RAGAS 指标 = 经典四指标经桥调用，且**评分串行**）；② **REMOVE** 答案正确性指标（`answer_correctness` 退出，**delta 同步 REMOVE 主规格对应 requirement**）；③ **MODIFY** 主分口径与门禁阈值（换尺子 → 重标定 + 空窗期用 `--no-gate`；**新增 NaN 率门禁**）；④ **ADD** Agent 行为指标（DeepEval 原生族；**须由 `EvaluationDataset.evals_iterator` 驱动**、**逐题分从 `test_run_*.json` 的 `testCases[].metricsData` 回读**、"轨迹非空且取到分且生成器耗尽"否则 fail-loud；**行为轴不进主分/门禁**）；⑤ **MODIFY** 评测运行环境与依赖（`ragas==0.3.9` + deepeval + 两个 DeepEval 环境变量，**含回滚路径**）；⑥ **MODIFY** QA 出题路的调用状态（**出题入口**下线 + `--generate` 硬护栏 + 前迁路径；**测试集加载器保留在评测路径**）；⑦ **ADD** 0.4.x 遗留物的**显式处置**（复用 / 删除 / 改写；**含「NaN 只分掩码/非掩码、不做可归因子分类（该分类不可实现）」**）；⑧ **ADD** Langfuse v2 回写口径（自建通道 / 行为分一并回写 / NaN 不写 / 新 score 名带口径后缀）；⑨ **ADD** NaN 门禁判据（**经验初值 10% / 待首轮复核；分子分母定义**）与逃生门自动判定；⑩ **ADD** 对官方两处推荐路径的**偏离记录**（自建门禁、**串行评分**）。
+- `evaluation-pipeline`：① **ADD** 评测打分入口与指标来源（入口 = DeepEval；RAGAS 指标 = 经典四指标经桥调用，且**评分串行**）；② **REMOVE** 答案正确性指标（`answer_correctness` 退出，**delta 同步 REMOVE 主规格对应 requirement**）；③ **MODIFY** 主分口径与门禁阈值（换尺子 → 重标定 + 空窗期用 `--no-gate`；**新增 NaN 率门禁**）；④ **ADD** Agent 行为指标（DeepEval 原生族；**须由 `EvaluationDataset.evals_iterator` 驱动**、**逐题分从 `test_run_*.json` 的 `testCases[].metricsData` 回读**、"轨迹非空且取到分且生成器耗尽"否则 fail-loud；**行为轴不进主分/门禁**）；⑤ **MODIFY** 评测运行环境与依赖（`ragas==0.3.9` + deepeval + 两个 DeepEval 环境变量，**含回滚路径**）；⑥ **MODIFY** QA 出题路的调用状态（**出题入口**下线 + `--generate` 硬护栏 + 前迁路径；**测试集加载器保留在评测路径**）；⑦ **ADD** 0.4.x 遗留物的**显式处置**（复用 / 删除 / 改写；**含「NaN 只分掩码/非掩码、不做可归因子分类（该分类不可实现）」**）；⑧ **ADD** Langfuse v2 回写口径（自建通道 / 行为分一并回写 / NaN 不写 / 新 score 名带口径后缀）；⑨ **ADD** NaN 门禁判据（**经验初值 10% / 待 v6 定稿后的全量复核**（v5 分布仅作基线）；分子分母定义）与逃生门自动判定；⑩ **ADD** 对官方两处推荐路径的**偏离记录**（自建门禁、**串行评分**）。
 
 ## Impact
 

@@ -773,7 +773,7 @@ git commit -m "docs(superpowers): Phase 4 收口 —— 组 10 可完成项勾�
 ## Phase 4 完成判据
 
 1. `--limit` 有单测（4 类边界）且不改变全量默认行为。
-2. 1 / 5 / 21 三级运行全部退出码 0，报告与 `test_run_*.json` 落盘。
+2. 1 / 5 / 21 三级运行均产出报告与 `test_run_*.json`；21 题运行退出码 0（1/5 轮由控制端驱动、退出码未直接记录，以报告完整性佐证）。
 3. 全量报告含：`QA Pairs: 21`、四指标均值、`NaN cells` 行、`## Agent 行为轴` 段、`caliber=bridge-0.3.9`、`ragas=0.3.9`。
 4. 行为分经 `testCases[].metricsData` 校验（非 `metricsScores`），21 条齐全。
 5. 台账新增 #5 行（14 列对齐、口径 `bridge-0.3.9 / v5`、逃生门 `未启用`），历史行未动。

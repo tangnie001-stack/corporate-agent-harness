@@ -92,3 +92,27 @@ def test_truncate_prompt_keeps_head_and_tail_for_oversized_prompt():
     assert out.endswith("T" * 500), "尾部（JSON schema）必须保留"
     assert "[truncated" in out
     assert middle not in out, "中间的超长数据被截断"
+
+
+def test_generate_truncates_oversized_prompt_end_to_end():
+    """端到端：`generate` 在调裁判前已截断，裁判看到的是截断后的 prompt。"""
+    from src.config.const import DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS
+
+    class _CaptureChat:
+        model_name = "fake"
+
+        def __init__(self) -> None:
+            self.seen: str | None = None
+
+        def invoke(self, prompt: str) -> AIMessage:
+            self.seen = prompt
+            return AIMessage(content="ok")
+
+    chat = _CaptureChat()
+    llm = BridgeDeepEvalLLM(chat)
+    oversized = "H" * 1000 + "M" * (DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS * 2) + "T" * 1000
+    assert llm.generate(oversized) == "ok"
+    assert chat.seen is not None
+    assert len(chat.seen) <= DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS + 200
+    assert chat.seen.startswith("H" * 1000)
+    assert chat.seen.endswith("T" * 1000)
