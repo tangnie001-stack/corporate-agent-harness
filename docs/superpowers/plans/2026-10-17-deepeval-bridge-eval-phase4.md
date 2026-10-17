@@ -28,7 +28,7 @@
 | Phase 1（底座） | 组 1–4 | 已完成并合入 `dev-wsl` | `2026-10-16-deepeval-bridge-eval-phase1.md` |
 | Phase 2（Agent 行为轴） | 组 5 | 已完成并合入 `dev-wsl` | `2026-10-17-deepeval-bridge-eval-phase2.md` |
 | Phase 3（外围收口） | 组 6–9 + 组 5 遗留 | 已完成（分支 `feat/deepeval-bridge-eval`，`6f4e1d0e`） | `2026-10-17-deepeval-bridge-eval-phase3.md` |
-| **Phase 4（本文件）** | 组 10 的 10.1/10.2/10.3/10.6/10.7/10.8 | 进行中 | `2026-10-17-deepeval-bridge-eval-phase4.md` |
+| **Phase 4（本文件）** | 组 10 的 10.1/10.2/10.3/10.6/10.7/10.8 | 已完成（2026-10-17，见文末执行记录） | `2026-10-17-deepeval-bridge-eval-phase4.md` |
 | 后续 change | v6 题集 + 10.4/10.5 标定 + R11 处置 | 待立项（`deepeval-synthesizer-testset`） | — |
 
 ## File Structure
@@ -788,3 +788,94 @@ git commit -m "docs(superpowers): Phase 4 收口 —— 组 10 可完成项勾�
 - **R11 处置**：`thinking=True` + 双 judge，或降级该指标——待 v6 的分布再拍板。
 - **D13 完整请求级日志**（请求体/响应体摘要、成功路径日志）——需另立项。
 - **需求池 D-14**：逃生门替代实现（首次启用时）。
+
+---
+
+## Phase 4 执行记录与交接（2026-10-17）
+
+### 任务完成度
+
+计划 Task **1 / 1b / 1c / 2 / 3 / 4 / 5 全部完成**（7/7），相应提交已在分支 `feat/deepeval-bridge-eval`：
+
+| 任务 | 内容 | 提交 |
+|---|---|---|
+| 1 | `--limit` 冒烟参数 + 4 类边界单测 | `feat(eval): --limit 冒烟参数…` |
+| 1b | 裁判同步路径补齐细粒度超时 | `fix(provider): 裁判同步路径补齐细粒度超时…` |
+| 1c | 行为轴裁判 prompt 超长截断 | `fix(provider): 行为轴裁判 prompt 超长截断…` |
+| 2 | 逐级活体 1 → 5 → 21 + `PHASE4-RUNS.md` | `docs(eval): Phase 4 逐级活体运行记录…` |
+| 3 | 台账 #5 行（`bridge-0.3.9 / v5`） | `docs(eval): 台账追加 v5 新尺子基线行…`（+ `a84182da` 措辞修正） |
+| 4 | RESULTS「Phase 4」节 + D8 入口条件改写 | `e6d97c34`、`361fff5a`、`bb70d48d` |
+| 5 | 组 10 勾选 + 本执行记录 | 本次提交 |
+
+### 静态闸门（收口前复跑）
+
+```text
+$ POSTGRES_HOST=localhost pytest tests/ -q
+1887 passed, 3 skipped, 39 warnings in 76.03s (0:01:16)
+
+$ ruff format --check src/ tests/
+500 files already formatted
+
+$ ruff check src/ tests/
+Found 1 error.   # src/infra/db/engine.py:33 UP047（BASE b99cbb0d 既有）
+
+$ .venv/bin/pyright src/
+2 errors, 0 warnings, 0 informations
+# src/cli/eval_ragas_generate.py:290 "llm_context"
+# src/cli/eval_ragas_generate.py:313 "default_transforms_for_prechunked"
+# 两者均为保留的 ragas-0.4.x 出题路，BASE 既有
+
+$ openspec validate deepeval-bridge-eval --strict
+Change 'deepeval-bridge-eval' is valid
+
+$ python -m src.cli.check_docs
+23 篇文档，0 error, 96 warn
+
+$ python -m src.cli.check_adr
+26 条 ADR，0 error
+```
+
+结论：pytest 全绿；ruff/pyright **无新增** error（仅 BASE 既有 3 条）；两个校验器 0 error。
+（`openspec` 用系统 `/usr/bin/openspec`——该包在 venv 内无 `__main__`。）
+
+### 三级活体结果
+
+完整命令 / 时间戳 / 校验输出见 `docs/tmp/deepeval-poc/PHASE4-RUNS.md`；报告均在 `data/ragas/reports/`。
+
+| 级 | 耗时（墙钟 / 日志窗口） | QA | NaN cells | faithfulness | answer_relevancy | context_precision | context_recall | 报告 |
+|---|---|---|---|---|---|---|---|---|
+| 1 题 | 1m35s / 1m29s | 1 | 0/4 | 1.0000 | 0.9855 | 1.0000 | 1.0000 | `ragas_eval_20261017_041112.md` |
+| 5 题 | 7m18s / 7m09s | 5 | 0/20 | 0.8000 | 0.9301 | 0.5400 | 1.0000 | `ragas_eval_20261017_044248.md` |
+| 21 题 | 55m42s / 55m23s | 21 | 0/76 | 0.8263 | 0.8848 | 0.5073 | 0.8195 | `ragas_eval_20261017_055527.md` |
+
+行为轴（21 题均值，从报告 `## Agent 行为轴` 段 21 行算）：**Task Completion 0.9024 / Step Efficiency 0.5929 / Agent Loop Detection 1.0000**。
+5 题均值：0.9700 / 0.7000 / 1.0000；1 题：1.0000 / 1.0000 / 1.0000。
+
+其他运行事实：
+
+- 两次失败轮（同步路径卡死、judge 400 超长）与处置见 `PHASE4-RUNS.md`「失败 #1 / #2」；全量轮**截断告警 36 次**，全部落在行为轴阶段，RAGAS 裁判阶段 0 次。
+- `metric retry` 全量轮 3 次（q0/faithfulness ×1 后成功；q7/context_precision 重试耗尽），对应报告 Q8 `context_precision=nan`（`web` 样本，不在纯 KB 分母内）。
+- 行为分来源已校验：21 条 `testCases[].metricsData` 齐全，非 `metricsScores`（`PHASE4-RUNS.md`「Step 5」）。
+
+### 关键裁决
+
+1. **本轮不标定阈值**（C 折中）：v5 上只记录分布与台账；`GATE_THRESHOLDS` / `EVAL_PASS_THRESHOLD` / `EVAL_NAN_RATE_MAX` 一字未动，10.4 / 10.5 保持未勾并写明延后。
+2. **D8 入口条件改写**：v6 立项不再要求「阈值已标定」，改为要求「v5 新尺子分布已记录（台账有行）」，解除「标定 ↔ v6」循环依赖；标定时点移到 v6 之后。
+3. **`--limit` 仅冒烟**：不与 `--gate` 同用，不改变全量默认行为；截断语义由 4 类边界单测钉住。
+4. **同步 client 超时补齐**：只挂 `http_async_client` 时 DeepEval 同步 `generate()` 回落 SDK `read=600s`（实测 5 题卡 12+ 分钟）；改为同步/异步两个 client 与 `request_timeout` 同源。
+5. **行为轴 prompt 截断**：DashScope 输入上限触发 400 且进程僵住；`_truncate_prompt` 保头尾（指令 + JSON schema）、截中间，全量轮生效 36 次后跑通。
+6. **首轮一律 `--no-gate`**：不用旧阈值判新尺子。
+
+### 本阶段未证明（不要在后续引用成结论）
+
+- **阈值是否合理**：未标定、未验证；现有 `GATE_THRESHOLDS` 仍是旧尺子口径。
+- **NaN 10% 是否合适**：v5 实测 0/76，分布退化（无 NaN），无法据此判断 10% 的松紧。
+- **行为轴分布是否稳定**：只有一轮 21 题；`Agent Loop Detection` 恒 1.0000 既可能是"确实无环"，也可能是该指标对当前轨迹不敏感，未区分。
+- **可复现性**：R11 已证 faithfulness 同题多次判分不一致（`[0,1,0,1]`），本轮未新增重复测量。
+
+### 交接
+
+1. **下一步**：立项 `deepeval-synthesizer-testset`，用 DeepEval `Synthesizer` 出 **v6**（与 v5 并存，v5 不删）。
+2. **v6 定稿后**：跑 `v6 + DeepEval 尺子` 对照 → 标定 `10.4`（阈值）与 `10.5`（NaN 率），并同步 spec / `check_gate` 常量 / `kb_eval` 下发。
+3. **R11 处置**：待 v6 分布再拍板——`thinking=True` + 双 judge，或降级/下线 `faithfulness`。
+4. **其它待办**：D13 完整请求级日志（另立项）、需求池 D-14 逃生门替代实现（首次启用时）。
