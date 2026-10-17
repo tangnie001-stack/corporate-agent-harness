@@ -23,12 +23,12 @@
 
 ## 运行台账（全量 21 题）
 
-| # | 开始（CST） | 报告文件 | 裁判配置 | 有效纯 KB | faithfulness | answer_relevancy | context_precision | context_recall | answer_correctness | 门禁 | 主要异常 | 口径版本 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | 2026-10-15 11:04 | `ragas_eval_20261015_030403` | 报告未记录（推定：思考 ON · 平铺 300s 超时） | 19 | 0.8618 | 0.8910 | 0.7571 | 0.8066 | 0.7108 | ❌ cp | 多行裁判超时，faith/answer_correctness 各缺 4 行 | N/A |
-| 2 | 2026-10-15 14:52 | `ragas_eval_20261015_065238` | 报告未记录（推定：思考 OFF · 细粒度超时 · cap 8192） | 19 | 0.9089 | 0.8584 | 0.5303 | 0.8619 | 0.5809 | ❌ cp | 3 行 context_recall `RuntimeError` | N/A |
-| 3 | 2026-10-15 16:03 | `ragas_eval_20261015_080359` | 报告未记录（推定：思考 OFF · cap 4096 · attempts=3） | 19 | 0.8530 | 0.8644 | 0.5227 | 0.8500 | 0.6071 | ❌ cp | 5 行 `IncompleteOutputException`（cap 顶格） | N/A |
-| 4 | 2026-10-15 16:47 | `ragas_eval_20261015_084734` | 报告未记录（推定：思考 OFF · cap 8192 · attempts=3 · 细粒度超时 · temp=0） | 19 | 0.7813 | 0.8537 | 0.5004 | 0.8412 | 0.6164 | ❌ faith + cp | 1 行 `IncompleteOutputException`（Q16）+ Q4 空检索 | N/A |
+| # | 开始（CST） | 报告文件 | 裁判配置 | 有效纯 KB | faithfulness | answer_relevancy | context_precision | context_recall | answer_correctness | 门禁 | 主要异常 | 口径版本 | 逃生门 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 2026-10-15 11:04 | `ragas_eval_20261015_030403` | 报告未记录（推定：思考 ON · 平铺 300s 超时） | 19 | 0.8618 | 0.8910 | 0.7571 | 0.8066 | 0.7108 | ❌ cp | 多行裁判超时，faith/answer_correctness 各缺 4 行 | N/A | 未启用 |
+| 2 | 2026-10-15 14:52 | `ragas_eval_20261015_065238` | 报告未记录（推定：思考 OFF · 细粒度超时 · cap 8192） | 19 | 0.9089 | 0.8584 | 0.5303 | 0.8619 | 0.5809 | ❌ cp | 3 行 context_recall `RuntimeError` | N/A | 未启用 |
+| 3 | 2026-10-15 16:03 | `ragas_eval_20261015_080359` | 报告未记录（推定：思考 OFF · cap 4096 · attempts=3） | 19 | 0.8530 | 0.8644 | 0.5227 | 0.8500 | 0.6071 | ❌ cp | 5 行 `IncompleteOutputException`（cap 顶格） | N/A | 未启用 |
+| 4 | 2026-10-15 16:47 | `ragas_eval_20261015_084734` | 报告未记录（推定：思考 OFF · cap 8192 · attempts=3 · 细粒度超时 · temp=0） | 19 | 0.7813 | 0.8537 | 0.5004 | 0.8412 | 0.6164 | ❌ faith + cp | 1 行 `IncompleteOutputException`（Q16）+ Q4 空检索 | N/A | 未启用 |
 
 > **四轮都卡在 context_precision**（0.7571 → 0.5303 → 0.5227 → 0.5004），且它在两次配置间逐题剧烈翻转——见下方「已知口径与坑」。
 

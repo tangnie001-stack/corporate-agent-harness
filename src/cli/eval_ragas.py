@@ -576,7 +576,11 @@ def score_rows(rows: list[dict], metrics: dict, *, evidence=None) -> list[dict]:
 def run_evaluation(
     questions, ground_truth, answers, contexts, metrics, trace_ids, *, evidence=None
 ) -> Any:
-    """逐题打分并返回带 `.to_pandas()` 的结果（行序与输入一致）。"""
+    """逐题打分并返回带 `.to_pandas()` 的结果（行序与输入一致）。
+
+    本函数是评测**评分后端边界**（逃生门接入点，design D10）：`metrics` 由调用方注入，
+    替代实现只需提供同签名的 `metrics`（及用例构造）即可替换，无需改这里的编排。
+    """
     rows = [
         {
             "q_index": i,
