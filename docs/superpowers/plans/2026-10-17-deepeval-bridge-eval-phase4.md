@@ -297,6 +297,125 @@ git commit -m "fix(provider): 裁判同步路径补齐细粒度超时（只挂�
 
 ---
 
+### Task 1c: 行为轴裁判输入上限保护（Phase 4 实测阻塞缺陷）
+
+**背景（实测，2026-10-17）**：21 题全量在跑图完成后，行为轴评分**53 分钟无日志**，最终报 DashScope `400 InternalError.Algo.InvalidParameter: Range of input length should be [1, 991808]`，`timeout 3600` 终止且无产物。根因：`StepEfficiency` 的裁判 prompt 含**完整轨迹**（长上下文题的 contexts 达 20 条），超服务端输入上限；超长请求既拿不到分，又把运行拖到不可接受。5 题（短轨迹）可跑通、21 题（含长上下文）必挂 ⇒ 需要在适配器层设输入上限。
+
+**Files:**
+- Modify: `src/config/const.py`（新增 `DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS`）
+- Modify: `src/infra/llm/provider/deepeval_llm.py`（新增 `_truncate_prompt` + 两个 generate 调用）
+- Test: `tests/infra/llm/provider/test_deepeval_llm.py`（扩展）
+
+**Interfaces:**
+- Produces: `_truncate_prompt(prompt: str) -> str`
+  - `len(prompt) <= DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS` → 原样返回（同一对象）；
+  - 超限 → `prompt[:head] + "\n...[truncated N chars]...\n" + prompt[-tail:]`，其中
+    `head = int(MAX * 0.6)`、`tail = MAX - head`；并记 `logger.warning`（只记长度，不记内容）。
+- 常量：`DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS: int = 400_000`（DashScope 报错上限 991808 的 ~40%，留足余量；5 题正常 prompt 远低于此）。
+
+- [ ] **Step 1: 写失败测试**
+
+在 `tests/infra/llm/provider/test_deepeval_llm.py` 追加：
+
+```python
+def test_truncate_prompt_keeps_short_prompt_unchanged():
+    from src.infra.llm.provider.deepeval_llm import _truncate_prompt
+
+    short = "x" * 100
+    assert _truncate_prompt(short) is short
+
+
+def test_truncate_prompt_keeps_head_and_tail_for_oversized_prompt():
+    from src.config.const import DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS
+    from src.infra.llm.provider.deepeval_llm import _truncate_prompt
+
+    head = "H" * 500
+    middle = "M" * (DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS * 2)
+    tail = "T" * 500
+    out = _truncate_prompt(head + middle + tail)
+
+    assert len(out) <= DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS + 200
+    assert out.startswith("H" * 500), "头部（指令）必须保留"
+    assert out.endswith("T" * 500), "尾部（JSON schema）必须保留"
+    assert "[truncated" in out
+    assert middle not in out, "中间的超长数据被截断"
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `POSTGRES_HOST=localhost pytest tests/infra/llm/provider/test_deepeval_llm.py -v`
+Expected: **ImportError: cannot import name '_truncate_prompt'**
+
+- [ ] **Step 3: 实现**
+
+在 `src/config/const.py` 的 `LANGFUSE_SCORE_SUFFIX` 之后追加：
+
+```python
+# DeepEval 桥裁判的单次 prompt 字符上限。DashScope 对超长输入直接 400
+# （`Range of input length should be [1, 991808]`，2026-10-17 实测）；行为轴的
+# StepEfficiency 会带完整轨迹，长上下文题可超限。取报错上限的 ~40% 留余量。
+DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS: int = 400_000
+```
+
+在 `src/infra/llm/provider/deepeval_llm.py` 增加：
+
+```python
+from loguru import logger
+
+from src.config.const import DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS
+
+
+def _truncate_prompt(prompt: str) -> str:
+    """把超长 prompt 截到上限内，保留头尾（指令在头、JSON schema 在尾）。
+
+    超限请求会被服务端以 400 拒绝（`Range of input length should be [1, 991808]`），
+    既拿不到分、又把评测拖到不可接受。截断中间的长工具输出，保留首尾两端的
+    指令与 schema；此路径会记 warning 以便回溯。
+
+    Args:
+        prompt: 原 prompt
+
+    Returns:
+        原对象（未超限）或「头 + 截断标记 + 尾」的新字符串
+    """
+    if len(prompt) <= DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS:
+        return prompt
+    head = int(DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS * 0.6)
+    tail = DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS - head
+    omitted = len(prompt) - head - tail
+    logger.warning(
+        "[provider] bridge prompt truncated len={} limit={} omitted={}",
+        len(prompt),
+        DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS,
+        omitted,
+    )
+    return f"{prompt[:head]}\n...[truncated {omitted} chars]...\n{prompt[-tail:]}"
+```
+
+并把 `generate` / `a_generate` 改为：
+
+```python
+    def generate(self, prompt: str, **kwargs: Any) -> str:
+        return self._content(self._chat.invoke(_truncate_prompt(prompt)))
+
+    async def a_generate(self, prompt: str, **kwargs: Any) -> str:
+        return self._content(await self._chat.ainvoke(_truncate_prompt(prompt)))
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: `POSTGRES_HOST=localhost pytest tests/infra/llm/provider/test_deepeval_llm.py tests/infra/llm/provider -v`
+Expected: 全 PASS。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add src/config/const.py src/infra/llm/provider/deepeval_llm.py tests/infra/llm/provider/test_deepeval_llm.py
+git commit -m "fix(provider): 行为轴裁判 prompt 超长截断（保留头尾；防 DashScope 400 拖死全量）"
+```
+
+---
+
 ### Task 2: 逐级活体 1 → 5 → 21（10.2 + 10.3）
 
 > **本任务不适用 TDD**：交付物是**运行产物 + 校验记录**，不是新代码。每一步都必须留下命令、耗时、报告路径与校验结论。
