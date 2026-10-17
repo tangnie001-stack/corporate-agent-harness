@@ -215,6 +215,7 @@
   .ragas-summary .ragas-dot { color: var(--primary-border); }
   .ragas-summary .ragas-pass { color: var(--success); font-weight: 700; }
   .ragas-summary .ragas-fail { color: var(--danger); font-weight: 700; }
+  .ragas-summary .ragas-neutral { color: var(--text-muted); font-weight: 600; }
 
   .doc-list { display: flex; flex-direction: column; }
   .doc-row {
@@ -427,7 +428,7 @@
           </div>
           <div class="doc-head-actions">
             <div id="ragas-summary" class="ragas-summary" style="display:none">
-              <span>RAGAS</span>
+              <span>评测</span>
               <b id="ragas-faith">—</b>
               <span class="ragas-dot">·</span>
               <b id="ragas-recall">—</b>
@@ -1097,9 +1098,18 @@ async function loadRagasEval(kbId) {
         faithEl.textContent = data.faithfulness != null ? data.faithfulness.toFixed(2) : '—';
         recallEl.textContent = data.context_recall != null ? data.context_recall.toFixed(2) : '—';
         // 通过口径唯一来源：后端权威 data.passed（overall_score >= EVAL_PASS_THRESHOLD），前端不重算
+        // baseline 轮次后端下发 passed=null，表示尚未标定，不显示 ✓/✗
         const passed = data.passed;
-        iconEl.className = passed ? 'ragas-pass' : 'ragas-fail';
-        iconEl.textContent = passed ? '✓' : '✗';
+        if (passed === null) {
+            iconEl.className = 'ragas-neutral';
+            iconEl.textContent = '未标定';
+        } else if (passed) {
+            iconEl.className = 'ragas-pass';
+            iconEl.textContent = '✓';
+        } else {
+            iconEl.className = 'ragas-fail';
+            iconEl.textContent = '✗';
+        }
         wrap.style.display = '';
     } catch (e) {
         wrap.style.display = 'none';

@@ -153,6 +153,12 @@ def parse_args() -> argparse.Namespace:
         help="只跑 Agent 行为轴，跳过 RAGAS 四指标（无主分/门禁；不写 eval_report）",
     )
     parser.add_argument(
+        "--run-type",
+        choices=("manual", "baseline"),
+        default="manual",
+        help="运行类型：baseline=新口径首轮（不判门禁），manual=常规回归",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -173,6 +179,8 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.deepeval_only and args.gate:
         parser.error("--deepeval-only 与 --gate 不能同用：该模式没有主分可判")
+    if args.run_type == "baseline" and args.gate:
+        parser.error("--run-type baseline 与 --gate 不能同用：baseline 不判门禁")
     return args
 
 
@@ -1473,6 +1481,7 @@ def main() -> None:
                 output_path,
                 retrieval_details,
                 sample_classes,
+                run_type=args.run_type,
             )
 
             # 观测旁路回写：排在落库之后、门禁之前（失败只记 warning，见 write_scores）
@@ -1628,6 +1637,7 @@ def _save_eval_report(
     output_path: str,
     retrieval_details: list[list[dict]] | None = None,
     sample_classes: list[str] | None = None,
+    run_type: str = "manual",
 ) -> None:
     """把评估结果持久化到 eval_report 表。
 
@@ -1644,6 +1654,8 @@ def _save_eval_report(
         retrieval_details: 每 query 的检索明细（与 detail 数组按 q_index 对齐），
             传入后并入对应 detail_json 条目，供低分 query 下钻检索环节
         sample_classes: 每题的样本类别；传入后先掩码再算主分与明细
+        run_type: 运行类型（manual=常规回归，baseline=新口径首轮）；
+            下游据此决定是否展示门禁结论
     """
     try:
         from src.cli import eval_scoring
@@ -1662,7 +1674,7 @@ def _save_eval_report(
             entity = eval_report_entity(
                 id=str(uuid.uuid4()),
                 kb_id=kb_id,
-                run_type="manual",
+                run_type=run_type,
                 qa_count=qa_count,
                 faithfulness=means.get("faithfulness"),
                 answer_relevancy=means.get("answer_relevancy"),
