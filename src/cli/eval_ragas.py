@@ -145,6 +145,11 @@ def parse_args() -> argparse.Namespace:
         help="指定测试集版本号（默认取最新版本）",
     )
     parser.add_argument(
+        "--deepeval-only",
+        action="store_true",
+        help="只跑 Agent 行为轴，跳过 RAGAS 四指标（无主分/门禁；不写 eval_report）",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -162,7 +167,10 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="生成测试集用的 LLM 模型名（默认: RAGAS_LLM_MODEL 或 LLM_MODEL）",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.deepeval_only and args.gate:
+        parser.error("--deepeval-only 与 --gate 不能同用：该模式没有主分可判")
+    return args
 
 
 @observe(name="eval_question", capture_input=False)
@@ -999,6 +1007,8 @@ def main() -> None:
         sys.exit(1)
 
     # ---- 评估模式（原有流程改造）----
+    # --deepeval-only：只跑行为轴；四指标整段（度量/评分/主分表/CSV/落库/回写/门禁）跳过。
+    ragas_enabled = not args.deepeval_only
     # CLI 不经 main.py 的 lifespan：开关与 flush 都要自己做（D5 / D6）。
     # configure 必须早于任何 flush（承接 Task 2 义务）：SDK 的 flush 经
     # LangfuseSingleton 惰性构造客户端，先 flush 会造出 enabled 客户端、
@@ -1058,7 +1068,9 @@ def main() -> None:
 
         judge_evidence = HookEvidence()
         bridge_judge = build_bridge_judge(evidence=judge_evidence)
-        metrics = build_metrics(bridge_judge, build_embeddings())
+        metrics = None
+        if ragas_enabled:
+            metrics = build_metrics(bridge_judge, build_embeddings())
         core_logging.log_event(
             Event.EVAL_MODEL_INIT,
             sut=settings.LLM_MODEL,
@@ -1128,36 +1140,41 @@ def main() -> None:
                 "（可能走了同步分支，行为分不可信）"
             )
 
-        result = run_evaluation(
-            questions,
-            ground_truth,
-            answers,
-            contexts,
-            metrics,
-            trace_ids,
-            evidence=judge_evidence,
-        )
+        # 四指标产物：--deepeval-only 下不产出（均为 None），下游段按开关收敛。
+        result: Any = None
+        masked_df: Any = None
+        report_meta: dict | None = None
+        if ragas_enabled:
+            result = run_evaluation(
+                questions,
+                ground_truth,
+                answers,
+                contexts,
+                metrics,
+                trace_ids,
+                evidence=judge_evidence,
+            )
 
-        # 统一「主分」口径：报告 / stdout / 门禁都读同一张已掩码表（纯 KB 样本）。
-        masked_df = apply_sample_masks(result.to_pandas(), sample_classes)
+            # 统一「主分」口径：报告 / stdout / 门禁都读同一张已掩码表（纯 KB 样本）。
+            masked_df = apply_sample_masks(result.to_pandas(), sample_classes)
 
-        # 报告/台账元数据：口径版本、温度档、NaN 计数、裁判版本与模型显式性。
-        # judge_model 复用上方 EVAL_MODEL_INIT 同源的 bridge_judge.model_name；
-        # 温度由 ragas 按 n 分档、本项目不可控，故只记录事实（见 build_report_meta）。
-        report_meta = build_report_meta(
-            judge_model=bridge_judge.model_name,
-            nan_stats=nan_cell_stats(masked_df),
-            runner_versions={
-                "ragas": version("ragas"),
-                "deepeval": version("deepeval"),
-            },
-        )
+            # 报告/台账元数据：口径版本、温度档、NaN 计数、裁判版本与模型显式性。
+            # judge_model 复用上方 EVAL_MODEL_INIT 同源的 bridge_judge.model_name；
+            # 温度由 ragas 按 n 分档、本项目不可控，故只记录事实（见 build_report_meta）。
+            report_meta = build_report_meta(
+                judge_model=bridge_judge.model_name,
+                nan_stats=nan_cell_stats(masked_df),
+                runner_versions={
+                    "ragas": version("ragas"),
+                    "deepeval": version("deepeval"),
+                },
+            )
 
-        # 指标均值输出到 stdout：compare_retrieval 等 A/B 脚本以
-        # 子进程方式调用本脚本，靠 stdout 解析指标（parse_metrics）；logger 只写
-        # 文件不落 stdout，故此处显式 print。--gate 模式下 check_gate 已打印指标行。
-        if not args.gate:
-            _print_metric_averages(masked_df)
+            # 指标均值输出到 stdout：compare_retrieval 等 A/B 脚本以
+            # 子进程方式调用本脚本，靠 stdout 解析指标（parse_metrics）；logger 只写
+            # 文件不落 stdout，故此处显式 print。--gate 模式下 check_gate 已打印指标行。
+            if not args.gate:
+                _print_metric_averages(masked_df)
 
         output_path = save_results_csv(
             result,
