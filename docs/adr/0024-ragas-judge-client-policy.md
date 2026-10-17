@@ -1,6 +1,6 @@
 # ADR-0024：RAGAS 裁判客户端策略（细粒度超时 / 关 SDK 重试 / 本层有界重试 / 失败必留原始响应）
 
-- **Status**：Accepted
+- **Status**：Superseded by 0026
 - **Date**：2026-10-15
 - **Deciders**：用户（议题提出与拍板：超时维度、重试次数、预算与思考档位）；Claude（系统排查、实测取证与实现）
 - **关系**：落实 change `ragas-modern-stack` 的 design D6（裁判构造与失败语义）；沿用 ADR-0022/0023 的「评估检索镜像生产」口径（本 ADR 不涉及白名单）；观测事件的字段口径以 `src/core/log_event_specs.py` 的 `EVENT_SPECS` 为唯一归属。
