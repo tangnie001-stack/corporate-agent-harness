@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from src.api.schema import ResponseModel
+from src.config.response_codes import Code
 
 router = APIRouter()
 
@@ -26,11 +27,7 @@ async def ragas_generate(body: RagasGenerateRequest):
         ResponseModel：code=GONE，message 指向 DeepEval Synthesizer
     """
     return ResponseModel(
-        code="GONE",
-        message=(
-            "RAGAS 出题已下线。前迁路径：DeepEval Synthesizer "
-            "（deepeval.synthesizer.Synthesizer.generate_goldens_from_docs）。"
-            "后续由 change deepeval-synthesizer-testset 提供。"
-        ),
+        code=Code.GONE,
+        message=Code.GONE_MSG,
         data=None,
     )

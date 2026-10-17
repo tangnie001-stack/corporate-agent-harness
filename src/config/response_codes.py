@@ -60,3 +60,11 @@ class Code:
     # 会话
     SESSION_NOT_FOUND = "SESSION_NOT_FOUND"
     SESSION_NOT_FOUND_MSG = "会话不存在"
+
+    # 已下线端点
+    GONE = "GONE"
+    GONE_MSG = (
+        "RAGAS 出题已下线。前迁路径：DeepEval Synthesizer"
+        "（deepeval.synthesizer.Synthesizer.generate_goldens_from_docs）。"
+        "后续由 change deepeval-synthesizer-testset 提供。"
+    )
