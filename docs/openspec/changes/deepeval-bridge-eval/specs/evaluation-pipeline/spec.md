@@ -72,7 +72,7 @@
 
 因此评测 SHALL：① 让 `NaN` 显式可见、且**掩码 / 非掩码在报告中标记不同**（SHALL NOT 静默计入均分）；② **单独统计非掩码 `NaN` 计数**并在报告中呈现；③ **以「非掩码 `NaN`」为判据执行有界重试**（`RAGAS_METRIC_MAX_ATTEMPTS` 保留；判据 SHALL NOT 沿用 `except Exception` —— 桥下它永不触发）；**唯一例外：限流类（= HTTP 429 / `openai.RateLimitError`）SHALL NOT 触发外层重试**（ragas 框架层已对该类重试 ≤10 次，见「RAGAS dependency is pinned to the 0.3 line」的复用条款，外层再叠会 10×3 放大；429 可由 hooks 的状态码判定；**403 额度类不属该列**，`openai/_client.py:694/706`，仍由外层重试）；④ 失败留证 SHALL 由**框架内部请求级日志**承载；**当前落地**记录请求状态与响应可解析性（`status` / `body_bytes` / `json_ok` / `finish_reason`），**仅失败时产日志行**；**目标形态**另含响应体摘要（主因失败是 HTTP 200 + 畸形响应体；未落地项见「Framework-internal LLM calls are observable by trace id」条的「落地现状」）；**该日志只做留证，SHALL NOT 被当作分类依据**；⑤ 若该日志完全不可用，报告 SHALL **显式标注"请求级日志不可用"**（NaN 率统计不依赖它，故门禁仍可判，但归因能力下降须可见）。
 
-**接受的代价（明写，勿当 bug）**：合法缺值型 `NaN`（典型为 `faithfulness` 无陈述）会被计入分子、并触发一次有界重试（对该情形是**无收益的浪费**，不是错误）。阈值 10%（76 格允许 7 格）即为吸收该水位而设；首轮全量 SHALL 以实测分布复核该假设。
+**接受的代价（明写，勿当 bug）**：合法缺值型 `NaN`（典型为 `faithfulness` 无陈述）会被计入分子、并触发一次有界重试（对该情形是**无收益的浪费**，不是错误）。阈值 10%（76 格允许 7 格）即为吸收该水位而设；首轮全量 SHALL 以实测分布复核该假设（**复核时点延后至 v6 后**，v5 分布仅作基线，见 design D8）。
 
 `NaN`（指标出不来值）与样本类别 `empty`（未检索到材料）SHALL 被区分为**两种不同的跳过语义**。
 
@@ -194,7 +194,7 @@
 
 **行为轴不进主分、不进门禁**：`overall_score` 与门禁判据 SHALL 只由上述**四指标**构成；行为指标为**独立观测**，其失败 SHALL 单独标记、SHALL NOT 影响该题主分。
 
-**阈值标定规则与空窗期**：阈值 SHALL 在本次口径下重新标定，且 SHALL 写死规则与空窗期行为——① **空窗期**：首次全量评测 SHALL 以 `--no-gate` 运行，只产出分布、不作通过/不通过判定（SHALL NOT 拿旧尺子的 `EVAL_PASS_THRESHOLD` 判新尺子）；② **标定**：取"纯 KB 且非 NaN 样本分布"的**保守下界**（建议不低于均值 ×0.9 且不低于历史同名阈值 ×0.9，具体在首轮分布出来后定稿）；③ 标定后 SHALL 同轮复核落库 `passed` 与 API 下发阈值同源。
+**阈值标定规则与空窗期**：阈值 SHALL 在本次口径下重新标定，且 SHALL 写死规则与空窗期行为——① **空窗期**：首次全量评测 SHALL 以 `--no-gate` 运行，只产出分布、不作通过/不通过判定（SHALL NOT 拿旧尺子的 `EVAL_PASS_THRESHOLD` 判新尺子）；② **标定**：取"纯 KB 且非 NaN 样本分布"的**保守下界**（建议不低于均值 ×0.9 且不低于历史同名阈值 ×0.9，具体在 **v6 分布**出来后定稿；v5 分布不用于标定，见 design D8）；③ 标定后 SHALL 同轮复核落库 `passed` 与 API 下发阈值同源。
 
 **`answer_correctness` 退出的消费方**：SHALL 逐项处置——`kb_eval` API 响应字段、`RAGAS_METRIC_COLUMNS` 常量与相关注释、报告/stdout 的均值行与断言、受影响的测试、**契约文档 `docs/agents/api_contract.md`（逐处：`:733` 示例响应、`:744` 口径说明、`:909` `overall_score` 定义、`:912` `detail_json` 说明、`:1353` 综合分、`:1379` 指标列、`:1400` `avg`——CLAUDE.md 要求改响应结构须同步该文档）**、**`docs/agents/ragas-eval-ledger.md` 表头**。**台账改法（避免破坏历史行）**：表头 SHALL **新增「口径版本」列**；`answer_correctness` 列 SHALL **保留**（历史行不动，新行该列留空 / `N/A`）——SHALL NOT 删列（删列会让表头列数与历史行单元格数不等、Markdown 表破损，见 design D9「历史行不改」）。**前端不受影响**（已核：`deploy/nginx/html/index.html` 只读 `faithfulness` / `context_recall` / `overall_score` / `passed` / `pass_threshold`，不读 `answer_correctness`）。
 
@@ -274,7 +274,7 @@
 
 **前迁路径（登记，不在本次范围）**：出题的**首选前迁目标**是 DeepEval 自带的 `deepeval/synthesizer/`（`generate_goldens_from_docs(...) -> List[Golden]`），因其产出物字段（`input` / `expected_output` / `retrieval_context`）与评测输入**同构**、且与本次评测**同栈**；SHALL NOT 把"回退 ragas 0.4.x"当作首选路径。
 
-**v6 接手点**：出题迁移 SHALL 由**后续独立 change** 承接，入口条件 = ① 本 change 已归档且**新尺子基线与阈值已标定**；② 台账已记入 `bridge-0.3.9 / v5`；③ v6 与 v5 **并存**。验收 SHALL 分两步且**不可颠倒**：先 `v5 + 新尺子`（基线），再 `v6 + 新尺子`（换卷子对照）——否则"换尺子"与"换卷子"两个变量无法归因。
+**v6 接手点**：出题迁移 SHALL 由**后续独立 change** 承接，入口条件 = ① 本 change 已归档，且 v5 的**新尺子分布**已记录（**不要求阈值已标定**——标定推迟到 v6 之后，见 design D8）；② 台账已记入 `bridge-0.3.9 / v5`；③ v6 与 v5 **并存**。验收 SHALL 分两步且**不可颠倒**：先 `v5 + 新尺子`（基线**与台账行**），再 `v6 + 新尺子`（换卷子对照）**并在该步之后标定阈值**——否则"换尺子"与"换卷子"两个变量无法归因。
 
 #### Scenario: Evaluation does not trigger testset generation
 
@@ -514,13 +514,13 @@
 
 ### Requirement: NaN rate gates the evaluation and triggers the escape hatch
 
-评测 SHALL 统计 **NaN 率**并在报告中单列。门禁判据 SHALL 为：**NaN 率 ≤ 阈值 视为可接受**（不因 NaN 判失败）；**> 阈值 则门禁失败**。**阈值 SHALL 标为"经验初值 10% / 待首轮复核"**：现有依据仅为换尺子**之前**的 21 题中 1 例（≈4.8%，样本量 n=1/21 偏薄），取 10% 是为在单薄证据之上留出余量；首轮全量跑出真实 NaN 率后 SHALL **同轮复核并定稿**，若实测明显不同 SHALL 以实测改值。
+评测 SHALL 统计 **NaN 率**并在报告中单列。门禁判据 SHALL 为：**NaN 率 ≤ 阈值 视为可接受**（不因 NaN 判失败）；**> 阈值 则门禁失败**。**阈值 SHALL 标为"经验初值 10% / 待首轮复核"**：现有依据仅为换尺子**之前**的 21 题中 1 例（≈4.8%，样本量 n=1/21 偏薄），取 10% 是为在单薄证据之上留出余量；首轮全量跑出真实 NaN 率后 SHALL **同轮复核并定稿**（**复核时点延后至 v6 后**，v5 分布仅作基线，见 design D8），若实测明显不同 SHALL 以实测改值。
 
 **分子/分母 SHALL 精确定义（单位是"格"，不是"题"——否则门禁误判）**：
 
 - **分母** = **纯 KB 样本 × 四项指标**（格数）。实测有效纯 KB = **19** 题 ⇒ 分母 **76 格**；`>10%` 即 **>7.6 格 ⇒ ≥8 格**判失败。（**订正**：更早一稿写"21 题下允许 ≤2 题"，与分母定义**单位不一致**，差约 4 倍，已按格数重述。）
 - **分子** = **纯 KB 格里的全部 `NaN`**。(a) 掩码类**由分母天然排除**（`empty` 不属于纯 KB）；合法缺值型与裁判失败型**一并计入**——二者在桥出口**不可区分**，`SHALL NOT` 依赖请求级日志做子分类（见「Metric failures are explicit, not silently dropped」）。
-- **接受的代价**：合法缺值型 `NaN` 会被计入分子并触发一次无收益的有界重试；阈值 10% 即为吸收该水位而设，首轮 SHALL 以实测复核。
+- **接受的代价**：合法缺值型 `NaN` 会被计入分子并触发一次无收益的有界重试；阈值 10% 即为吸收该水位而设，首轮 SHALL 以实测复核（**复核时点延后至 v6 后**，v5 分布仅作基线，见 design D8）。
 
 NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提示；**是否启用由人决定**，启用 SHALL 在台账记录原因与生效轮次。
 
