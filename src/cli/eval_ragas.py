@@ -623,7 +623,7 @@ def score_rows(rows: list[dict], metrics: dict, *, evidence=None) -> list[dict]:
 # 前者承载产出层 `.to_pandas()` 契约，后者承载评分失败的异常链留证。
 def run_evaluation(
     questions, ground_truth, answers, contexts, metrics, trace_ids, *, evidence=None
-) -> Any:
+) -> _EvalResult:
     """逐题打分并返回带 `.to_pandas()` 的结果（行序与输入一致）。
 
     本函数是评测**评分后端边界**（逃生门接入点，design D10）：`metrics` 由调用方注入，
@@ -795,7 +795,7 @@ def _build_behaviour_section(behaviour_rows: list[dict]) -> list[str]:
 
 
 def save_markdown_report(
-    result: Any,
+    result: _EvalResult | None,
     questions: list[str],
     output_path: str,
     sample_classes: list[str],
@@ -810,7 +810,8 @@ def save_markdown_report(
     口径一致；先按样本类别掩码，报告携带 sample_class / skipped 列。
 
     Args:
-        result: RAGAS evaluate() 返回的结果对象
+        result: 评测结果对象；`None` 表示四指标未跑（--deepeval-only），
+            此时只写报告头与行为轴，不写逐题指标表与主分行
         questions: 问题列表
         output_path: CSV 输出路径（用于推导 .md 路径）
         sample_classes: 每个问题的样本类别（与 questions 一一对应）；
@@ -829,10 +830,6 @@ def save_markdown_report(
         实际写入的 .md 文件路径
     """
     md_path = output_path.rsplit(".", 1)[0] + ".md"
-    df = result.to_pandas()
-    df = apply_sample_masks(df, sample_classes)
-
-    actual_metrics = [c for c in RAGAS_METRIC_COLUMNS if c in df.columns]
 
     cfg_topk = settings.TOP_K_RETRIEVAL
     cfg_rerank = settings.TOP_K_RERANK
@@ -846,40 +843,57 @@ def save_markdown_report(
     )
     lines.append(f"**QA Pairs:** {len(questions)}")
     if report_meta is not None:
-        lines.append(
-            "**Caliber / Judge:** "
-            f"caliber={report_meta['caliber']}, "
-            f"judge={report_meta['judge_model']}, "
-            f"model_arg_explicit={report_meta['model_arg_explicit']}"
-        )
-        regime = report_meta["temperature_regime"]
-        lines.append(
-            "**Temperature regime:** "
-            f"n1_metrics={regime['n1_metrics']}, "
-            f"answer_relevancy={regime['answer_relevancy']} "
-            f"({report_meta['temperature_control']})"
-        )
-        versions = report_meta["runner_versions"]
-        lines.append(
-            "**Runner versions:** "
-            f"ragas={versions['ragas']}, deepeval={versions['deepeval']}"
-        )
-        lines.append(
-            "**NaN cells:** "
-            f"{report_meta['nan_cells']}/{report_meta['nan_denominator_cells']} "
-            f"(rate={report_meta['nan_rate']})"
-        )
+        if report_meta.get("ragas_skipped"):
+            lines.append(
+                "**RAGAS:** 未跑（--deepeval-only）——本报告只含 Agent 行为轴，"
+                "无主分、无门禁语义"
+            )
+            versions = report_meta["runner_versions"]
+            lines.append(
+                "**Runner versions:** "
+                f"ragas={versions['ragas']}, deepeval={versions['deepeval']}"
+            )
+        else:
+            # 既有分支：逐字保留（原 `src/cli/eval_ragas.py:786-809`）
+            lines.append(
+                "**Caliber / Judge:** "
+                f"caliber={report_meta['caliber']}, "
+                f"judge={report_meta['judge_model']}, "
+                f"model_arg_explicit={report_meta['model_arg_explicit']}"
+            )
+            regime = report_meta["temperature_regime"]
+            lines.append(
+                "**Temperature regime:** "
+                f"n1_metrics={regime['n1_metrics']}, "
+                f"answer_relevancy={regime['answer_relevancy']} "
+                f"({report_meta['temperature_control']})"
+            )
+            versions = report_meta["runner_versions"]
+            lines.append(
+                "**Runner versions:** "
+                f"ragas={versions['ragas']}, deepeval={versions['deepeval']}"
+            )
+            lines.append(
+                "**NaN cells:** "
+                f"{report_meta['nan_cells']}/{report_meta['nan_denominator_cells']} "
+                f"(rate={report_meta['nan_rate']})"
+            )
     lines.append("")
 
-    lines.extend(_build_markdown_table(df, actual_metrics, trace_ids, trajectories))
-    lines.append("")
+    if result is not None:
+        df = apply_sample_masks(result.to_pandas(), sample_classes)
+        actual_metrics = [c for c in RAGAS_METRIC_COLUMNS if c in df.columns]
+        lines.extend(_build_markdown_table(df, actual_metrics, trace_ids, trajectories))
+        lines.append("")
 
-    # 均值行统一写主分（纯 KB 样本均值），与 CSV / stdout / 门禁口径一致；
-    # 只取白名单指标（actual_metrics），避免额外数值列混入均值行
-    means = main_score_means(df)
-    avg_parts = ", ".join(f"{m}={means[m]:.4f}" for m in actual_metrics if m in means)
-    lines.append(f"**Main scores (pure-KB):** {avg_parts}")
-    lines.append("")
+        # 均值行统一写主分（纯 KB 样本均值），与 CSV / stdout / 门禁口径一致；
+        # 只取白名单指标（actual_metrics），避免额外数值列混入均值行
+        means = main_score_means(df)
+        avg_parts = ", ".join(
+            f"{m}={means[m]:.4f}" for m in actual_metrics if m in means
+        )
+        lines.append(f"**Main scores (pure-KB):** {avg_parts}")
+        lines.append("")
 
     if behaviour_rows is not None:
         lines.extend(_build_behaviour_section(behaviour_rows))
@@ -954,13 +968,29 @@ def check_gate(df: pd.DataFrame, questions: list[str]) -> None:
 
 
 def build_report_meta(
-    *, judge_model: str, nan_stats: dict, runner_versions: dict
+    *,
+    judge_model: str,
+    nan_stats: dict | None,
+    runner_versions: dict,
+    ragas_enabled: bool = True,
 ) -> dict:
     """报告/台账元数据（口径版本、温度档、NaN 计数、模型显式性）。
 
+    `ragas_enabled=False` 时（--deepeval-only）不产出温度档与 NaN 字段：
+    四指标未跑，这些数字没有意义，报告头改为显式标注「RAGAS 未跑」。
     温度**不由本项目控制**（ragas 按 n 分档：n=1 → 0.01；answer_relevancy
     n=3 → 0.3），故只记录事实，SHALL NOT 出现「temperature=0」的表述。
     """
+    if not ragas_enabled:
+        return {
+            "caliber": "deepeval-only",
+            "judge_model": judge_model,
+            "model_arg_explicit": True,
+            "ragas_skipped": True,
+            "runner_versions": dict(runner_versions),
+        }
+    if nan_stats is None:
+        raise ValueError("ragas_enabled=True 时 nan_stats 不得为 None")
     return {
         "caliber": "bridge-0.3.9",
         "judge_model": judge_model,
@@ -1141,9 +1171,8 @@ def main() -> None:
             )
 
         # 四指标产物：--deepeval-only 下不产出（均为 None），下游段按开关收敛。
-        result: Any = None
-        masked_df: Any = None
-        report_meta: dict | None = None
+        result: _EvalResult | None = None
+        masked_df: pd.DataFrame | None = None
         if ragas_enabled:
             result = run_evaluation(
                 questions,
@@ -1158,33 +1187,40 @@ def main() -> None:
             # 统一「主分」口径：报告 / stdout / 门禁都读同一张已掩码表（纯 KB 样本）。
             masked_df = apply_sample_masks(result.to_pandas(), sample_classes)
 
-            # 报告/台账元数据：口径版本、温度档、NaN 计数、裁判版本与模型显式性。
-            # judge_model 复用上方 EVAL_MODEL_INIT 同源的 bridge_judge.model_name；
-            # 温度由 ragas 按 n 分档、本项目不可控，故只记录事实（见 build_report_meta）。
-            report_meta = build_report_meta(
-                judge_model=bridge_judge.model_name,
-                nan_stats=nan_cell_stats(masked_df),
-                runner_versions={
-                    "ragas": version("ragas"),
-                    "deepeval": version("deepeval"),
-                },
-            )
-
             # 指标均值输出到 stdout：compare_retrieval 等 A/B 脚本以
             # 子进程方式调用本脚本，靠 stdout 解析指标（parse_metrics）；logger 只写
             # 文件不落 stdout，故此处显式 print。--gate 模式下 check_gate 已打印指标行。
             if not args.gate:
                 _print_metric_averages(masked_df)
 
-        output_path = save_results_csv(
-            result,
-            questions,
-            ground_truth,
-            output_path,
-            sample_classes=sample_classes,
-            trace_ids=trace_ids,
-            trajectories=trajectories,
+        # 报告/台账元数据：口径版本、温度档、NaN 计数、裁判版本与模型显式性。
+        # judge_model 复用上方 EVAL_MODEL_INIT 同源的 bridge_judge.model_name；
+        # 温度由 ragas 按 n 分档、本项目不可控，故只记录事实（见 build_report_meta）。
+        # --deepeval-only 下 nan_stats 恒为 None，元数据改标 ragas_skipped。
+        nan_stats: dict | None = None
+        if masked_df is not None:
+            nan_stats = nan_cell_stats(masked_df)
+        report_meta = build_report_meta(
+            judge_model=bridge_judge.model_name,
+            nan_stats=nan_stats,
+            runner_versions={
+                "ragas": version("ragas"),
+                "deepeval": version("deepeval"),
+            },
+            ragas_enabled=ragas_enabled,
         )
+
+        if ragas_enabled:
+            output_path = save_results_csv(
+                result,
+                questions,
+                ground_truth,
+                output_path,
+                sample_classes=sample_classes,
+                trace_ids=trace_ids,
+                trajectories=trajectories,
+            )
+
         save_markdown_report(
             result,
             questions,
@@ -1196,31 +1232,36 @@ def main() -> None:
             behaviour_rows=behaviour_rows,
         )
 
-        # 行序契约：write_scores 按 enumerate 下标把 masked_df 第 i 行写到
-        # trace_ids[i]，两序列必须等长同序（均由 generate_answers_and_contexts
-        # 按题序产出）。行数不一致即错配，会把分数静默写到别的 trace 上，故此处
-        # 快速失败而非带病回写。用显式 raise 而非 assert：`python -O` 会剥离
-        # assert，护栏在内置优化模式下失效。
-        if len(masked_df) != len(trace_ids):
-            raise RuntimeError(
-                f"eval rows ({len(masked_df)}) != trace_ids ({len(trace_ids)})"
+        if ragas_enabled:
+            # 上方同一开关已赋值，此处仅供类型收窄
+            assert result is not None and masked_df is not None
+            # 行序契约：write_scores 按 enumerate 下标把 masked_df 第 i 行写到
+            # trace_ids[i]，两序列必须等长同序（均由 generate_answers_and_contexts
+            # 按题序产出）。行数不一致即错配，会把分数静默写到别的 trace 上，故此处
+            # 快速失败而非带病回写。用显式 raise 而非 assert：`python -O` 会剥离
+            # assert，护栏在内置优化模式下失效。
+            if len(masked_df) != len(trace_ids):
+                raise RuntimeError(
+                    f"eval rows ({len(masked_df)}) != trace_ids ({len(trace_ids)})"
+                )
+
+            # 先落库：DB 写入不受第三方观测系统（Langfuse）影响，故排在回写之前
+            # _save_eval_report 需要 questions 长度
+            _save_eval_report(
+                kb_id,
+                result.to_pandas(),
+                len(questions),
+                output_path,
+                retrieval_details,
+                sample_classes,
             )
 
-        # 先落库：DB 写入不受第三方观测系统（Langfuse）影响，故排在回写之前
-        # _save_eval_report 需要 questions 长度
-        _save_eval_report(
-            kb_id,
-            result.to_pandas(),
-            len(questions),
-            output_path,
-            retrieval_details,
-            sample_classes,
-        )
-
-        # 观测旁路回写：排在落库之后、门禁之前（失败只记 warning，见 write_scores）
-        _write_langfuse_scores(masked_df, trace_ids, behaviour_rows)
+            # 观测旁路回写：排在落库之后、门禁之前（失败只记 warning，见 write_scores）
+            _write_langfuse_scores(masked_df, trace_ids, behaviour_rows)
 
         if args.gate:
+            # --deepeval-only 与 --gate 在 parse_args 层互斥，故 masked_df 必非 None
+            assert masked_df is not None  # 仅供类型收窄
             check_gate(masked_df, questions)
 
         core_logging.log_event(Event.EVALUATION_DONE)
