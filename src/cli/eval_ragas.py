@@ -829,7 +829,7 @@ def save_markdown_report(
         trajectories: 每个问题的轨迹诊断摘要（与 questions 一一对应），
             传入后新增 trajectory 列（JSON 字符串）
         report_meta: 报告元数据（见 build_report_meta），传入后在报告头写入
-            口径版本 / 裁判 / 温度档 / 版本 / NaN 计数
+            口径版本 / 裁判 / 运行器版本 / NaN 计数
         behaviour_rows: 逐题行为分（见 eval_scoring.read_behaviour_scores），
             传入后在报告末尾追加「Agent 行为轴」段；该轴仅作诊断观测，
             **不进主分/门禁**
@@ -843,7 +843,7 @@ def save_markdown_report(
     cfg_rerank = settings.TOP_K_RERANK
 
     lines: list[str] = []
-    lines.append("# RAGAS Evaluation Report")
+    lines.append("# Deepeval Evaluation Report")
     lines.append("")
     lines.append(f"**Date:** {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')}")
     lines.append(
@@ -851,35 +851,26 @@ def save_markdown_report(
     )
     lines.append(f"**QA Pairs:** {len(questions)}")
     if report_meta is not None:
+        versions = report_meta["runner_versions"]
         if report_meta.get("ragas_skipped"):
             lines.append(
-                "**RAGAS:** 未跑（--deepeval-only）——本报告只含 Agent 行为轴，"
+                "**Main score:** 未跑（--deepeval-only）——本报告只含 Agent 行为轴，"
                 "无主分、无门禁语义"
             )
-            versions = report_meta["runner_versions"]
             lines.append(
                 "**Runner versions:** "
-                f"ragas={versions['ragas']}, deepeval={versions['deepeval']}"
+                f"deepeval={versions['deepeval']}, metrics={versions['metrics']}"
             )
         else:
-            # 既有分支：逐字保留（原 `src/cli/eval_ragas.py:786-809`）
             lines.append(
                 "**Caliber / Judge:** "
                 f"caliber={report_meta['caliber']}, "
                 f"judge={report_meta['judge_model']}, "
                 f"model_arg_explicit={report_meta['model_arg_explicit']}"
             )
-            regime = report_meta["temperature_regime"]
-            lines.append(
-                "**Temperature regime:** "
-                f"n1_metrics={regime['n1_metrics']}, "
-                f"answer_relevancy={regime['answer_relevancy']} "
-                f"({report_meta['temperature_control']})"
-            )
-            versions = report_meta["runner_versions"]
             lines.append(
                 "**Runner versions:** "
-                f"ragas={versions['ragas']}, deepeval={versions['deepeval']}"
+                f"deepeval={versions['deepeval']}, metrics={versions['metrics']}"
             )
             lines.append(
                 "**NaN cells:** "
@@ -982,12 +973,19 @@ def build_report_meta(
     runner_versions: dict,
     ragas_enabled: bool = True,
 ) -> dict:
-    """报告/台账元数据（口径版本、温度档、NaN 计数、模型显式性）。
+    """报告/台账元数据（口径版本、NaN 计数、模型显式性）。
 
-    `ragas_enabled=False` 时（--deepeval-only）不产出温度档与 NaN 字段：
-    四指标未跑，这些数字没有意义，报告头改为显式标注「RAGAS 未跑」。
-    温度**不由本项目控制**（ragas 按 n 分档：n=1 → 0.01；answer_relevancy
-    n=3 → 0.3），故只记录事实，SHALL NOT 出现「temperature=0」的表述。
+    `ragas_enabled=False` 时（--deepeval-only）四指标未跑，不产出 NaN 字段，
+    报告头显式标注「主分未跑」。
+
+    Args:
+        judge_model: 裁判模型名
+        nan_stats: `nan_cell_stats` 的结果；`ragas_enabled=True` 时不得为 None
+        runner_versions: 版本字典，形如 `{"deepeval": "4.2.9", "metrics": "native"}`
+        ragas_enabled: 是否跑了四指标
+
+    Returns:
+        报告元数据字典
     """
     if not ragas_enabled:
         return {
@@ -1000,11 +998,9 @@ def build_report_meta(
     if nan_stats is None:
         raise ValueError("ragas_enabled=True 时 nan_stats 不得为 None")
     return {
-        "caliber": "bridge-0.3.9",
+        "caliber": "deep-eval-native",
         "judge_model": judge_model,
         "model_arg_explicit": True,
-        "temperature_regime": {"n1_metrics": 0.01, "answer_relevancy": 0.3},
-        "temperature_control": "ragas_decides_by_n",
         "nan_cells": nan_stats["nan_cells"],
         "nan_denominator_cells": nan_stats["denominator_cells"],
         "nan_rate": round(nan_stats["nan_rate"], 4),
@@ -1202,9 +1198,8 @@ def main() -> None:
             if not args.gate:
                 _print_metric_averages(masked_df)
 
-        # 报告/台账元数据：口径版本、温度档、NaN 计数、裁判版本与模型显式性。
+        # 报告/台账元数据：口径版本、NaN 计数、裁判版本与模型显式性。
         # judge_model 复用上方 EVAL_MODEL_INIT 同源的 bridge_judge.model_name；
-        # 温度由 ragas 按 n 分档、本项目不可控，故只记录事实（见 build_report_meta）。
         # --deepeval-only 下 nan_stats 恒为 None，元数据改标 ragas_skipped。
         nan_stats: dict | None = None
         if masked_df is not None:
@@ -1213,8 +1208,8 @@ def main() -> None:
             judge_model=bridge_judge.model_name,
             nan_stats=nan_stats,
             runner_versions={
-                "ragas": version("ragas"),
                 "deepeval": version("deepeval"),
+                "metrics": "native",
             },
             ragas_enabled=ragas_enabled,
         )

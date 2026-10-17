@@ -41,7 +41,7 @@ def test_report_meta_without_ragas_marks_skipped():
     meta = build_report_meta(
         judge_model="qwen-test",
         nan_stats=None,
-        runner_versions={"ragas": "0.3.9", "deepeval": "4.2.9"},
+        runner_versions={"deepeval": "4.2.9", "metrics": "native"},
         ragas_enabled=False,
     )
     assert meta["ragas_skipped"] is True
@@ -62,7 +62,7 @@ def test_markdown_report_without_ragas_has_no_metric_rows(tmp_path):
         report_meta=build_report_meta(
             judge_model="qwen-test",
             nan_stats=None,
-            runner_versions={"ragas": "0.3.9", "deepeval": "4.2.9"},
+            runner_versions={"deepeval": "4.2.9", "metrics": "native"},
             ragas_enabled=False,
         ),
         behaviour_rows=[
@@ -70,7 +70,7 @@ def test_markdown_report_without_ragas_has_no_metric_rows(tmp_path):
         ],
     )
     text = (tmp_path / "r.md").read_text(encoding="utf-8")
-    assert "RAGAS:** 未跑" in text
+    assert "Main score:** 未跑" in text
     assert "Main scores (pure-KB)" not in text
     assert "faithfulness=" not in text
     assert "Agent 行为轴" in text
@@ -185,5 +185,5 @@ def test_deepeval_only_skips_all_ragas_side_effects(monkeypatch, tmp_path):
     assert called == []
     out_md = tmp_path / "r.md"
     assert out_md.exists()
-    assert "RAGAS:** 未跑" in out_md.read_text(encoding="utf-8")
+    assert "Main score:** 未跑" in out_md.read_text(encoding="utf-8")
     assert not out_csv.exists()
