@@ -924,7 +924,7 @@ trace_id **子串**过滤（与 `replay_trace` 同一套约定；trace 可跨天
 
 - [ ] **Step 6: 跑通并提交**
 
-Run: `grep -rn "RAGAS_EVAL_CONCURRENCY" src/ tests/ docs/` → **无输出**（已删净）
+Run: `grep -rn "RAGAS_EVAL_CONCURRENCY" src/ tests/ docs/agents/` → **无输出**（已删净；`docs/adr/` 不可变、`docs/superpowers/plans/`、`docs/openspec/*/archive/`、`docs/research/` 为历史记录，不在判据内）
 Run: `POSTGRES_HOST=localhost pytest tests/cli tests/config -q` → 全绿
 Run: `python -m src.cli.check_docs` → 0 error
 
