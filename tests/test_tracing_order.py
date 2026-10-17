@@ -89,6 +89,7 @@ def test_cli_main_configures_before_flushing(monkeypatch):
             session_id=None,
             output=None,
             testset_version=None,
+            deepeval_only=False,
         ),
     )
 
