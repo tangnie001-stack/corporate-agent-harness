@@ -1,12 +1,18 @@
-"""trace_logs — 按 trace_id 拉取该次请求的完整日志（含裁判调用与模型原始响应）。
+"""trace_logs — 按 trace_id 拉取该次请求的完整日志（含裁判调用与框架内部请求级证据）。
 
 用法：
     python -m src.cli.trace_logs eval_19128e15c446          # 报告里那列 trace_id
     python -m src.cli.trace_logs trace_eeed43a3 --grep "judge call"
 
 为什么需要它：报告只给出每题的 trace_id；要定位"为什么这题失败"，需要把该 trace 下
-**所有**日志串起来看——尤其是 `judge call` 事件（含 `finish_reason` / 输出 token 数 /
-**底层模型原始输出片段**）。此前这些信息只能靠人工 grep。
+**所有**日志串起来看。按本仓现有分工，判官相关日志有两类：
+  - `judge call` / `metric retry` 事件：**外层**对桥度量 `measure` 的调用（尝试次数 /
+    耗时 / 是否拿到分 / 异常链摘要 `note`），由 `src/cli/eval_ragas.py` 埋点；
+  - `[provider] bridge judge http ...` 日志：**框架内部**（ragas 桥）真实 HTTP 请求级
+    证据（状态码 / 响应体摘要 / `finish_reason`），由裁判 `http_async_client` 的
+    event hooks 记录（design D13）。
+> 说明：`note` 现为异常链摘要（`_exc_chain_summary`），**不含** `finish_reason` /
+> 输出 token 数——那两样在 hooks 日志里（换桥后原 `_judge_failure_note` 已不适用）。
 
 实现：段位无关（不依赖 `|` 分段），在 `logs/app_*.log` 与 `logs/error_*.log` 里按
 trace_id **子串**过滤（与 `replay_trace` 同一套约定；trace 可跨天）。

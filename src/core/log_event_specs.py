@@ -293,6 +293,10 @@ EVENT_SPECS: dict[str, EventSpec] = {
     "testset self-contained dropped": EventSpec(
         "testset self-contained dropped", "cli", "warning", ("kept", "dropped", "total")
     ),
+    # [cli] 评测打分 —— 埋点层是「外层对桥度量 metric.measure 的调用」（我们这层，
+    # 逐题串行）。桥内部真正的 HTTP 请求级证据（状态码 / 响应体摘要 / finish_reason）
+    # 由裁判 http_async_client 的 event hooks 记录（provider 层，见 design D13），
+    # 两者分工：本层记"我们第几次尝试、耗时、是否拿到分"；hooks 记"发出去/收回来的是什么"。
     "metric retry": EventSpec(
         "metric retry", "cli", "info", ("metric", "q_index", "trace_id", "reason")
     ),

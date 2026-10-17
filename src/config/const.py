@@ -541,9 +541,6 @@ RAGAS_METRIC_COLUMNS: tuple[str, ...] = (
 )
 # 门禁：检索覆盖率下限（低于此值判失败，杜绝"不检索即跳空 context 指标"的规避）
 EVAL_RETRIEVAL_COVERAGE_MIN: float = 0.5
-# 现代 RAGAS 评测的行级并发上限（N 题 × 5 指标 × 每题内部多次裁判调用，
-# 全量并发会打爆裁判端点/额度；5 为实测安全的起点）。
-RAGAS_EVAL_CONCURRENCY: int = 5
 # NaN 率门禁：分母 = 纯 KB 样本 × 四指标（格数）；分子 = 纯 KB 格里的全部 NaN。
 # 10% 为**经验初值**（依据仅换尺子前 21 题 1 例 ≈4.8%，样本薄），首轮全量后复核定稿。
 EVAL_NAN_RATE_MAX: float = 0.10

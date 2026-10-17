@@ -50,7 +50,6 @@ from src.config.const import (
     EVAL_PASS_THRESHOLD,
     EVAL_RETRIEVAL_COVERAGE_MIN,
     LANGFUSE_SCORE_SUFFIX,
-    RAGAS_EVAL_CONCURRENCY,  # noqa: F401  # 删除归 Phase 3 Task 6（处置失义并发常量）
     RAGAS_METRIC_COLUMNS,
     SAMPLE_CLASS_EMPTY,
     SAMPLE_CLASS_PURE_KB,
@@ -267,7 +266,11 @@ async def generate_answers_and_contexts(
 ) -> tuple[
     list[str], list[list[str]], list[str], list[list[dict]], list[str], list[dict]
 ]:
-    """对每个问题生成回答，并收集检索到的上下文.
+    """**生产死代码**：生产入口是 `generate_answers_and_contexts_with_behaviour`
+    （行为轴驱动）；本函数仅被测试使用，保留以复用其"逐题 seed RequestContext +
+    工具产出收集"的参考实现。新增生产调用请走 `_with_behaviour` 版本。
+
+    对每个问题生成回答，并收集检索到的上下文.
 
     Args:
         graph: LangGraph 编译后的图实例
@@ -574,6 +577,8 @@ def score_rows(rows: list[dict], metrics: dict, *, evidence=None) -> list[dict]:
     return out
 
 
+# `_EvalResult` 与 `_exc_chain_summary` 是当前桥路径的**活件**（非现代栈残留）：
+# 前者承载产出层 `.to_pandas()` 契约，后者承载评分失败的异常链留证。
 def run_evaluation(
     questions, ground_truth, answers, contexts, metrics, trace_ids, *, evidence=None
 ) -> Any:
