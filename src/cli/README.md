@@ -16,52 +16,28 @@ python -m src.cli.<模块名> --help
 
 | 命令 | 用途 |
 |---|---|
-| `eval_deepeval` | RAGAS 评估主脚本：执行评估 / 质量门禁 |
-| `compare_retrieval` | 遍历「检索 top-K × 重排 top-K」参数网格，用 RAGAS 指标对比选参 |
+| `eval_deepeval` | DeepEval 原生四指标评估主脚本：执行评估 / 质量门禁 |
+| `compare_retrieval` | 遍历「检索 top-K × 重排 top-K」参数网格，用评测指标对比选参 |
 | `check_retrieval` | 对已有知识库执行语义检索，打印结果供人工检查 |
 
 ---
 
-# RAGAS 工作流详解
+# 评测工作流详解
 
-RAGAS 评估的核心是**先用文档自动生成 QA 测试集，再用测试集评估 RAG 系统的检索与生成质量**。完整链路：
-
-```
-① 生成测试集 ──> ② 执行评估 ──> ③ 质量门禁 ──> ④ 参数选优（可选）
-eval_deepeval --generate   eval_deepeval --kb-id   eval_deepeval --gate   compare_retrieval
-```
-
-## 第一步：生成测试集（怎么生成）
-
-### 运行命令
-
-```bash
-# 先查出知识库的 UUID（评估与生成都只需要 kb-id）
-python -m src.cli.eval_deepeval --list-kbs
-
-# 用文档自动生成 20 条 QA 测试集（size 默认取配置 RAGAS_TEST_SIZE）
-python -m src.cli.eval_deepeval --kb-id <知识库UUID> --generate
-python -m src.cli.eval_deepeval --kb-id <知识库UUID> --generate --size 30
-```
-
-### 内部流程
-
-1. 从 PostgreSQL 查询知识库名称，按白名单（`RAGAS_DOC_WHITELIST`）取文档 ID
-2. 从 PostgreSQL 取出这些文档已有的分块
-3. 分块脱敏后构建 KnowledgeGraph，应用 Summary / NER 抽取
-4. 生成 Personas（用户角色）→ Scenarios（场景）→ QA Samples（问答对）
-5. 写入测试集 JSON，版本号自动递增
-
-### 生成结果在哪里看
-
-生成结束时终端会打印产物路径，形如：
+评测的核心是**用固定版本的 QA 测试集评估 RAG 系统的检索与生成质量**。完整链路：
 
 ```
-测试集已保存: data/deepeval/testset/testset_<kb_id>_v1.json (v1, 20 条)
+① 准备测试集 ──> ② 执行评估 ──> ③ 质量门禁 ──> ④ 参数选优（可选）
+（出题已下线）      eval_deepeval --kb-id   eval_deepeval --gate   compare_retrieval
 ```
 
-- **位置**：`data/deepeval/testset/testset_<kb_id>_v<N>.json`（目录默认 `RAGAS_TESTSET_DIR`）
-- **版本管理**：同一知识库每生成一次版本号 +1（`v1` → `v2`），评估时可指定任意历史版本
+## 第一步：准备测试集（出题已下线）
+
+测试集生成模块已退役：`--generate` 保留参数、命中即报错，后续由 DeepEval `Synthesizer` 承接。
+评测直接读取已有测试集 JSON，可用 `--testset-version` 指定历史版本。
+
+- **位置**：`data/deepeval/testset/testset_<kb_id>_v<N>.json`（目录默认 `EVAL_TESTSET_DIR`）
+- **版本管理**：文件名中的 `v<N>` 为版本号，评估时可指定任意历史版本
 - **文件结构**：
 
 ```json
@@ -86,7 +62,7 @@ python -m src.cli.eval_deepeval --kb-id <知识库UUID> --generate --size 30
 }
 ```
 
-- **生成加速**：LLM 响应有磁盘缓存 `data/deepeval/llm_cache/`（DiskCacheBackend），重复生成可复用，支持中断恢复
+> `ragas_version` / `synthesizer_name` 是历史测试集文件的遗留字段，当前加载器不消费。
 
 ## 第二步：执行评估（怎么测试）
 
@@ -116,13 +92,13 @@ python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 5 --de
 1. 加载测试集 JSON（取出 `questions` 与 `ground_truth`）
 2. 构建生产同款 LangGraph（检索 → rerank → 生成）
 3. 逐题让 RAG 系统生成回答 `answer` 与检索上下文 `contexts`
-4. 用 RAGAS 对四个指标打分
+4. 用 DeepEval 原生四指标打分（`AnswerRelevancyMetric` / `FaithfulnessMetric` / `ContextualPrecisionMetric` / `ContextualRecallMetric`）；诊断指标（`contextual_relevancy` / `non_advice`）另行记录，不进主分与门禁
 
-> **上下文含实体锚点**：评估收集的 `contexts` 与生产 prompt 共用 `RAGContext.to_prompt_text()` 渲染格式（`src/rag/context.py`）。当分块 metadata 带实体（`company`/`report_period`/`sec_code` 等，标签为 `公司`/`期间`/`代码`）时，上下文会多出一行 `实体标签: 值` 锚点，再跟 `内容:` 正文；无实体时保持 `来源 → 内容` 原格式。这保证 RAGAS 的 NLI 裁判看到的上下文与线上生成模型完全一致（实体锚点用于增强忠实度）。评估脚本入口见 `src/cli/eval_deepeval.py:157`。
+> **上下文含实体锚点**：评估收集的 `contexts` 与生产 prompt 共用 `RAGContext.to_prompt_text()` 渲染格式（`src/rag/context.py`）。当分块 metadata 带实体（`company`/`report_period`/`sec_code` 等，标签为 `公司`/`期间`/`代码`）时，上下文会多出一行 `实体标签: 值` 锚点，再跟 `内容:` 正文；无实体时保持 `来源 → 内容` 原格式。这保证评测裁判看到的上下文与线上生成模型完全一致（实体锚点用于增强忠实度）。评估脚本入口见 `src/cli/eval_deepeval.py:157`。
 
 > **评估模式跳过追问**：批量评估以 `skip_clarify=True` 运行图——即使 classify 判定问题缺实体（如缺年份），也不会停在「追问澄清」分支（生产交互链路会追问，评估不会），而是直接走检索+生成。这样单轮指标才有分数可算；追问分支的真实效果属于多轮/Agent 评估范畴，不在单轮评测内。
 
-> 注意：评估阶段每个指标内部会多次调用 LLM（faithfulness 把回答拆句逐句判断、answer_relevancy 反向生成候选问题等），所以**评估耗时明显长于回答生成**。若知识库尚无可用分块或 `RAGAS_LLM_MODEL` 未配置会直接报错退出。
+> 注意：评估阶段每个指标内部会多次调用 LLM（faithfulness 把回答拆句逐句判断、answer_relevancy 反向生成候选问题等），所以**评估耗时明显长于回答生成**。若知识库尚无可用分块或 `JUDGE_MODEL` 未配置会直接报错退出。
 
 ## 测试结果在哪里看
 
@@ -133,10 +109,10 @@ python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 5 --de
 | `deepeval_eval_<timestamp>.csv` | **逐条明细**：每行一条 QA 及其四项指标得分 |
 | `deepeval_eval_<timestamp>.md` | **摘要报告**：评估日期、配置（TOP_K_RETRIEVAL / TOP_K_RERANK）、QA 对数、每行指标表、平均值 |
 
-CSV 每行结构（`question`、`ground_truth` 为原测试集内容，`trace_id` 为该问题链路追踪 ID，后四列是逐条得分）：
+CSV 每行结构（`question`、`ground_truth` 为原测试集内容，`trace_id` 为该问题链路追踪 ID；指标列按 `EVAL_METRIC_COLUMNS` 顺序，诊断指标紧随其后）：
 
 ```
-index, question, ground_truth, trace_id, faithfulness, answer_relevancy, context_recall, context_precision
+index, question, ground_truth, trace_id, q_index, error, faithfulness, answer_relevancy, context_precision, context_recall, contextual_relevancy, non_advice, tool_correctness, ...
 ```
 
 MD 摘要表格同样带 `trace_id` 列。每个问题在评估时会生成独立的 `eval_<hex>` 格式 trace_id，并注入到该问题期间的所有日志行（loguru patcher 读取 `current_trace_id`），同时作为 Langfuse trace id —— 用 CSV 里的 trace_id 即可在日志 / Langfuse 中回溯这个问题的完整链路（分类 → 改写 → 检索 → 精排 → 生成），定位指标异常的根因（前提：`.env` 的 `LANGFUSE_ENABLE=true` 且 Langfuse 后端可达 —— 关闭时该列无对应 trace）。
@@ -248,7 +224,7 @@ python -m src.cli.check_retrieval --kb <知识库名称> --query "<问题>" [--t
 
 ## 典型工作流
 
-1. **生成测试集**：`eval_deepeval --kb-id <uuid> --generate --size 20`
+1. **准备测试集**：确认 `data/deepeval/testset/` 下已有目标知识库的测试集（出题已下线）
 2. **执行评估**：`eval_deepeval --kb-id <uuid>` → 查看 `data/deepeval/reports/` 下的 CSV 与 MD
 3. **质量门禁**：`eval_deepeval --kb-id <uuid> --gate`（CI / 提交前检查，不达标退出码 1）
 4. **参数选优**：`compare_retrieval --kb-name <名称>` → 按指标对比表确定 `TOP_K` 组合

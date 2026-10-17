@@ -1,6 +1,6 @@
 # ADR-0026：DeepEval 桥下的 RAGAS 裁判客户端策略（细粒度超时承载点换位 / 关 SDK 重试 / NaN 判据重试 / 两处桥不可控旋钮）
 
-- **Status**：Accepted
+- **Status**：Superseded by 0027
 - **Date**：2026-10-17
 - **Deciders**：用户（议题提出与拍板）；Claude（换入口后的逐条复核、源码取证与实现）
 - **Supersedes**：ADR-0024

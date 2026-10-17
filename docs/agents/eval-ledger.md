@@ -1,12 +1,12 @@
-# RAGAS 评测台账
+# 评测台账
 
-> **唯一归属**：本文件记录**每次 RAGAS 全量评测的运行配置、结果与改动**，供跨轮比对与事后回溯。
+> **唯一归属**：本文件记录**每次全量评测的运行配置、结果与改动**，供跨轮比对与事后回溯。
 > 与 `docs/agents/troubleshooting.md` 的分工：那份记「踩坑案例与根因」；本份只记「每次跑了什么、结果如何、改了什么」。
 > 与 `docs/adr/` 的分工：ADR 记**决策与代价**（不可变）；本份记**每次运行的事实**（追加式，不改旧值）。
 
 ## 为什么要有它
 
-`data/ragas/reports/*.md` 每轮重新生成，但**不记录裁判配置**（`src/cli/eval_deepeval.py` 的报告头只有日期 / TOP_K / 题数）。于是要回答「两次全量为什么分数不同」，只能去 `git log` 反推配置——本台账就是为了消除这个成本。
+`data/deepeval/reports/*.md` 每轮重新生成，但**不记录裁判配置**（`src/cli/eval_deepeval.py` 的报告头只有日期 / TOP_K / 题数）。于是要回答「两次全量为什么分数不同」，只能去 `git log` 反推配置——本台账就是为了消除这个成本。
 
 ## 两条硬规则
 
@@ -16,14 +16,15 @@
 ## 公共配置（所有行共用）
 
 - 检索：`TOP_K_RETRIEVAL=30` · `TOP_K_RERANK=5`
-- 评测并发：**口径分代** —— 桥路径（ragas 0.3.9 + DeepEval，本 change 后）四指标评分**串行（并发=1）**（桥复用 ragas 模块级指标实例，并发会互踩，见 design D7）；历史 #1–#4（现代栈）为**行级并发=5**
-- 测试集：`data/ragas/testset/testset_4a1dcb8bb340473c8149ead5b7f75873_v5.json`（21 条；四轮全量的题面集合已核对一致）
+- 评测并发：**口径分代** —— 当前 `deep-eval-native` 四指标评分**串行（并发=1）**（四项与诊断指标共用同一组指标实例与裁判，并发会互踩，见 design D7）；历史 #1–#4（现代栈）为**行级并发=5**，#5（DeepEval 桥）串行
+- 测试集：`data/deepeval/testset/testset_4a1dcb8bb340473c8149ead5b7f75873_v5.json`（21 条；四轮全量的题面集合已核对一致）
 - 主分口径：仅 `pure_kb` 样本的四项均值（`src/cli/eval_scoring.py`）
 - 门禁阈值：`faithfulness≥0.85` · `context_precision≥0.80` · `context_recall≥0.70` · `answer_relevancy≥0.85`
+- 当前口径版本：`deep-eval-native`（DeepEval 原生四指标；历史行的口径以「口径版本」列为准）
 
 ## 口径说明：`deepeval-only` 运行
 
-以 `--deepeval-only` 跑的评测**不产出 RAGAS 四指标**，故不进入运行台账的分数对照；如需登记，口径版本列记 `deepeval-only`，并在「主要异常」注明"仅行为轴"。它只用于 DeepEval 功能的迭代验收，**不参与发布门禁与跨轮分数比较**。
+以 `--deepeval-only` 跑的评测**不产出主分四指标**，故不进入运行台账的分数对照；如需登记，口径版本列记 `deepeval-only`，并在「主要异常」注明"仅行为轴"。它只用于 DeepEval 功能的迭代验收，**不参与发布门禁与跨轮分数比较**。
 
 ## 运行台账（全量 21 题）
 
@@ -74,7 +75,7 @@
 1. **各指标的有效样本数不一致**：主分只统计 `pure_kb` 行；但 `answer_correctness` / `answer_relevancy` 不需 context，连空检索题也算；`context_recall` 又会因裁判失败再少一行。读均值前先确认分母。
 2. **报告不落盘裁判配置**（缺口 c）：表中「裁判配置」列对历史行都是推定值，不可当证据。修法：报告头 + 旁挂 `*.meta.json` 记录 judge model / 思考档 / cap / 超时 / attempts / 测试集 / git commit。
 3. **context_precision 不可复现**（缺口 b）：同题面、同 TOP_K，两次运行出现 1.0 → 0.0 的翻转，且有「recall 高但 precision=0」的判错行。跨轮比较该指标时，差异小于 ~0.1 不足为凭。
-4. **喂给 RAGAS 的 context 未去重/截断**（缺口 a）：`src/cli/eval_deepeval.py` 把 Agent 全部工具产出原样传入，多轮检索的题 context 数可达 40+，而 context_precision 是「条数越多越吃亏」的 average precision。待调研定论后修。
+4. **喂给裁判的 context 未去重/截断**（缺口 a）：`src/cli/eval_deepeval.py` 把 Agent 全部工具产出原样传入，多轮检索的题 context 数可达 40+，而 context_precision 是「条数越多越吃亏」的 average precision。待调研定论后修。
 
 ## 怎么用
 

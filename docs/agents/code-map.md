@@ -47,7 +47,7 @@ api/               纯路由层：请求校验 → 调 service → 返回（不�
   ├─ sessions.py   会话 list / messages / delete / cancel + 过程事件与任务（`api/sessions/*`）
   ├─ feedback.py   回答反馈 `api/feedback`
   ├─ llm_test.py   连通性自检 `api/llm/test`
-  ├─ ragas_generate.py  评估测试集生成 `api/ragas/generate`
+  ├─ ragas_generate.py  已退役的出题端点 `api/ragas/generate`（保留路由，恒 410）
   ├─ alerts.py     阿里云告警接入 `api/alerts/webhook`（读请求头 token 后交 alert_service）
   └─ capabilities.py    能力清单 `api/skills`、`api/agents`（经 service 派生）
   ⚠ SSE 序列化不在本层：`src/utils/sse.py`（本层只调 `to_sse`，不得内联格式化）
@@ -73,7 +73,7 @@ config/            settings(环境变量) / const(常量/文案/枚举) / respon
                    —— 段模板(`kind: section`)与独立任务模板(`kind: task`)同处一包；改 prompt 文案改 YAML，改规则的挂载点改代码
 infra/             基础设施：db(engine/DSN + transaction 事务边界 + models + repos + vector_store + lexical_query) / llm(tracing 为 Langfuse 开关/flush/trace id 校验唯一入口；langfuse_purge 为保留期删除的 SQL 后端；token_count 为统一 token 计数入口——tiktoken 近似，encoder 缺失时降级 `len(text)//2` 并记一次 warning；**provider/ 为 provider 兼容层，见下**) / search(tokenizer 为唯一 jieba 分词入口) / auth / redis_client
 middleware/        auth / trace_id / response_processor（统一响应包装）
-cli/               RAGAS 评估、检索对比、trace 回放/清理、症状指标、种子与防腐闸门（check_docs / check_adr）等命令行工具
+cli/               DeepEval 评测、检索对比、trace 回放/清理、症状指标、种子与防腐闸门（check_docs / check_adr）等命令行工具
 models.py          模型门面（**薄委托** `src/infra/llm/provider/`）：get_llm / get_classify_llm / get_summary_llm / get_judge_llm / get_embeddings / get_rerank
 utils/             sse 事件类型 / errors / desensitize / auth_crypto
 tools/             工具基类（base.py）
@@ -185,7 +185,7 @@ Nginx 容器把本目录挂到 `/usr/share/nginx/html` 直接托管，**无 npm 
 | 文件 | 行数 | 用途 | 依赖 |
 |------|------|------|------|
 | `chat.html` | ~3030 | **对话问答页**（主页面，Nginx 默认 index）| 自包含内联 CSS/JS；仅外链 `vendor/marked.min.js`、`vendor/purify.min.js`、Google Fonts |
-| `index.html` | ~1269 | **知识库管理页**（KB/文档增删、上传、分块预览、RAGAS 徽标）| 自包含；外链 `js/api.js` |
+| `index.html` | ~1269 | **知识库管理页**（KB/文档增删、上传、分块预览、评测徽标）| 自包含；外链 `js/api.js` |
 | `login.html` | ~44 | 登录页 | — |
 | `js/api.js` | 209 | REST API 请求封装（统一错误处理 / trace_id） | 被 `index.html` 引用 |
 | `js/chat.js` | 809 | 早期 SSE 聊天控制器（外部 JS 版） | **当前页面未引用**（chat.html 已自包含），历史遗留 |

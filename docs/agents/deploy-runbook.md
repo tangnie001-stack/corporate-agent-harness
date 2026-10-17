@@ -363,8 +363,8 @@ provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定�
 | 出题专用 `RAGAS_TEST_*` / `RAGAS_DOC_WHITELIST` | 删除（随出题路退役） |
 
 启动期检测到任何 `RAGAS_*` 会 fail-fast；先改共享 `.env` 再部署。
-旧 `data/ragas/` 不自动删除，确认无引用后人工清理；历史 `report_path` 不迁移。
-旧的 `kg_*.json` 与 `llm_cache/` 已移到 `data/deepeval/_obsolete_ragas_cache/`（未删除），确认无需复用后人工清理该目录。
+旧 `data/ragas/` **不自动删除**，确认无引用后人工清理；历史 `report_path` **不迁移**（旧报告的 CSV 路径继续指向旧目录，仅作留档，不再被新运行覆盖）。
+`_obsolete_ragas_cache/`（旧 `kg_*.json` 与 `llm_cache/` 的归档）**不自动删除**，确认无需复用后人工清理该目录。
 
 ---
 

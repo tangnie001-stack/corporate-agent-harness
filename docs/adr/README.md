@@ -156,11 +156,12 @@ R3 的精神是 `CLAUDE.md`「选型纪律」的延伸：**凡有意偏离基线
 | [0019](0019-langfuse-public-exposure.md) | Langfuse 放开公网访问（`:3000` 对外），接受 EOL 服务的暴露风险 | Accepted | 局部取代 0011 的「暴露面收敛到仅回环」 |
 | [0020](0020-no-model-gateway-direct-provider.md) | 不启用 LiteLLM 模型网关，三类模型直连 Provider | Accepted | 与 `model-config` / `model-gateway` 规格相关；不取代任何在先 ADR；**0021 在其『不引入替代网关』边界内引入应用内 provider 兼容层**；**0025 在其边界内处理『长时不可用』尺度（亦不做进程内自愈）** |
 | [0021](0021-provider-compat-layer.md) | 引入应用内 provider 兼容层（registry 数据面 + 思考形状归一化 + 角色解析），拒绝网关 | Accepted | 在 0020 之上构建，非网关；不取代任何在先 ADR |
-| [0022](0022-ragas-testset-input-scope.md) | RAGAS 出题的输入边界由使用方负责（白名单保留）；评估检索与出题同范围 | Accepted | 不取代任何在先 ADR；证据见 `docs/research/2026-10-13-ragas-testset-generation.md`；**其决策 C 已被 0023 局部取代** |
-| [0023](0023-ragas-whitelist-bounds-generation-only.md) | RAGAS 白名单只约束出题；评估检索镜像生产（整库），不按白名单收窄 | Accepted | 局部取代 0022 的决策 C |
+| [0022](0022-ragas-testset-input-scope.md) | RAGAS 出题的输入边界由使用方负责（白名单保留）；评估检索与出题同范围 | Superseded by 0027 | 不取代任何在先 ADR；证据见 `docs/research/2026-10-13-ragas-testset-generation.md`；**其决策 C 先由 0023 局部取代，后整体被 0027 完全取代** |
+| [0023](0023-ragas-whitelist-bounds-generation-only.md) | RAGAS 白名单只约束出题；评估检索镜像生产（整库），不按白名单收窄 | Superseded by 0027 | 局部取代 0022 的决策 C；后整体被 0027 完全取代（评估侧不设白名单的约束在 0027 重述） |
 | [0024](0024-ragas-judge-client-policy.md) | RAGAS 裁判客户端策略：细粒度超时 / 关 SDK 重试 / 本层有界重试（含超时）/ max_tokens=4096 / 关思考 / 失败必留原始响应并挂 trace_id | Superseded by 0026 | 落实 change `ragas-modern-stack` 的 design D6；不取代任何在先 ADR；**记明并推翻该 design 早期的「输入撑爆」「生成失控」两条判断**；**完全被 0026 取代（换 DeepEval 桥后逐条复核）** |
 | [0025](0025-no-in-process-fallback-for-long-outage.md) | 模型长时不可用不做进程内自愈（快速失败 + 明确告知 + 人工部署级切换） | Accepted | ADR-0020 在「长时不可用」尺度上的直接应用；遵守 0021 的层边界；不取代任何在先 ADR |
-| [0026](0026-ragas-judge-client-policy-under-bridge.md) | DeepEval 桥下的裁判 client 政策：细粒度超时落 `http_async_client` / 关 SDK 重试 / NaN 判据重试 / 失败证据走请求级 hooks；记明两处桥不可控旋钮（温度分档 / ragas 框架层 max_retries=10） | Accepted | 完全取代 0024（换 DeepEval 桥后逐条复核） |
+| [0026](0026-ragas-judge-client-policy-under-bridge.md) | DeepEval 桥下的裁判 client 政策：细粒度超时落 `http_async_client` / 关 SDK 重试 / NaN 判据重试 / 失败证据走请求级 hooks；记明两处桥不可控旋钮（温度分档 / ragas 框架层 max_retries=10） | Superseded by 0027 | 完全取代 0024（换 DeepEval 桥后逐条复核）；后整体被 0027 完全取代（细粒度超时 / hooks / `max_retries=0` 等约束在 0027 重述） |
+| [0027](0027-deepeval-native-metrics-ragas-retirement.md) | 评测改用 DeepEval 原生四指标；诊断指标不进主分；RAGAS 依赖/出题/命名全量退役；baseline 不判门禁 | Accepted | 完全取代 0026 / 0022 / 0023；重述仍生效的超时/hooks/检索范围约束 |
 
 ## 模板
 

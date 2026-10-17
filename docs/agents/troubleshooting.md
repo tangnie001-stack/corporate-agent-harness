@@ -177,7 +177,7 @@ docker exec corporate-rag-app grep "<trace_id>" /data/logs/app_YYYY-MM-DD.log
 **怎么查**：
 
 ```bash
-TID=$(python -c "import csv,glob,os;print(next(csv.DictReader(open(sorted(glob.glob('data/ragas/reports/*.csv'))[-1],encoding='utf-8-sig')))['trace_id'])")
+TID=$(python -c "import csv,glob,os;print(next(csv.DictReader(open(sorted(glob.glob('data/deepeval/reports/*.csv'))[-1],encoding='utf-8-sig')))['trace_id'])")
 python -m src.cli.trace_logs "$TID" --grep "judge call"   # 该题每次裁判尝试 + 失败时的异常链摘要（请求级证据另见 provider hooks 日志）
 python -m src.cli.trace_logs "$TID" --grep "metric retry" # 重试原因（异常链摘要）
 ```

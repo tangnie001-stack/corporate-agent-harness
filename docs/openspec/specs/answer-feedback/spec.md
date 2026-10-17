@@ -6,7 +6,7 @@ TBD - created by syncing change agentic-clarification. Update Purpose after sync
 
 ### Requirement: 答案反馈接口
 
-系统 SHALL 提供 `POST /api/feedback` 接口，接收 `{session_id, message_index, rating, comment?}`（rating 为 positive/negative）；前端在每条助手回答下展示 👍/👎 按钮（可选用后附原因）；反馈落库，供 RAGAS eval 与数据分析消费。反馈 SHALL 不进入模型上下文，不影响后续回答。
+系统 SHALL 提供 `POST /api/feedback` 接口，接收 `{session_id, message_index, rating, comment?}`（rating 为 positive/negative）；前端在每条助手回答下展示 👍/👎 按钮（可选用后附原因）；反馈落库，供评测与数据分析消费。反馈 SHALL 不进入模型上下文，不影响后续回答。
 
 #### Scenario: 用户反馈正面
 - **WHEN** 用户在回答下点击 👍 并可选填原因

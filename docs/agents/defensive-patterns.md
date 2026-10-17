@@ -248,7 +248,7 @@ docker compose exec -T nginx nginx -s reload     # 或：docker compose restart 
 
 **现象**：`docker-compose.override.yml` 曾把 6 条开发期挂载写成主工作区绝对路径（`/mnt/.../corporate_rag/{src,tests,skills,agents}` 与 `deploy/nginx/{nginx.conf,html}`）。危害两层，都是静默的：① 仓库 clone / 挪到别的路径后 bind 源不存在（Docker 可能报错，也可能静默建成**空目录**），容器看不到 `src/` 与 nginx 内容；② 在 `git worktree` 里跑 compose 时挂的仍是**主工作区**的文件 —— worktree 的改动静默失效，且看起来像生效了。
 
-**规则**：compose 的 bind mount 一律写**相对路径**（`./src:/app/src`）。相对 bind 按「compose 文件所在目录」解析，**与调用时的 cwd 无关**，因此主工作区与各 worktree 各自解析到自己。主 compose（`./data/ragas`、`./deploy/postgres/init`）原本就是此写法，override 曾偏离。
+**规则**：compose 的 bind mount 一律写**相对路径**（`./src:/app/src`）。相对 bind 按「compose 文件所在目录」解析，**与调用时的 cwd 无关**，因此主工作区与各 worktree 各自解析到自己。主 compose（`./data/deepeval`、`./deploy/postgres/init`）原本就是此写法，override 曾偏离。
 
 ## 开发期闸门（pre-commit）
 

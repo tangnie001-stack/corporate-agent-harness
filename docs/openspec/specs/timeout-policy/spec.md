@@ -9,7 +9,7 @@ TBD - created by archiving change timeout-and-degradation-hardening. Update Purp
 
 超时与重试取值 SHALL **按角色**（`main` / `classify` / `summary` / `embedding` / `rerank`）配置，并 SHALL 住 `src/config/settings.py`（可从 env 覆盖）；SHALL NOT 写入 `registry.yaml`（该文件只装 provider/模型的固有事实：端点 / 密钥名 / 窗口 / 定价 / 分词比）。
 
-**`judge` 角色显式排除在本变更之外**：其超时真源属**评测链**（`RAGAS_*` 族），由在途 change `deepeval-bridge-eval` 处置 —— 本变更 SHALL NOT 为其新增角色级取值或接管其现有键（评审 I6）。
+**`judge` 角色显式排除在本变更之外**：其超时真源属**评测链**（`JUDGE_*` / `EVAL_*` 族），由在途 change `deepeval-bridge-eval` 处置 —— 本变更 SHALL NOT 为其新增角色级取值或接管其现有键（评审 I6）。
 
 #### Scenario: 构造任一角色客户端
 - **WHEN** 经 `build_chat` / `build_embeddings` / `build_rerank` 构造任一角色的客户端
@@ -21,7 +21,7 @@ TBD - created by archiving change timeout-and-degradation-hardening. Update Purp
 
 #### Scenario: judge 不在本变更范围
 - **WHEN** 检查 `judge` 角色的超时来源
-- **THEN** 它由评测链的 `RAGAS_*` 族提供，SHALL NOT 由本变更新增的角色级取值接管
+- **THEN** 它由评测链的 `JUDGE_*` / `EVAL_*` 族提供，SHALL NOT 由本变更新增的角色级取值接管
 
 ### Requirement: 流式调用的超时按「传输层单一预算 + 业务层事件守护」两层表达
 
@@ -56,7 +56,7 @@ TBD - created by archiving change timeout-and-degradation-hardening. Update Purp
 - **SHALL NOT 重试**：输入校验类（如 `ValueError`，特征为失败耗时 ≈ 0）、鉴权/权限类（401/403）、请求格式类（400/422）；
 - **SHALL 重试**（有界）：超时、连接错误、429、5xx。
 
-**适用范围**：本条约束**生产链路**的角色。**评测链**（`judge` / `RAGAS_*`）的 429 与 403 重试口径归在途 change `deepeval-bridge-eval`（其 ragas 框架层已对 429 重试 ≤10 次 ⇒ 外层**不再**重试 429；403 额度类不属该类 ⇒ **由评测链外层重试**），**本规格不适用**。
+**适用范围**：本条约束**生产链路**的角色。**评测链**（`judge` / `JUDGE_*` / `EVAL_*`）的 429 与 403 重试口径归在途 change `deepeval-bridge-eval`（其 ragas 框架层已对 429 重试 ≤10 次 ⇒ 外层**不再**重试 429；403 额度类不属该类 ⇒ **由评测链外层重试**），**本规格不适用**。
 
 退避 SHALL 含**随机抖动**。异步调用点使用的重试 SHALL 以异步等待实现（SHALL NOT 使用同步 sleep 阻塞事件循环）。
 

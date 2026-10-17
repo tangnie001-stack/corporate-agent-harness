@@ -68,25 +68,25 @@
 
 | 实践点 | 业界最佳实践（出处） | 我们的现状 | 状态 |
 |--------|--------------------|-----------|------|
-| 三层独立评估 | 检索层（Recall@k / nDCG / MRR）→ 生成层（Faithfulness 等）→ 归因层（ChunkAttribution / Utilization） | 部分：RAGAS 四指标 + 检索对比 CLI（`src/cli/compare_retrieval.py`）；**无归因层** | ⚠️ 部分 |
-| RAGAS 四指标不聚合 | Faithfulness / Answer Relevancy / Context Precision / Context Recall 分列，不合并为单一分 | **已落地**：`src/cli/eval_deepeval.py` 四指标分列、保留单值 | ✅ 对齐 |
+| 三层独立评估 | 检索层（Recall@k / nDCG / MRR）→ 生成层（Faithfulness 等）→ 归因层（ChunkAttribution / Utilization） | 部分：DeepEval 原生四指标 + 检索对比 CLI（`src/cli/compare_retrieval.py`）；**无归因层** | ⚠️ 部分 |
+| 评测四指标不聚合 | Faithfulness / Answer Relevancy / Context Precision / Context Recall 分列，不合并为单一分 | **已落地**：`src/cli/eval_deepeval.py` 四指标分列、保留单值 | ✅ 对齐 |
 | 生产监控黄金信号 | TTFT / TPOT / 单请求成本 / 守卫命中率 / 隐式反馈 | 部分：Langfuse trace（生成 span + token + 成本）+ `src/cli/symptom_metrics.py`；TTFT / TPOT 未单列指标 | ⚠️ 部分 |
 | Span 级追踪 | 每请求展开检索 / 生成 / 守卫 / 路由 span（Langfuse 或 Phoenix） | 部分：Langfuse v2 `@observe` + `src/infra/llm/tool_trace.py`（ADR-0015）覆盖生成与工具；守卫 / 路由 span 无 | ⚠️ 部分 |
-| CI/CD 门禁 | Golden set 每次 PR 跑 RAGAS，按阈值卡口（如 faithfulness ≥ 0.90） | **无 CI**（`D-02`）；`--gate` 存在但**不作唯一发布门禁**（见 §5） | ❌ |
+| CI/CD 门禁 | Golden set 每次 PR 跑评测，按阈值卡口（如 faithfulness ≥ 0.90） | **无 CI**（`D-02`）；`--gate` 存在但**不作唯一发布门禁**（见 §5） | ❌ |
 | Embedding Drift / Stale Context 检测 | 组件版本化 + MRR 随时间监控 + corpus 版本化（hash + date + chunk count） | 无 corpus 版本化与漂移监控 | ❌ |
 | 在线采样评估 | 5~20% 生产流量在线评分（异常请求 100% 采样） | 无（`F-08`） | ❌ |
-| Judge 模型校准 | **永远不要信任未校准的 LLM judge**：≥50~100 样本对齐人工、固定 judge 版本、与生成模型异族 | 部分：裁判与选手分离（`get_judge_llm` / `RAGAS_LLM_MODEL`，`temperature=0`）；**未与人工标注校准** | ⚠️ 部分 |
+| Judge 模型校准 | **永远不要信任未校准的 LLM judge**：≥50~100 样本对齐人工、固定 judge 版本、与生成模型异族 | 部分：裁判与选手分离（`get_judge_llm` / `JUDGE_MODEL`，`temperature=0`）；**未与人工标注校准** | ⚠️ 部分 |
 
-## 5. RAGAS 评估实操
+## 5. 评测实操
 
 | 实践点 | 业界最佳实践（出处） | 我们的现状 | 状态 |
 |--------|--------------------|-----------|------|
 | 评估 LLM temperature=0 | 评估是测量行为；`temperature=0` 保证同一样本多次运行分数一致 | **已落地**：裁判 `temperature=0` 且不传 `top_p`（`src/infra/llm/provider/factory.py`） | ✅ 对齐 |
 | 裁判与生产模型异族 | 避免 self-bias（如生产用一族的 chat 模型、评估用另一族） | **已落地**：裁判独立缺省（`dashscope`），与主链路 `LLM_PROVIDER` 解耦 | ✅ 对齐 |
-| 黄金测试集（Golden Dataset） | 50~200 条人工标注、固定版本作基线、每季度轮换 10~20% | 部分：有固定测试集（`data/ragas/testset/`）与 `--gate`；**规模与轮换策略未标定** | ⚠️ 部分 |
-| 指标解读定位瓶颈 | `context_precision` 低→Top-K 过大或缺重排；`faithfulness` 低→LLM 未受约束；`context_recall` 低→分块不合理；`answer_relevancy` 低→答非所问 | **已落地**：形成实操口径（见 `docs/agents/ragas-eval-ledger.md`、`cookbook.md`） | ✅ 对齐 |
+| 黄金测试集（Golden Dataset） | 50~200 条人工标注、固定版本作基线、每季度轮换 10~20% | 部分：有固定测试集（`data/deepeval/testset/`）与 `--gate`；**规模与轮换策略未标定** | ⚠️ 部分 |
+| 指标解读定位瓶颈 | `context_precision` 低→Top-K 过大或缺重排；`faithfulness` 低→LLM 未受约束；`context_recall` 低→分块不合理；`answer_relevancy` 低→答非所问 | **已落地**：形成实操口径（见 `docs/agents/eval-ledger.md`、`cookbook.md`） | ✅ 对齐 |
 | 不合成单一综合分 | 保留各指标单值，不做 PASS/FAIL 判定；`--gate` 仅作参考 | **已落地**：`--gate` 不作唯一发布门禁 | ✅ 对齐 |
-| 结构化输出便于 CI 集成 | 结果以 CSV + Markdown 持久化，便于回归对比 | **已落地**：报告落 `data/ragas/reports` 并写 DB 表 `eval_report`（`src/infra/db/models/eval_report.py`） | ✅ 对齐 |
+| 结构化输出便于 CI 集成 | 结果以 CSV + Markdown 持久化，便于回归对比 | **已落地**：报告落 `data/deepeval/reports` 并写 DB 表 `eval_report`（`src/infra/db/models/eval_report.py`） | ✅ 对齐 |
 | 评估时机策略 | 参数改动跑全量黄金集；生产抽样 1~5%；用户反馈触发单条深度评估 | 部分：离线全量已做；生产抽样未做（同 §4 在线采样） | ⚠️ 部分 |
 
 ## 6. 文档解析
@@ -165,7 +165,7 @@
 | 限流（API 入口 + LLM 调用） | 入口限流防滥用、LLM 调用限流控成本 | 无 | ❌（`A-01`） |
 | 熔断（外部依赖） | Embedding / Rerank / LLM 各自熔断；连续失败 3~5 次打开、5 分钟后半开 | 无 | ❌（`A-02`） |
 | 分层降级 | Embedding 不可用→退关键词路；Rerank 不可用→用原始检索结果；主 LLM 不可用→切备用模型或返回原文 | 部分：**精排失败 / 超时已降级**为向量距离排序并记事件（`rerank_results` / `RERANK_TIMEOUT`）；**LLM 失败 → 返回检索原文 + 告知**（**有意不做模型 fallback**，= ADR-0020 的直接应用，见 change `timeout-and-degradation-hardening` D9）；Embedding 失败退词法**待做**。**2026-10-16 更新（P2/P3 已落地）**：① **单路失败降级**（`search()` 的 `gather` 带 `return_exceptions`，任一路失败仍返回另一路，`hybrid done` 增 `dense_status`/`sparse_status` 三态把「失败」与「缺席」分开）；② **降级动作落各调用点** + 一条 `degraded` 事件留痕（`reason` 取自规格取值集合表）；③ **生成任务级 idle 兜底**（`_idle_guard`，两档阈值 × 思考档；档 1 **只记录不中止**） | ✅（P2/P3） |
-| 不重试所有错误 | 401 / 403 / 400 与输入校验类不重试；rate limit 等待后重试；timeout 有限重试后走降级 | 部分：有界重试已实现（`with_retry`，`RETRY_MAX_ATTEMPTS=3` + 指数退避），但**未按异常类型分流**——输入校验类仍重试（`A-03` 2026-10-15 实测）；RAGAS 侧已按此修（ADR-0024）。**2026-10-16 更新（P1/P2 已落地）**：抽 `src/infra/retry_policy.py` 做**异常分类**（输入校验类 / 鉴权权限类 / 请求格式类**不重试**；超时 / 连接 / 429 / 5xx 有界重试；未列出的默认不重试），并新增 `classify_failure` 把失败映射到降级原因；`judge` 角色**排除**在本变更之外（其超时/重试真源归评测链，D17） | ✅（P1/P2） |
+| 不重试所有错误 | 401 / 403 / 400 与输入校验类不重试；rate limit 等待后重试；timeout 有限重试后走降级 | 部分：有界重试已实现（`with_retry`，`RETRY_MAX_ATTEMPTS=3` + 指数退避），但**未按异常类型分流**——输入校验类仍重试（`A-03` 2026-10-15 实测）；评测侧已按此修（ADR-0026，现由 ADR-0027 完全取代并延续该策略）。**2026-10-16 更新（P1/P2 已落地）**：抽 `src/infra/retry_policy.py` 做**异常分类**（输入校验类 / 鉴权权限类 / 请求格式类**不重试**；超时 / 连接 / 429 / 5xx 有界重试；未列出的默认不重试），并新增 `classify_failure` 把失败映射到降级原因；`judge` 角色**排除**在本变更之外（其超时/重试真源归评测链，D17） | ✅（P1/P2） |
 | 重试用指数退避 + jitter | 初始 100ms、倍数 2、最大 5s，加随机 jitter 防惊群 | 偏离：`RETRY_INITIAL_INTERVAL=1.0s` / `RETRY_BACKOFF_FACTOR=2.0`（**无最大间隔上限**）。**2026-10-16 更新（P1 已落地）**：重试原语自带 **±jitter 比例**（`jitter=0` 时退化为确定性值，供测试断言），并提供 **sync / async 两版**（异步版用 `await asyncio.sleep`，不阻塞事件循环）。**仍偏离**：初始间隔 1.0 秒（业界建议 100 毫秒）且**无最大间隔上限** —— 但 `attempts=3` 时总等待仅 1+2 秒，对在线链路可接受 ⇒ 记为**有意偏离**，不拦合并 | ✅（P1，含 2 项有意偏离） |
 | 降级后告知用户 | 返回"服务降级中、结果可能不完整"，不返回通用 500 或空结果 | 部分：检索空由 abstain 文案承接；上游**可用性错误**（额度耗尽等）只给**通用**的"连接异常，请重试" —— 对"重试必然再失败"的错误属**误导向**，需按类别给可区分文案。**2026-10-16 更新（P2/P3 已落地）**：降级文案经**既有 `status` 事件 + 专用 stage**送达，取值一律取自规格取值集合表（**不得自造**）；`provider_unavailable` 类**不诱导重试**；**有检索结果时**一律附上**检索原文**（`reason` 记原因、文案记交付产物，二者解耦） | ✅（P2/P3） |
 | Chaos Engineering | 测试环境主动注入故障（停 Embedding、让 LLM 超时），验证降级路径生效 | 无 | ❌ |

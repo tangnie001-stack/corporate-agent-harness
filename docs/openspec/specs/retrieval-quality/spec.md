@@ -85,7 +85,7 @@ Results SHALL include average relevance score and recall@K metrics per combinati
 
 The system SHALL render entity metadata (company / report_period / sec_code / person / currency / report_type) into the retrieval context shown to the LLM, via `RAGContext.to_prompt_text()`. Only entities that exist SHALL be rendered, in the order defined by `ENTITY_RENDER_ORDER`.
 
-The rendered format SHALL be shared between production prompt generation and RAGAS NLI evaluation context, so both see identical context.
+The rendered format SHALL be shared between production prompt generation and evaluation judge context, so both see identical context.
 
 #### Scenario: Context with entities
 - **WHEN** a retrieved chunk has `entities={company: 东软集团, report_period: 2025年第一季度}` and is included in `format_context`
@@ -148,7 +148,7 @@ The system SHALL carry entity metadata from the `chunks` table through the reran
 - 查询条件的**构造方式**（前缀 AND / 前缀 OR / 整词 AND / 原文子串）SHALL 作为与分词器**并列**的变量单独比较，SHALL NOT 与分词器变更同时进行
 - 报告 SHALL 包含命中数与词项总数及词项清单，并声明**仅供相对比较**
 
-端到端答案质量（RAGAS 类指标）**明确不在本变更的验收范围内**，SHALL 登记为语料到位后的独立评估活动。
+端到端答案质量（评测指标）**明确不在本变更的验收范围内**，SHALL 登记为语料到位后的独立评估活动。
 
 #### Scenario: dense 迁移等价性可判定
 

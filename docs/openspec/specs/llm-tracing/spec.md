@@ -354,7 +354,7 @@ trace SHALL 记录触发该轮对话的用户标识；SHALL 记录一组**低基
 
 ### Requirement: 评测结果回写为 trace 分数
 
-RAGAS 评测 SHALL 把每题的各指标分数回写到其对应的 trace 上，使评测结果可在 Langfuse 中按 trace 查看与筛选。
+评测 SHALL 把每题的各指标分数回写到其对应的 trace 上，使评测结果可在 Langfuse 中按 trace 查看与筛选。
 
 回写 SHALL 显式按**每题的 trace id** 定位 trace（评分发生在**批量评测之后**、逐题的观测上下文已关闭，故 SHALL NOT 依赖"当前 observation / 当前 trace"的隐式上下文）。
 

@@ -64,7 +64,7 @@ Existing chunker behaviors (parent_child / table_preserving / qa) and the table-
 
 The system SHALL render entity metadata into the LLM prompt context via `RAGContext.to_prompt_text()`, rendering only entities that exist, in the order defined by `ENTITY_RENDER_ORDER`.
 
-The rendered format SHALL be identical for production prompt generation and RAGAS NLI evaluation context.
+The rendered format SHALL be identical for production prompt generation and evaluation judge context.
 
 #### Scenario: Entities appear in prompt text
 - **WHEN** a context has `entities={company: 东软集团, report_period: 2025年第一季度}`

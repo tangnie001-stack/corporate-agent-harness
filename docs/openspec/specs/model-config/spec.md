@@ -21,7 +21,7 @@ TBD - created by archiving change kb-routing-and-litellm-gateway. Update Purpose
 
 #### Scenario: Embedding / Rerank / Judge 独立
 
-- **WHEN** `LLM_PROVIDER=deepseek` 且未设 `EMBEDDING_PROVIDER` / `RERANK_PROVIDER` / `RAGAS_PROVIDER`
+- **WHEN** `LLM_PROVIDER=deepseek` 且未设 `EMBEDDING_PROVIDER` / `RERANK_PROVIDER` / `JUDGE_PROVIDER`
 - **THEN** Embedding、Rerank、Judge 仍使用 `dashscope`（DeepSeek 无对应端点；judge 为离线评测，需与生产 provider 解耦）
 
 #### Scenario: 密钥来源单一
@@ -36,7 +36,7 @@ TBD - created by archiving change kb-routing-and-litellm-gateway. Update Purpose
 
 ### Requirement: LLM 创建
 
-`get_llm()`、`get_classify_llm()`、`get_summary_llm()`、`get_judge_llm()` SHALL 经 `provider-compat` 层创建 `ChatOpenAI` 实例，直连所选 provider 的 OpenAI 兼容端点（不启用 LiteLLM Proxy，见 ADR-0020）。前三个函数的**既有调用点** SHALL 保持不变（参数列表向后兼容：`model` 默认改 `None`，空 / 未设 → `registry.models[role]`）；`get_judge_llm()` 为本变更新增（RAGAS 裁判显式绑 `judge` 角色）。
+`get_llm()`、`get_classify_llm()`、`get_summary_llm()`、`get_judge_llm()` SHALL 经 `provider-compat` 层创建 `ChatOpenAI` 实例，直连所选 provider 的 OpenAI 兼容端点（不启用 LiteLLM Proxy，见 ADR-0020）。前三个函数的**既有调用点** SHALL 保持不变（参数列表向后兼容：`model` 默认改 `None`，空 / 未设 → `registry.models[role]`）；`get_judge_llm()` 为本变更新增（评测裁判显式绑 `judge` 角色）。
 
 #### Scenario: 正常创建
 
@@ -52,7 +52,7 @@ TBD - created by archiving change kb-routing-and-litellm-gateway. Update Purpose
 
 - **WHEN** 调用 `get_judge_llm()`
 - **THEN** 使用 `judge` 角色解析出的 provider 与模型（而非 `main`）
-- **THEN** `judge` 的 provider 缺省为 `dashscope`（可用 `RAGAS_PROVIDER` 覆盖），模型取自 `RAGAS_LLM_MODEL` 或 `registry.models[judge]`
+- **THEN** `judge` 的 provider 缺省为 `dashscope`（可用 `JUDGE_PROVIDER` 覆盖），模型取自 `JUDGE_MODEL` 或 `registry.models[judge]`
 
 #### Scenario: 思考内容保留
 

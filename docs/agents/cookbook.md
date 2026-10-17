@@ -10,7 +10,7 @@
 2. **多步骤**：需要 2 步以上才能完成
 3. **有踩坑细节**：存在参数、顺序、环境依赖等容易出错的地方
 
-典型例子：跑 RAGAS 评估、新增分块策略、加 LLM provider、迁移文档、修复环境依赖。
+典型例子：跑质量评估、新增分块策略、加 LLM provider、迁移文档、修复环境依赖。
 
 ## 不记录什么
 
@@ -36,24 +36,24 @@
 
 ## 示例
 
-### 跑一次 RAGAS 质量评估
+### 跑一次质量评估
 
 **场景**：需要量化某个知识库的检索+生成质量
 **步骤**：
-1. 生成测试集：`python -m src.cli.eval_deepeval --kb-id <kb_id> --generate --size 20`
+1. 确认测试集已就位（`data/deepeval/testset/testset_<kb_id>_v<N>.json`；出题已下线）
 2. 执行评估：`python -m src.cli.eval_deepeval --kb-id <kb_id>`
-3. 需要质量门禁时加 `--gate`
+3. 需要质量门禁时加 `--gate`；新口径首轮用 `--run-type baseline`（不判门禁）
 **验证**：检查输出 CSV/Markdown，确认 `eval_report` 表有记录
-**注意事项**：需要 `DASHSCOPE_API_KEY`；测试集生成前会脱敏
+**注意事项**：需要 `DASHSCOPE_API_KEY`；旧口径分数与新口径不可直接比较
 
-### 采一次 prompt 度量（RAGAS + 三症状指标 + 段体积）
+### 采一次 prompt 度量（评测 + 三症状指标 + 段体积）
 
 **场景**：改动 system prompt（段正文 / 模板）后记录当时的**绝对水平**，作为阶段性留档。
 **步骤**：
-1. RAGAS：`POSTGRES_HOST=localhost .venv/bin/python -m src.cli.eval_deepeval --kb-id <kb_id> --testset-version <N> --output data/ragas/reports/<name>`
+1. 评测：`POSTGRES_HOST=localhost .venv/bin/python -m src.cli.eval_deepeval --kb-id <kb_id> --testset-version <N> --output data/deepeval/reports/<name>`
 2. 三症状指标：`python -m src.cli.symptom_metrics --log-dir logs --out docs/tmp/<name>-symptoms.txt`
 3. 段体积：从同批请求日志取 `section_chars` —— `grep -o 'section_chars={[^}]*}' logs/app_*.log | tail -20`
-**验证**：留档文件里四类数据（RAGAS / 三症状 / 段体积 / 环境）都有值；`symptom_metrics` 的
+**验证**：留档文件里四类数据（评测 / 三症状 / 段体积 / 环境）都有值；`symptom_metrics` 的
 `traces_total ≠ 0`（为 0 说明日志目录读错了）
 **注意事项**：
 - ⚠ **跑完先看 `contexts=` 是不是 0** —— 截至 2026-09-22，`eval_deepeval` 不设置 `RequestContext`，
@@ -330,7 +330,7 @@
 - 前提：override 的挂载须是相对路径（本仓 2026-09-21 已改），否则 worktree 里改代码静默失效（见 defensive-patterns.md「部署」）
 - **`core.symlinks=false`（本仓 git 配置）下，被跟踪的 symlink 会被写成普通文件**：`openspec` 在 git 里是 symlink（mode `120000`），检出到该环境却成了内容为 `docs/openspec` 的**文本文件** → `openspec` CLI 报 `Unknown item '<name>'`。修法：`rm openspec && ln -s docs/openspec openspec`（git 仍判定未变）。**任何新建的 worktree / clone 都会中这一条**。
 - **`.gitignore` 里带尾斜杠的条目忽略不了同名 symlink**：`/data/` 与 `.venv/` 都是这个形态，尾斜杠只匹配**目录**，而 symlink 不是目录 → 整体 symlink 过去会以**未跟踪文件**冒出来（`?? .venv`），有被 `git add .` 带进提交的风险。
-  - `data`：改法是建**真目录** `data/`，只在里面 symlink 具体子目录（`data/ragas`）。
+  - `data`：改法是建**真目录** `data/`，只在里面 symlink 具体子目录（`data/deepeval`）。
   - `.venv`：不能改成真目录（要的就是同一个 venv）。**做法是提交时坚持显式 pathspec、永不 `git add .`**；或把 `.gitignore` 的 `.venv/` 改为不带斜杠的 `.venv`（仓库级改动，需单独决定）；或**只在本机生效**地加进 common dir 的 `info/exclude`：`printf '.venv\n' >> "$(git rev-parse --git-path info/exclude)"`（该文件被所有 worktree 共用、不进任何提交；同时解掉 UA 自动更新因 `?? .venv` 而 `failed: Working tree has relevant uncommitted changes` 的拦截）。
 - **venv 里有指向主工作区的 editable 安装**：`.venv` 内存在 `__editable__.corporate_rag-0.1.0.pth` → `<主工作区>/src`。于是「从 worktree 跑测试」是否真用到 worktree 的代码，**取决于 cwd** ——
   - 从 worktree **根目录**跑（`-c` / 脚本会把 cwd 放进 `sys.path[0]`）→ 解析到 **worktree 的 `src`** ✅

@@ -130,9 +130,9 @@ channel），业务不手写。channel 取值见 `src/config/const.py` 的 `Chan
 `iteration limit`（`AgentTurnBudget` 的 `after_model`）。**事件名与字段集不变**；
 `prompt messages` 仍由 `agent_node` 的首轮组装点发出（见上）。
 
-## 评测（RAGAS）观测事件
+## 评测（DeepEval）观测事件
 
-裁判调用与出题的事件。字段明细同样以 `EVENT_SPECS` 为准，这里只登记**非代码可读的口径**：
+裁判调用与测试集加载的事件。字段明细同样以 `EVENT_SPECS` 为准，这里只登记**非代码可读的口径**：
 
 - `judge call`（cli / info）——裁判**每次尝试**记一条。`ok=false` 表示**该次尝试失败**，
   不等于该指标最终失败（`error` 列只在最终失败时非空）；`note` 在异常路径上为**异常链摘要**

@@ -196,7 +196,7 @@
 > 代码落点 `src/infra/llm/provider/`；决策见 `docs/adr/0021-provider-compat-layer.md`。
 
 - **Provider 兼容层（provider compat layer）**：`src/infra/llm/provider/` 单一包，把各家 provider 的差异（思考参数形状 / reasoning 字段名 / 端点 / 密钥 / 定价 / 窗口）收敛到一层，调用侧只认 `build_chat` / `build_embeddings` / `build_rerank` 三个门面。**它不是网关**：不做多 provider 路由 / fallback / 限流 / 计费聚合（那是 ADR-0020 否决的网关职责）。provider 事实收进数据面 `registry.yaml`，切换 provider = 改 `.env`、新增 provider = 加一条数据。
-- **角色（role）**：兼容层里「一类用途的模型绑定」的抽象，取值 `main`（主对话）/ `classify`（轻量分类）/ `summary`（跨轮摘要）/ `judge`（RAGAS 裁判）/ `embedding` / `rerank`。每个角色解析出 provider + 模型 + 端点 + 密钥；缺省分两族 —— `main` / `classify` / `summary` 跟随 `LLM_PROVIDER`，`embedding` / `rerank` / `judge` **独立缺省 `dashscope`**（DeepSeek 无 embedding/rerank；judge 是离线评测角色）。
+- **角色（role）**：兼容层里「一类用途的模型绑定」的抽象，取值 `main`（主对话）/ `classify`（轻量分类）/ `summary`（跨轮摘要）/ `judge`（评测裁判）/ `embedding` / `rerank`。每个角色解析出 provider + 模型 + 端点 + 密钥；缺省分两族 —— `main` / `classify` / `summary` 跟随 `LLM_PROVIDER`，`embedding` / `rerank` / `judge` **独立缺省 `dashscope`**（DeepSeek 无 embedding/rerank；judge 是离线评测角色）。
 - **思考形状（thinking shape / `ThinkingStyle`）**：同一「思考开关」在不同 provider 落成的请求参数形状。本仓归一化为 `thinking: bool`（on/off），由纯函数 `thinking_extra_body(spec, enabled)` 翻译成目标形状（dashscope → `{"enable_thinking": X}`；deepseek → `{"thinking": {"type": "enabled"/"disabled"}}`），并是**唯一**产生思考参数的地方。**始终显式发开关**（provider 默认值相反，不显式即静默变贵）。
 - **reasoning 字段名（`reasoning_field`）**：provider 声明思考文本落在哪个 delta 字段（多为 `reasoning_content`，OpenRouter 等用 `reasoning`）；为空则整条回传链路跳过（不给不认该字段的 provider 塞多余字段）。
 
@@ -211,7 +211,7 @@
 | `旁白（preamble）` | 最后一次工具调用之前模型输出的 content 流（分拣时由 token 帧固化，payload 为 `{"text": ...}`），渲染为过程容器内的弱化块；深度思考开启时消失（规划内容走 reasoning_content） | ❌ 与 answer 正文混排（正文由 content 列承载，token 帧不入 process） |
 | `过程轨迹（process）` | assistant 消息持久化的有序事件数组（`conversation_history.process` 列，`{"format_version": 1, "events": [...]}`），历史回放据此重建过程容器；D7「历史重载不重建」已反转 | ❌ 把 model_info/abstention/done/error/citation 五类也计入事件 |
 
-## 评估指标（RAGAS）
+## 评估指标（DeepEval 原生）
 
 | 指标 | 含义 |
 |------|------|
@@ -219,6 +219,8 @@
 | `answer_relevancy` | 答案相关性：是否切题 |
 | `context_precision` | 上下文精确率：召回的 chunk 有多相关 |
 | `context_recall` | 上下文召回率：相关信息有多少被召回 |
+| `contextual_relevancy` | **诊断指标**（不进主分）：检索上下文与问题的相关程度，仅判前 8 条 |
+| `non_advice` | **诊断指标**（不进主分）：回答是否给出越界建议（`financial` 类型），不做金融建议 |
 
 ## 基础设施
 

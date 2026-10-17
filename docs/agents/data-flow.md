@@ -357,21 +357,18 @@ trace 产出受 `LANGFUSE_ENABLE` 开关治理；开关、flush 与 trace id 校
 
 入口: `POST /api/auth/login` / `POST /api/auth/verify` / `POST /api/auth/logout` / `POST /api/auth/anonymous`
 
-## 链路 6：RAGAS 质量评估（CLI）
+## 链路 6：DeepEval 质量评估（CLI）
 
-**子链路 6a — 测试集生成**：
-```
-PostgreSQL 查元信息 → PostgreSQL 取 chunks 分块 → 脱敏 → 构建 KnowledgeGraph
-→ transforms → 生成测试集 QA → 保存 JSON
-```
-命令: `python -m src.cli.eval_deepeval --kb-id xxx --generate --size 20`
+**子链路 6a — 测试集准备**：出题模块已退役，评测直接加载固定版本测试集 JSON
+（`data/deepeval/testset/testset_<kb_id>_v<N>.json`）；`--generate` 保留参数、命中即报错。
 
 **子链路 6b — 评估执行**：
 ```
 加载测试集 JSON → 初始化 RAGChain → 对每条 QA 检索+生成
-→ RAGAS 四指标评分 → 保存 CSV + Markdown → 写入 eval_report 表
+→ DeepEval 原生四指标评分（串行）→ 诊断指标写 detail_json（不进主分）
+→ 保存 CSV + Markdown → 写入 eval_report 表
 ```
-命令: `python -m src.cli.eval_deepeval --kb-id xxx`（加 `--gate` 启用质量门禁）
+命令: `python -m src.cli.eval_deepeval --kb-id xxx`（加 `--gate` 启用质量门禁；新口径首轮用 `--run-type baseline`，不判门禁）
 
 ## 链路 7：分块质量评估（嵌入在链路 1 中）★
 

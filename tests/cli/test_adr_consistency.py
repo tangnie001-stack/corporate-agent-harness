@@ -127,6 +127,41 @@ def test_reverse_pointer_satisfies_check(tmp_path):
     assert findings == [], findings
 
 
+def test_local_supersede_waived_when_old_fully_superseded(tmp_path):
+    """旧 ADR 已被第三条完全取代 → 不再要求局部反向指针（局部关系入索引备注）。"""
+    _write_adr(
+        tmp_path,
+        "0001",
+        "old-decision",
+        "- **Status**：Superseded by 0003\n- **Date**：2026-09-22\n- **Deciders**：用户",
+    )
+    _write_adr(
+        tmp_path,
+        "0002",
+        "partial-decision",
+        "- **Status**：Accepted\n- **Date**：2026-09-22\n- **Deciders**：用户\n"
+        "- **Supersedes**：ADR-0001 的「决策 1」（局部）",
+    )
+    _write_adr(
+        tmp_path,
+        "0003",
+        "full-decision",
+        "- **Status**：Accepted\n- **Date**：2026-09-22\n- **Deciders**：用户\n"
+        "- **Supersedes**：ADR-0001",
+    )
+    _write_index(
+        tmp_path,
+        [
+            "| [0001](0001-old-decision.md) | 旧 | Superseded by 0003 | 整条被 0003 取代 |",
+            "| [0002](0002-partial-decision.md) | 局部 | Accepted | 局部取代 0001 |",
+            "| [0003](0003-full-decision.md) | 新 | Accepted | 完全取代 0001 |",
+        ],
+    )
+
+    findings = _run_all(tmp_path)
+    assert findings == [], findings
+
+
 def test_pointer_to_missing_adr_is_detected(tmp_path):
     """Supersedes 指向不存在的 ADR → error。"""
     _write_adr(

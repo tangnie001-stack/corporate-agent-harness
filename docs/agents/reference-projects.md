@@ -36,13 +36,13 @@
 - **何时查阅**：改 `src/api/` 路由、`src/middleware/`、全局异常处理器时。
 
 **ragas**
-- **RAGAS 官方源码**（`vibrantlabsai/ragas`，Apache-2.0）。本项目 RAGAS 评测链路的**唯一行为依据**：`src/cli/eval_ragas.py`（评估）与 `src/cli/eval_ragas_generate.py`（出题）的全部行为以它为准。本地克隆 ref `298b682`（2026-02-23），与在装 `ragas==0.4.3` 的**真实差异仅 10 个文件**（testset 模块 4 个、最多 34 行）。⚠️ **克隆是 CRLF**：直接 `diff` 会把 239 个文件全报成差异，须加 `--strip-trailing-cr` 才看得出真差异。
+- **RAGAS 官方源码**（`vibrantlabsai/ragas`，Apache-2.0）。本项目**历史** RAGAS 评测链路的行为依据（ragas 桥已于 2026-10-17 退役，当前主分走 DeepEval 原生四指标，见 `docs/adr/0027-deepeval-native-metrics-ragas-retirement.md`）；出题模块已整文件删除。本地克隆 ref `298b682`（2026-02-23），与在装 `ragas==0.4.3` 的**真实差异仅 10 个文件**（testset 模块 4 个、最多 34 行）。⚠️ **克隆是 CRLF**：直接 `diff` 会把 239 个文件全报成差异，须加 `--strip-trailing-cr` 才看得出真差异。
 - **成熟度与活跃度（2026-10-13 GitHub API 实测）**：**16,008 ⭐ / 1,758 fork**，创建于 2023-05，LLM 评测领域的**事实标准之一**（本域"广泛被用"的成熟库）。⚠️ **但最近一次提交就是 `298b682`（2026-02-24），约 8 个月无推送** ⇒ **成熟但开发停滞**：不要指望上游"很快修"下面这些已知缺口，要么接受、要么自建（出题无问题级校验、`evaluate()` 弃用与现代 API 长期并存）。
 - **API 代际是本库最大的坑**（本项目评估层整层建在弃用面上）：`evaluate()` / `aevaluate()` 已弃用，官方指向 **`@experiment`**（`src/ragas/evaluation.py:448` / `:106`）；`from ragas.metrics import …` 的经典指标与 `LangchainLLMWrapper` / `LangchainEmbeddingsWrapper` 均已弃用，应换 `metrics.collections` + `llm_factory` / `embedding_factory`。**且现代指标进不了 `evaluate()`**——它要求 `isinstance(m, Metric)`（`evaluation.py:132`），而 collections 指标不是 `Metric` 子类 ⇒ **迁移必然要重写执行层**，不能只换 import。
 - **出题链无"问题级"校验**：整个 `testset/` 对 `self-contained` / `QuestionFilter` **零命中**（克隆至今仍为零）；出题 prompt（`testset/synthesizers/single_hop/prompts.py`）只要求"答案忠于上下文"。旧版曾有 `QuestionFilter`（Independence + Clear Intent，不合格则重写），随 PR #1401（2024-10-02，＋101/−6785 行）整体替换时删除且**官方无任何说明**。⇒ **"选哪些文档"与"题面是否自足"是使用方职责**（决策见 `docs/adr/0022-ragas-testset-input-scope.md`）。
 - **`MetricResult` 有 `reason` 通道，但经典指标不填**（`src/ragas/metrics/result.py:11`）：faithfulness / context_recall / context_precision 的裁判 LLM **已逐条产出 reason**（如 `StatementFaithfulnessAnswer.reason`），聚合时只取 verdict、把 reason 丢弃 ⇒ **要"低分能解释"必须换 rubric 类指标或自建诊断层**，官方不给。
 - **自带 10 个官方示例工程**（`examples/ragas_examples/`，本地可直接读；`ragas quickstart <name>` 可生成）：与本项目最相关的是 `rag_eval`（RAG 评测，4 文件）、`agent_evals`（Agent 评测，3 文件）、`judge_alignment`（裁判与人工对齐）。⚠️ 官方**有意做极简**（PR #2319 明写"移除复杂的 async 模式、抽象与基础设施代码"，面向 beginner），**是教学脚手架、不是生产 harness**：它手写 3 条自足样本 + 自定准则指标，**不用出题器、也不评检索**。
-- **何时查阅**：改/排 `src/cli/eval_ragas*.py`、定 `eval_report` 契约、选指标、调裁判/embedding 工厂、怀疑"这个分 RAGAS 到底怎么算的"时**第一优先查它**；要看官方最佳实践样例就读 `examples/`。
+- **何时查阅**：仅**追溯历史 RAGAS 口径 / 旧分数**时查（当前评测实现看 `src/cli/eval_scoring.py` 与 DeepEval 源码）；要看官方最佳实践样例就读 `examples/`。
 
 ---
 

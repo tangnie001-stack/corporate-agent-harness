@@ -17,7 +17,7 @@
 - [切换大模型（provider）](#切换大模型provider)
 - [渠道接入](#渠道接入)
 - [项目结构](#项目结构)
-- [评估（RAGAS）](#评估ragas)
+- [评估（DeepEval 原生指标）](#评估deepeval-原生指标)
 - [API 概览](#api-概览)
 - [开发](#开发)
 - [已知限制](#已知限制)
@@ -97,7 +97,7 @@ Langfuse 2.x (:3000) → 与 app 复用同一 PostgreSQL 实例（独立 databas
 | 3. 知识库管理 | 创建（名称去重）/ 列表 / 删除（软删文档 + 清理向量） | `POST /api/kbs/list`、`POST /api/kbs`、`POST /api/kbs/delete` |
 | 4. 会话管理 | 列表 / 消息历史与过程回放 / 删除 / 取消在途生成 | `POST /api/sessions/list`、`POST /api/sessions/messages`、`POST /api/sessions/delete` |
 | 5. 认证 | 登录（首次自动注册）/ 校验 / 登出；token 存 Redis | `POST /api/auth/login`、`POST /api/auth/verify`、`POST /api/auth/logout` |
-| 6. RAGAS 质量评估（CLI） | 测试集生成 + 评估 + 可选质量门禁 | `python -m src.cli.eval_deepeval` |
+| 6. DeepEval 质量评估（CLI） | 四指标评估 + 可选质量门禁（出题已下线） | `python -m src.cli.eval_deepeval` |
 | 7. 分块质量评估 | 嵌入在链路 1 中，由 `CHUNK_EVAL_ENABLED` 开关控制 | `src/chunking/scorer.py` |
 | 8. 企业微信通道 | 多机器人长连接收发消息 → 复用问答链路 → Markdown 回复；HTTP 回调为单机器人 legacy | `WECOM_BOT_MODE=long_connection` / `GET`、`POST /api/wecom/callback`（callback 模式） |
 | 9. 告警接入 | Grafana 告警 → 路径 token 鉴权 → 按指纹去重 → 分析轮次 → 推送企微群（失败兜底转发） | `POST /api/alerts/webhook/{token}` |
@@ -119,7 +119,7 @@ Langfuse 2.x (:3000) → 与 app 复用同一 PostgreSQL 实例（独立 databas
 | 模型 | **provider 可切换**（默认阿里云百炼 DashScope 兼容端点，可切 DeepSeek）：provider 差异收敛到单一层 `src/infra/llm/provider/`，切换只改 `.env`（见「切换大模型」） |
 | Tracing | Langfuse 2.x 自托管，与 app 复用同一 PostgreSQL 实例（独立 database） |
 | 文档解析 | PyMuPDF（PDF）、python-docx（DOCX）、chardet（编码嗅探） |
-| 评价 | RAGAS（CLI 侧：faithfulness / answer_relevancy / context_recall / context_precision） |
+| 评价 | DeepEval 原生四指标（CLI 侧：faithfulness / answer_relevancy / context_precision / context_recall） |
 | 渠道 | 企业微信智能机器人（官方 `aibot` SDK 长连接）/ Grafana 告警 Webhook |
 | 日志 | loguru（分层前缀 + 英文 k=v，见 `docs/agents/logging-rules.md`） |
 | 模型网关 | **不启用** LiteLLM Proxy（compose profile `disabled`，保留备查；决策见 ADR-0020） |
@@ -259,7 +259,7 @@ docker compose up -d --build
 |---------|------|
 | `LLM_PROVIDER` / `<ROLE>_PROVIDER` | **选模型 provider**（缺省 `dashscope`）；角色级覆盖见下方「切换大模型」 |
 | `<PROVIDER>_API_KEY` | 各 provider 的密钥（如 `DASHSCOPE_API_KEY` / `DEEPSEEK_API_KEY`） |
-| `LLM_MODEL` / `CLASSIFY_MODEL` / `SUMMARY_MODEL` / `RAGAS_LLM_MODEL` | **可选覆盖**模型名；不填则取 `registry.yaml` 的角色默认 |
+| `LLM_MODEL` / `CLASSIFY_MODEL` / `SUMMARY_MODEL` / `JUDGE_MODEL` | **可选覆盖**模型名；不填则取 `registry.yaml` 的角色默认 |
 | `LLM_BASE_URL` / `LLM_API_KEY` | ⚠️ **已废弃**（旧"单 provider 覆盖"键；切换 provider 时必须删除，见 `deploy-runbook.md` §2.7） |
 | `EMBEDDING_MODEL` | 向量化模型（可选覆盖；**维度由 `registry.yaml` 声明**，启动期与 `chunks.embedding` 列校验） |
 | `RERANK_MODEL` | 精排模型（走 DashScope） |
@@ -357,21 +357,19 @@ Nginx 已预配 SSE 支持（`proxy_buffering off` + 300s 读超时），确保�
 > 各模块职责、常见改动落点速查、以及后端 `src/` 的完整分层说明见
 > `docs/agents/code-map.md`（结构的唯一归属文档），本 README 不复制其内容。
 
-## 评估（RAGAS）
+## 评估（DeepEval 原生指标）
 
 ```bash
-# 生成测试集（需先创建知识库并上传测试文档）
-python -m src.cli.eval_deepeval --kb-id <KB_ID> --generate --size 20
-
-# 运行评估（加 --gate 启用质量门禁，不达标退出码为 1）
+# 运行评估（测试集须已就位；--gate 启用质量门禁，不达标退出码为 1）
 python -m src.cli.eval_deepeval --kb-id <KB_ID>
 
 # 列出可用知识库
 python -m src.cli.eval_deepeval --list-kbs
 ```
 
+> 测试集生成已下线（`--generate` 保留参数、命中即报错，后续由 DeepEval `Synthesizer` 承接）。
 > 宿主侧执行需加 `POSTGRES_HOST=localhost` 前缀（`.env` 里写的是 compose 服务名）。
-> 指标定义与跨轮台账见 `docs/agents/ragas-eval-ledger.md`。
+> 指标定义与跨轮台账见 `docs/agents/eval-ledger.md`。
 
 ## API 概览
 
@@ -387,7 +385,7 @@ python -m src.cli.eval_deepeval --list-kbs
 | 反馈 | `POST /api/feedback` |
 | 会话 | `POST /api/sessions/list`、`POST /api/sessions/messages`、`POST /api/sessions/delete`、`POST /api/sessions/cancel`、`GET /api/sessions/events`、`GET /api/sessions/tasks`、`GET /api/sessions/task-status` |
 | 能力清单 | `GET /api/skills`、`GET /api/agents` |
-| 评估 | `POST /api/kbs/eval/latest`、`POST /api/ragas/generate` |
+| 评估 | `POST /api/kbs/eval/latest`、`POST /api/ragas/generate`（已退役，恒 410） |
 | 渠道 | `GET /api/wecom/callback`、`POST /api/wecom/callback`、`POST /api/alerts/webhook/{token}` |
 
 > 完整契约（参数语义 / 返回值格式 / 历史踩坑）见 `docs/agents/api_contract.md`；
@@ -452,7 +450,7 @@ ruff format . && ruff check . --fix       # 格式化 + lint
 
 - 扫描件 PDF 不支持（无 OCR 能力）
 - 表格 / 数字可能因分块被切断（只检测不保护）
-- RAGAS 评估的 judge 角色**独立缺省 `dashscope`**（可用 `RAGAS_PROVIDER` / `RAGAS_LLM_MODEL` 与生成模型分离以降低 self-bias）；若与生成模型同源，仍存在 self-bias 风险
+- 评测的 judge 角色**独立缺省 `dashscope`**（可用 `JUDGE_PROVIDER` / `JUDGE_MODEL` 与生成模型分离以降低 self-bias）；若与生成模型同源，仍存在 self-bias 风险
 - 单 worker 部署：SSE 帧缓冲与生成任务注册表在进程内存中，多副本需另做共享层
 - 企业微信长连接与回调模式**二选一**（`WECOM_BOT_MODE`）；长连接模式下 HTTP 回调端点 404，多实例部署需自行保证仅一处启用
 - 生产已上线**单机 demo**（ECS + 全镜像 `docker-compose.image.yml`，见 `docs/agents/deploy-runbook.md`）；**多机 + 托管中间件**（RDS / Redis / OSS / SLB）尚未闭环

@@ -721,7 +721,7 @@ Success:
 
 #### 2.5.1 `POST /api/kbs/eval/latest → dict | null`
 
-获取知识库最新的 RAGAS 评估报告。Body: `{"kb_id": "uuid"}`
+获取知识库最新的 DeepEval 原生四指标评测报告。Body: `{"kb_id": "uuid"}`
 
 ```json
 {"code": "SUCCESS", "message": "操作成功", "data": {
@@ -740,7 +740,11 @@ Success:
 
 无评估记录时返回 `{"code": "SUCCESS", "data": null}`。
 
+`run_type` 为 `manual` / `baseline`。`baseline` 是新口径首轮，`passed` 恒为 `null`（前端显示「未标定」），不按阈值判红/绿。
+
 `pass_threshold` 下发常量 `EVAL_PASS_THRESHOLD`（见 §3.6），前端据此判定通过，**不得硬编码 `0.7`**。
+
+该接口**不返回 `detail_json`**：逐题明细只落库，供 CLI / 报告下钻。诊断指标（`contextual_relevancy` / `non_advice`）仅以**裸键**存在于 `detail_json` 的逐题条目中，既不是接口顶层字段，也不参与 `overall_score` 与门禁。
 
 ### 2.6 健康检查
 
@@ -894,21 +898,21 @@ CASCADE 级联删除：知识库 → 文档 → 对话历史。
 
 ### 3.6 `EvalRepo.insert_report(report) → None`
 
-插入一条 RAGAS 评估报告。表结构由 alembic baseline 统一创建（`alembic/versions/0001_pg_baseline.py`），插入路径不再自动建表。
+插入一条 DeepEval 原生四指标评测报告。表结构由 alembic baseline 统一创建（`alembic/versions/0001_pg_baseline.py`），插入路径不再自动建表。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `report.kb_id` | str | 知识库 UUID |
-| `report.run_type` | str | `manual` / `sampling` / `ci_gate` |
+| `report.run_type` | str | `manual` / `baseline`（`baseline` = 新口径首轮，不判门禁） |
 | `report.qa_count` | int | QA 对数量 |
 | `report.faithfulness` | float | 忠实度 |
 | `report.answer_relevancy` | float | 答案相关性 |
 | `report.context_precision` | float | 上下文精确率 |
 | `report.context_recall` | float | 上下文召回率 |
 | `report.overall_score` | float | **纯 KB 掩码后的四项指标均值**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`），与报告**主分**同口径 |
-| `report.passed` | bool | 是否达标（`overall_score >= EVAL_PASS_THRESHOLD`，`src/config/const.py`） |
+| `report.passed` | bool\|null | 是否达标（`overall_score >= EVAL_PASS_THRESHOLD`，`src/config/const.py`）；`run_type=baseline` 时落库仍为 `False`，接口层按 `run_type` 归一为 `null` |
 | `report.report_path` | str\|null | CSV 报告路径 |
-| `report.detail_json` | list\|null | 逐条 QA 得分；每条含 `q_index`、**全部 `RAGAS_METRIC_COLUMNS`**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`）与可选 `retrieval_details`（该 query 精排后 `[{source, score, kind}, ...]`）。明细保留**全部样本行**：`empty` 样本的三项 context 指标被掩码为 `NaN`。`NaN` 亦在 ragas 自身对该题该指标产出 `NaN`（如超时/额度耗尽）时出现。注意 `NaN` 是 Python `json.dumps` 的非标准扩展，**严格 JSON 解析器（如浏览器 `JSON.parse`）会拒绝**；见 §8.4 |
+| `report.detail_json` | list\|null | 逐条 QA 得分；每条含 `q_index`、**全部 `EVAL_METRIC_COLUMNS`**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`）、**诊断指标裸键**（`contextual_relevancy` / `non_advice`，不进主分与门禁）与可选 `retrieval_details`（该 query 精排后 `[{source, score, kind}, ...]`）。诊断键只存在于 `detail_json`，**不出现于接口顶层响应**。明细保留**全部样本行**：`empty` 样本的三项 context 指标与诊断指标被掩码为 `NaN`。`NaN` 亦在裁判对该题该指标失败（如超时/额度耗尽）时出现。注意 `NaN` 是 Python `json.dumps` 的非标准扩展，**严格 JSON 解析器（如浏览器 `JSON.parse`）会拒绝**；见 §8.4 |
 
 > **口径注（主分）**：落库路径先按样本类别掩码（`apply_sample_masks`），
 > `overall_score` 取**仅 `pure_kb` 样本**的四项指标均值（`main_score_means` 后求均），
@@ -919,7 +923,7 @@ CASCADE 级联删除：知识库 → 文档 → 对话历史。
 
 ### 3.7 `EvalRepo.get_latest_report(kb_id) → EvalReportModel | None`
 
-获取知识库最新的 RAGAS 评估报告。按 `created_at DESC LIMIT 1` 查询。
+获取知识库最新的评测报告。按 `created_at DESC LIMIT 1` 查询。
 
 ---
 
@@ -1123,7 +1127,7 @@ agent（外层节点：组装首轮 → seed 装配产物 → ainvoke）
 内容: {content}
 ```
 
-实体锚点（如文件名/期间）随上下文一并喂给生成模型，帮助对齐事实；生产 prompt 与 RAGAS 评估的 NLI 上下文共用此格式（见 `src/rag/context.py`），评估时保证与线上生成看到完全一致的上下文。
+实体锚点（如文件名/期间）随上下文一并喂给生成模型，帮助对齐事实；生产 prompt 与评测裁判的上下文共用此格式（见 `src/rag/context.py`），评估时保证与线上生成看到完全一致的上下文。
 
 ### 5.5 fork 执行层契约
 
@@ -1278,18 +1282,21 @@ agent（外层节点：组装首轮 → seed 装配产物 → ainvoke）
 
 ### 8.1 `python -m src.cli.eval_deepeval`
 
-RAGAS 评估与测试集生成命令行。
+DeepEval 原生四指标评测命令行。测试集生成已下线（`--generate` 保留参数、命中即报错并指向 DeepEval `Synthesizer`）。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `--kb-id` | str | 是* | 知识库 UUID（与 `--list-kbs` 互斥） |
-| `--generate` | flag | 否 | 生成测试集模式（从文档自动生成 QA 对） |
-| `--size` | int | 否 | 生成测试集的 QA 对数（默认: `RAGAS_TEST_SIZE`） |
-| `--model` | str | 否 | 生成测试集用的 LLM 模型名 |
+| `--generate` | flag | 否 | 已下线；保留参数，命中即报错 |
+| `--size` | int | 否 | 已失效（出题路退役，保留参数） |
+| `--model` | str | 否 | 已失效（出题路退役，保留参数） |
 | `--testset-version` | int | 否 | 指定测试集版本号（默认取最新版本） |
 | `--gate` | flag | 否 | 评估后检查质量门禁指标 |
-| `--output` | str | 否 | CSV 输出路径（默认: `data/reports/ragas_eval_<timestamp>.csv`） |
-| `--session-id` | str | 否 | 评估用的会话 ID（默认: `ragas_eval_session`） |
+| `--deepeval-only` | flag | 否 | 只跑 Agent 行为轴，跳过四指标（不写 `eval_report`；与 `--gate` 互斥） |
+| `--run-type` | str | 否 | `manual`（默认）/ `baseline`；`baseline` 不判门禁（与 `--gate` 互斥） |
+| `--limit` | int | 否 | 只跑前 N 题（冒烟用） |
+| `--output` | str | 否 | CSV 输出路径（默认: `data/deepeval/reports/deepeval_eval_<timestamp>.csv`） |
+| `--session-id` | str | 否 | 评估用的会话 ID（默认: `deepeval_eval_session`） |
 | `--list-kbs` | flag | 否 | 列出所有可用知识库后退出 |
 
 > `*` `--kb-id` 除 `--list-kbs` 模式外为必填。
@@ -1314,7 +1321,7 @@ python -m src.cli.eval_deepeval --list-kbs
 
 ### 8.2 测试集 JSON 格式
 
-位置：`data/ragas/testset_{kb_id}_v<N>.json`
+位置：`data/deepeval/testset_{kb_id}_v<N>.json`
 
 ```json
 {
@@ -1339,6 +1346,7 @@ python -m src.cli.eval_deepeval --list-kbs
   ]
 }
 ```
+metadata 中的 ragas_version / synthesizer_name 为历史测试集文件的遗留字段，当前加载器不消费。
 
 ### 8.3 质量门禁阈值
 
@@ -1366,7 +1374,7 @@ python -m src.cli.eval_deepeval --list-kbs
 | `web` | 材料中含联网块（降级联网） | ❌ 不进（但 context 指标不置空） |
 | `empty` | 未检索到任何材料 | ❌ 不进，且三项 context 指标置 `NaN` 并记 `skipped` |
 
-**CSV**（`--output`，默认 `{RAGAS_REPORT_DIR}/ragas_eval_<timestamp>.csv`）列
+**CSV**（`--output`，默认 `{EVAL_REPORT_DIR}/deepeval_eval_<timestamp>.csv`）列
 （**按列名消费，勿按位解析**——`df.to_csv(index=True)` 使**文件首列为 pandas 索引
 列**，故 `question` 起为**第 2 列**，其后依次 `ground_truth`（第 3 列）、
 `trace_id`（第 4 列））：
@@ -1375,20 +1383,20 @@ python -m src.cli.eval_deepeval --list-kbs
 |----|------|
 | `question` / `ground_truth` | 题面与参考答案 |
 | `trace_id` | 该题 trace，可按 trace 回溯 / 定位回写的分数 |
-| 四个指标列 | `faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`；**CSV 保持 ragas 原生列序**（实测为 `context_precision`→`context_recall`→`faithfulness`→`answer_relevancy`），**与 `const.RAGAS_METRIC_COLUMNS` 的顺序不同**——只有 **MD / stdout / 落库**按 `RAGAS_METRIC_COLUMNS` 排序 |
+| 四个指标列 | `faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`；**CSV 按评分写入顺序**（主分四指标依 `EVAL_METRIC_COLUMNS` 顺序，诊断指标紧随其后），**与 MD / stdout / 落库的排序口径一致** |
 | `sample_class` | 该题样本类别（上表三类之一） |
 | `skipped` | 被掩码跳过的指标名，`;` 分隔；未跳过为空串 |
 | `trajectory` | Agent 轨迹诊断摘要 JSON：`{"tool_calls":[{"name","args"}, ...], "iterations":N}`，**不含工具输出正文** |
-| 其余既有列 | `user_input` / `retrieved_contexts` / `response` / `reference` 为 ragas 原始字段，沿用不改 |
+| 其余既有列 | `user_input` / `retrieved_contexts` / `response` / `reference` 为历史测试集原始字段，沿用不改 |
 
 **MD**（与 CSV 同路径的 `.md`）：含新增列（`trace_id` / `sample_class` / `skipped` /
 `trajectory`）与 CSV 同名同义，**不含** CSV 的 `ground_truth` / `user_input` /
-`retrieved_contexts` / `response` / `reference`；指标列按 `RAGAS_METRIC_COLUMNS`
+`retrieved_contexts` / `response` / `reference`；指标列按 `EVAL_METRIC_COLUMNS`
 排序。末尾一行 `**Main scores (pure-KB):** <指标=值, ...>`，与 stdout / 门禁同口径。
 
 **stdout 口径 = 主分（契约，勿改）**：主分 = **仅 `pure_kb` 样本**的指标均值
 （`web` / `empty` 不计入），每指标**只打一行**，行形如
-`  <指标名>: <数值4位小数>`，指标取 `RAGAS_METRIC_COLUMNS` 白名单（防止额外
+`  <指标名>: <数值4位小数>`，指标取 `EVAL_METRIC_COLUMNS` 白名单（防止额外
 数值列混入），行序即白名单顺序。`--gate` 模式下改由 `check_gate` 打印
 `  <指标名>: <值> PASS|FAIL`（仅 `GATE_THRESHOLDS` 子集的四个指标）及覆盖率 /
 纯 KB 前置判据行。`src/cli/compare_retrieval.py` 以子进程调用本脚本、按指标名
@@ -1396,7 +1404,7 @@ python -m src.cli.eval_deepeval --list-kbs
 是跨进程契约，改动会静默改变 A/B 结论**。
 
 **落库（`eval_report` 表）**：`_build_eval_detail` 产出的逐题 `detail` 与各指标
-`avg` 均含**全部** `RAGAS_METRIC_COLUMNS`；落库前先按
+`avg` 均含**全部** `EVAL_METRIC_COLUMNS`；落库前先按
 样本类别掩码（`apply_sample_masks`），表内四列指标与 `overall_score` 均为**仅
 `pure_kb` 样本**的指标均值（`main_score_means`），`passed` 取 `EVAL_PASS_THRESHOLD`
 —— 与 §3.6 一致。
@@ -1415,6 +1423,6 @@ python -m src.cli.eval_deepeval --list-kbs
 POSTGRES_HOST=localhost LANGFUSE_HOST=http://localhost:3000 python -m src.cli.eval_deepeval --kb-id <uuid>
 ```
 
-`RAGAS_TESTSET_DIR` / `RAGAS_REPORT_DIR` 默认是 cwd 相对路径（`data/ragas/...`）；
+`EVAL_TESTSET_DIR` / `EVAL_REPORT_DIR` 默认是 cwd 相对路径（`data/deepeval/...`）；
 在 git worktree 里 `data/` 不入库、可能不存在，需用这两个环境变量指向已有测试集 /
 期望的报告输出目录。

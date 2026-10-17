@@ -256,6 +256,8 @@ def _check_pointer_symmetry(
         存在（防指向已删除的 ADR）。
     A5：新 ADR 声明 `Supersedes` A，则 A 的 `Status` 必须提到新 ADR 的编号 ——
         这是本次要根治的失效方式（缺反向指针会让后人把已被推翻的那条当成仍成立）。
+        例外：A 已被**第三条**完全取代（`Status` 为 `Superseded by X` 且 X ≠ 本 ADR）
+        时不再要求局部反向指针 —— 整条决策已成历史，局部取代关系记录在索引备注。
 
     Args:
         adrs: 全部 ADR
@@ -287,6 +289,10 @@ def _check_pointer_symmetry(
             if old is None:
                 continue
             old_status = old.fields.get("Status", "")
+            full_old = _full_supersede_target(old_status)
+            if full_old and full_old != adr.number:
+                # 旧 ADR 已被第三条完全取代：局部取代成为历史，索引备注承载该关系。
+                continue
             if f"ADR-{adr.number}" not in old_status and adr.number not in old_status:
                 findings.append(
                     AdrFinding(

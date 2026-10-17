@@ -1,6 +1,6 @@
 # ADR-0023：RAGAS 白名单只约束出题；评估检索镜像生产
 
-- **Status**：Accepted
+- **Status**：Superseded by 0027
 - **Date**：2026-10-14
 - **Deciders**：用户（决策：评估检索不设白名单，保持整库）；Claude（核实与综合）
 - **Supersedes**：ADR-0022 的**决策 C（评估检索与出题同范围）**（局部；ADR-0022 其余决策继续有效，其 `Status` 保持 `Accepted`，正文不作改动）
