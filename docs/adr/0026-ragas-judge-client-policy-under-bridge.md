@@ -4,6 +4,7 @@
 - **Date**：2026-10-17
 - **Deciders**：用户（议题提出与拍板）；Claude（换入口后的逐条复核、源码取证与实现）
 - **Supersedes**：ADR-0024
+- **修订记录**：2026-10-17 创建后、尚无代码依赖时补「决策 6 的落地现状」——初稿以完成态陈述了尚未实现的 hooks 字段，与 `src/infra/llm/provider/http_observability.py` 及 `docs/agents/logging-rules.md` 冲突。
 - **关系**：落实 change `deepeval-bridge-eval` 的 design D3 / D4 / D9 / D11 / D13；观测事件字段口径以 `src/core/log_event_specs.py` 的 `EVENT_SPECS` 为唯一归属。
 
 ## 背景与问题
@@ -60,12 +61,18 @@ langchain 的 `http_client` **只喂同步 client**（`langchain_openai/chat_mod
 证据改由裁判 `http_async_client` 的 httpx event hooks 记录：**模型 / 耗时 / 状态码 /
 请求体摘要 / 响应体摘要 + `finish_reason`**。**响应体必须记**——主因失败是 HTTP 200 +
 畸形响应体，只记状态码看不到它。**hook SHALL 为 `async def` 且 `await response.aread()`**
-（异步 client 是 `await hook(response)`，同步 hook 抛 `TypeError`）。**该日志只做留证**，
+（异步 client 是 `await hook(response)`，同步 hook 抛 `TypeError`）。**该日志只做留证**（限流例外见决策 2），
 SHALL NOT 被当作 NaN 子分类依据。
+
+**落地现状（2026-10-17，与决策意图的差距明写）**：`http_async_client` 的 hooks 当前实记
+`url` / `status` / `body_bytes` / `json_ok` / `finish_reason`（响应体不可解析时另有 `body_exc`），
+且**仅在失败时产日志行**（非 2xx 或响应体不可解析）；`model` 由每轮一次的 `eval model init`
+事件承载，耗时由每次尝试的 `judge call` 事件承载。**请求体摘要与响应体摘要尚未落地**，
+`json_ok` 仅能判"响应体不可解析"。该项已列入复查触发条件。
 
 ## 两处「桥不可控的旋钮」（明写，避免后人误以为仍全可控）
 
-1. **温度档由 ragas 按 `n` 决定**：`n=1` 的三指标为 0.01，`answer_relevancy`（`n=3`）为 0.3；
+1. **温度档由 ragas 按 `n` 决定**：`n=1` 的三指标为 0.01，`answer_relevancy`（`n=3`）为 0.3（`ragas/llms/base.py:71-73`；`LangchainLLMWrapper` 改写见 `:229-231`）；
    `LangchainLLMWrapper` 会改写底层 `chat_model.temperature`，**`bypass_temperature` 默认 False
    且桥不暴露** ⇒ 拿不回温度 0。
 2. **ragas 框架层 `RunConfig.max_retries=10`（限流类）不可配置**：见决策 2。
@@ -79,3 +86,5 @@ HTTP 层响应体摘要"，粒度略降（但仍是唯一可得的一手证据�
 **复查触发条件**：① 桥升级 ragas 版本（0.3 → 0.4 动过 API）⇒ 复核本 ADR 全条；
 ② 换裁判模型（尤其换 provider 或换回思考档）⇒ 重跑超时/预算对照；
 ③ 若上游 ragas 暴露 `RunConfig` 或改为可配置重试 ⇒ 可移除"外层不重试 429"的补偿口径。
+4. 若确需决策 6 设计的完整请求级日志（模型 / 耗时 / 请求体摘要 / 响应体摘要、且成功调用也留痕），
+   须另立项补 hooks 字段与证据落盘——当前只完成"证据桶 + 失败告警"。
