@@ -105,7 +105,7 @@ python -m src.cli.eval_ragas --kb-id <知识库UUID> --output /path/report.csv
 
 python -m src.cli.eval_ragas --kb-id <知识库UUID> --testset-version 5 --limit 1   # 冒烟：只跑前 1 题（勿配 --gate）
 
-python -m src.cli.eval_ragas --kb-id <kb-uuid> --testset-version 5 --deepeval-only   # 只跑行为轴（无主分/门禁）
+python -m src.cli.eval_ragas --kb-id <知识库UUID> --testset-version 5 --deepeval-only   # 只跑行为轴（无主分/门禁）
 ```
 
 `--limit N` 只用于逐级活体（1 → 5 → 21），**不要与 `--gate` 同用**——少数题上的门禁没有统计意义；全量口径仍是不加 `--limit`。
@@ -127,7 +127,7 @@ python -m src.cli.eval_ragas --kb-id <kb-uuid> --testset-version 5 --deepeval-on
 
 ## 测试结果在哪里看
 
-评估完成后产出两个文件（默认在 `data/ragas/reports/`，可用 `--output` 自定义）：
+评估完成后产出两个文件（默认在 `data/ragas/reports/`，可用 `--output` 自定义；`--deepeval-only` 只产出 `.md`）：
 
 | 文件 | 内容 |
 |---|---|
@@ -216,6 +216,7 @@ python -m src.cli.compare_retrieval --kb-name <知识库名称>
 | `--model` | 生成测试集用的 LLM 模型名 |
 | `--testset-version` | 指定测试集版本号（默认取最新） |
 | `--gate` | 评估后检查质量门禁，不达标退出码 1 |
+| `--deepeval-only` | 只跑 Agent 行为轴，跳过 RAGAS 四指标（无主分/门禁、不写 CSV 与 `eval_report`；与 `--gate` 互斥） |
 | `--output` | CSV 报告输出路径 |
 | `--session-id` | 评估用会话 ID，默认 `ragas_eval_session` |
 

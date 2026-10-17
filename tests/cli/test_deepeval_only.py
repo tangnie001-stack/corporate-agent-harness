@@ -24,13 +24,15 @@ def test_deepeval_only_flag_is_accepted(monkeypatch):
     assert args.deepeval_only is True
 
 
-def test_deepeval_only_and_gate_are_mutually_exclusive(monkeypatch):
+def test_deepeval_only_and_gate_are_mutually_exclusive(monkeypatch, capsys):
     monkeypatch.setattr(
         sys, "argv", ["eval_ragas", "--kb-id", "kb-x", "--deepeval-only", "--gate"]
     )
     with pytest.raises(SystemExit) as excinfo:
         eval_ragas.parse_args()
     assert excinfo.value.code == 2
+    # argparse 的未知参数同样是 exit 2；须确认是互斥校验本身给出的错误
+    assert "不能同用" in capsys.readouterr().err
 
 
 def test_report_meta_without_ragas_marks_skipped():
@@ -72,3 +74,116 @@ def test_markdown_report_without_ragas_has_no_metric_rows(tmp_path):
     assert "Main scores (pure-KB)" not in text
     assert "faithfulness=" not in text
     assert "Agent 行为轴" in text
+
+
+def test_deepeval_only_skips_all_ragas_side_effects(monkeypatch, tmp_path):
+    """--deepeval-only 下四指标链路（构造/评分/CSV/落库）一次都不应发生."""
+    from types import SimpleNamespace
+
+    called: list[str] = []
+
+    def _bomb(name):
+        def _fn(*args, **kwargs):
+            called.append(name)
+            raise AssertionError(f"{name} 不应在 --deepeval-only 下被调用")
+
+        return _fn
+
+    # 模块级 import 的符号：直接打在 eval_ragas 命名空间上
+    monkeypatch.setattr(eval_ragas, "build_metrics", _bomb("build_metrics"))
+    monkeypatch.setattr(eval_ragas, "run_evaluation", _bomb("run_evaluation"))
+    monkeypatch.setattr(eval_ragas, "_save_eval_report", _bomb("_save_eval_report"))
+    monkeypatch.setattr(eval_ragas, "save_results_csv", _bomb("save_results_csv"))
+
+    # main() 函数体内的 import 必须打在源模块上
+    monkeypatch.setattr(
+        "src.cli.eval_ragas_generate._load_latest_testset",
+        lambda kb_id, version=None: (["q"], ["a"]),
+    )
+    monkeypatch.setattr(
+        "src.cli.eval_ragas_generate._ensure_vertexai_stub", lambda: None
+    )
+    monkeypatch.setattr(
+        "src.agents.graph.workflow.build_graph", lambda *a, **k: object()
+    )
+    monkeypatch.setattr("src.infra.llm.prompt_manager.PromptManager", lambda: object())
+    monkeypatch.setattr("src.models.get_llm", lambda: object())
+    monkeypatch.setattr("src.models.get_rerank", lambda: object())
+    monkeypatch.setattr(
+        "src.infra.llm.provider.deepeval_llm.BridgeDeepEvalLLM",
+        lambda chat: object(),
+    )
+    monkeypatch.setattr(
+        "src.infra.llm.provider.factory.build_bridge_judge",
+        lambda **kw: SimpleNamespace(model_name="fake-judge"),
+    )
+    monkeypatch.setattr(
+        "src.infra.llm.provider.factory.build_embeddings", lambda: object()
+    )
+
+    class _FakeHookEvidence:
+        """hooks 断言要求 events 内含 response 记录。"""
+
+        def __init__(self) -> None:
+            self.events: list[dict] = [{"phase": "response"}]
+
+    monkeypatch.setattr(
+        "src.infra.llm.provider.http_observability.HookEvidence", _FakeHookEvidence
+    )
+
+    class _FakeVectorStore:
+        async def get_all_chunks(self, kb_id: str) -> list[dict]:
+            return [{"chunk_id": "c1"}]
+
+    monkeypatch.setattr("src.infra.db.vector_store.VectorStore", _FakeVectorStore)
+
+    async def _run_and_dispose(coro):
+        return await coro
+
+    monkeypatch.setattr("src.infra.db.engine.run_and_dispose", _run_and_dispose)
+
+    # 其余模块级符号（行为轴链路）全部就地打桩
+    monkeypatch.setattr(eval_ragas, "configure_tracing", lambda: None)
+    monkeypatch.setattr(eval_ragas, "flush_tracing", lambda: None)
+    monkeypatch.setattr(eval_ragas, "build_behaviour_metrics", lambda llm: [])
+
+    async def _fake_generate(*args, **kwargs):
+        return (["answer"], [["ctx"]], ["trace-1"], [[]], ["pure_kb"], [{}], [])
+
+    monkeypatch.setattr(
+        eval_ragas, "generate_answers_and_contexts_with_behaviour", _fake_generate
+    )
+    monkeypatch.setattr(
+        eval_ragas,
+        "read_behaviour_scores",
+        lambda out: [{"q_index": 0, "input": "q", "metrics": {"x": 1.0}}],
+    )
+    monkeypatch.setattr(
+        eval_ragas, "assert_behaviour_scores_complete", lambda *a, **k: None
+    )
+
+    out_csv = tmp_path / "r.csv"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "eval_ragas",
+            "--kb-id",
+            "kb-x",
+            "--testset-version",
+            "5",
+            "--deepeval-only",
+            "--limit",
+            "1",
+            "--output",
+            str(out_csv),
+        ],
+    )
+
+    eval_ragas.main()
+
+    assert called == []
+    out_md = tmp_path / "r.md"
+    assert out_md.exists()
+    assert "RAGAS:** 未跑" in out_md.read_text(encoding="utf-8")
+    assert not out_csv.exists()

@@ -650,7 +650,7 @@ def run_evaluation(
 
 
 def save_results_csv(
-    result: Any,
+    result: _EvalResult,
     questions: list[str],
     ground_truth: list[str],
     output_path: str,
@@ -664,7 +664,7 @@ def save_results_csv(
     使落盘结果与「主分」口径一致。
 
     Args:
-        result: RAGAS evaluate() 返回的结果对象
+        result: 评测结果（`_EvalResult`；仅默认四指标路径产出）
         questions: 问题列表
         ground_truth: 参考答案列表
         output_path: 输出文件路径
@@ -1211,6 +1211,7 @@ def main() -> None:
         )
 
         if ragas_enabled:
+            assert result is not None  # 仅供类型收窄
             output_path = save_results_csv(
                 result,
                 questions,
