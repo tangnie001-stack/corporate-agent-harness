@@ -153,7 +153,7 @@ class TestParseArgs:
 
         args = parse_args()
         assert args.kb_id == "test-uuid"
-        assert args.session_id == "ragas_eval_session"
+        assert args.session_id == "deepeval_eval_session"
 
     @patch(
         "sys.argv",

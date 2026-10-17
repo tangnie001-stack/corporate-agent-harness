@@ -57,10 +57,10 @@ python -m src.cli.eval_deepeval --kb-id <知识库UUID> --generate --size 30
 生成结束时终端会打印产物路径，形如：
 
 ```
-测试集已保存: data/ragas/testset/testset_<kb_id>_v1.json (v1, 20 条)
+测试集已保存: data/deepeval/testset/testset_<kb_id>_v1.json (v1, 20 条)
 ```
 
-- **位置**：`data/ragas/testset/testset_<kb_id>_v<N>.json`（目录默认 `RAGAS_TESTSET_DIR`）
+- **位置**：`data/deepeval/testset/testset_<kb_id>_v<N>.json`（目录默认 `RAGAS_TESTSET_DIR`）
 - **版本管理**：同一知识库每生成一次版本号 +1（`v1` → `v2`），评估时可指定任意历史版本
 - **文件结构**：
 
@@ -86,7 +86,7 @@ python -m src.cli.eval_deepeval --kb-id <知识库UUID> --generate --size 30
 }
 ```
 
-- **生成加速**：LLM 响应有磁盘缓存 `data/ragas/llm_cache/`（DiskCacheBackend），重复生成可复用，支持中断恢复
+- **生成加速**：LLM 响应有磁盘缓存 `data/deepeval/llm_cache/`（DiskCacheBackend），重复生成可复用，支持中断恢复
 
 ## 第二步：执行评估（怎么测试）
 
@@ -126,7 +126,7 @@ python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 5 --de
 
 ## 测试结果在哪里看
 
-评估完成后产出两个文件（默认在 `data/ragas/reports/`，可用 `--output` 自定义；`--deepeval-only` 只产出 `.md`）：
+评估完成后产出两个文件（默认在 `data/deepeval/reports/`，可用 `--output` 自定义；`--deepeval-only` 只产出 `.md`）：
 
 | 文件 | 内容 |
 |---|---|
@@ -217,7 +217,7 @@ python -m src.cli.compare_retrieval --kb-name <知识库名称>
 | `--gate` | 评估后检查质量门禁，不达标退出码 1 |
 | `--deepeval-only` | 只跑 Agent 行为轴，跳过 RAGAS 四指标（无主分/门禁、不写 CSV 与 `eval_report`；与 `--gate` 互斥） |
 | `--output` | CSV 报告输出路径 |
-| `--session-id` | 评估用会话 ID，默认 `ragas_eval_session` |
+| `--session-id` | 评估用会话 ID，默认 `deepeval_eval_session` |
 
 ## compare_retrieval — 检索参数对比实验
 
@@ -238,7 +238,7 @@ python -m src.cli.check_retrieval --kb <知识库名称> --query "<问题>" [--t
 
 ---
 
-## 数据目录速查（默认 `data/ragas/`）
+## 数据目录速查（默认 `data/deepeval/`）
 
 | 目录 | 内容 |
 |---|---|
@@ -249,7 +249,7 @@ python -m src.cli.check_retrieval --kb <知识库名称> --query "<问题>" [--t
 ## 典型工作流
 
 1. **生成测试集**：`eval_deepeval --kb-id <uuid> --generate --size 20`
-2. **执行评估**：`eval_deepeval --kb-id <uuid>` → 查看 `data/ragas/reports/` 下的 CSV 与 MD
+2. **执行评估**：`eval_deepeval --kb-id <uuid>` → 查看 `data/deepeval/reports/` 下的 CSV 与 MD
 3. **质量门禁**：`eval_deepeval --kb-id <uuid> --gate`（CI / 提交前检查，不达标退出码 1）
 4. **参数选优**：`compare_retrieval --kb-name <名称>` → 按指标对比表确定 `TOP_K` 组合
 5. **人工抽检**：`check_retrieval --kb <名称> --query "<问题>"` 验证检索效果

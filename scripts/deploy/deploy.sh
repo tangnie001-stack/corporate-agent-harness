@@ -336,7 +336,9 @@ done
 [ "$missing" = 0 ] || fail "制品不完整 —— 上述路径靠挂载供 nginx / postgres 使用，缺失会导致对应功能失效"
 # 注：src/ scripts/ skills/ agents/ alembic/ 已打进 app 镜像（见 Dockerfile），宿主不再需要、也就不会再出现
 #     「空目录导致技能/预设静默清空」那类故障
-mkdir -p data/ragas   # 运行期目录，Docker 也能自建，这里显式建以固定属主
+# 运行期目录；Docker 也能自建，这里显式建以固定属主。
+# 旧 ragas 数据目录不自动删除（可能仍有历史报告），确认无引用后人工清理。
+mkdir -p data/deepeval
 
 step "4/8 校验 ACR 登录"
 DEPLOYED_APP_IMAGE=$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(.*deploy_store_local:[^[:space:]]*\).*/\1/p' "$COMPOSE_FILE" | head -1)

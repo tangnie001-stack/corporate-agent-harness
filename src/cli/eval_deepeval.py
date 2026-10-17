@@ -123,13 +123,13 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=str,
         default=None,
-        help="CSV 输出路径（默认: data/ragas/reports/ragas_eval_<timestamp>.csv）",
+        help="CSV 输出路径（默认: data/deepeval/reports/ragas_eval_<timestamp>.csv）",
     )
     parser.add_argument(
         "--session-id",
         type=str,
-        default="ragas_eval_session",
-        help="评估用的会话 ID（默认: ragas_eval_session）",
+        default="deepeval_eval_session",
+        help="评估用的会话 ID（默认: deepeval_eval_session）",
     )
     parser.add_argument(
         "--gate",

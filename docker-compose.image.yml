@@ -39,7 +39,7 @@
 #   deploy/nginx/nginx.conf           nginx 路由（缺 → 默认页/404）
 #   deploy/nginx/html/                前端静态文件（缺 → 404）
 #   deploy/postgres/init/             建应用库 + vector 扩展（缺 → 应用库不存在）
-#   data/ragas/                       RAGAS 评估数据目录（运行期数据）
+#   data/deepeval/                    评估数据目录（运行期数据）
 #
 # 【已打进 app 镜像、宿主无需提供】—— 代码与随版本发布的资源，必须与镜像同源
 #   src/  scripts/  skills/  agents/  alembic/  alembic.ini
@@ -224,7 +224,7 @@ services:
       ALERT_WEBHOOK_TOKEN: "9fb81d2e49585547281099ab3c20e511"
     volumes:
       - app_logs:/data/logs
-      - ./data/ragas:/app/data/ragas
+      - ./data/deepeval:/app/data/deepeval
       # skills/ agents/ alembic/ alembic.ini **不在此挂载**：它们已打进 app 镜像（见 Dockerfile），
       # 与代码同源；挂了会遮住镜像里的同名内容。
       # 迁移在容器内跑（容器已带正确的 DB 环境变量 POSTGRES_HOST=postgres）：

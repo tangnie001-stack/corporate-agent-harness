@@ -59,7 +59,7 @@
   - ⚠️ **顺序陷阱**：若先让含该覆盖的新 compose 上机、而生产 `.env` 尚无 `WECOM_BOTS` ⇒ `ENABLED=true` + 空注册表 ⇒ **应用启动 fail-fast**（部署 `health_check` 失败）。**先同步 `.env`，再让新 compose 上机**。
 - 不得依赖 compose 的 `${X:-默认值}` 兜底 —— `deploy.sh` 会按 compose 插值变量清单校验非空，缺键即失败。
 - MinIO 两对键**已同源**：`docker-compose.image.yml` 直接用 `.env` 的 `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` 供 `MINIO_ROOT_USER/PASSWORD`。**不要**改回需要人工保持相等的两对。
-- 目标机必须存在的路径（缺任一条对应功能失效）：`.env`、`deploy/nginx/nginx.conf`、`deploy/nginx/html/`、`deploy/postgres/init/`、`data/ragas/`。
+- 目标机必须存在的路径（缺任一条对应功能失效）：`.env`、`deploy/nginx/nginx.conf`、`deploy/nginx/html/`、`deploy/postgres/init/`、`data/deepeval/`。
 
 ---
 
@@ -364,6 +364,7 @@ provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定�
 
 启动期检测到任何 `RAGAS_*` 会 fail-fast；先改共享 `.env` 再部署。
 旧 `data/ragas/` 不自动删除，确认无引用后人工清理；历史 `report_path` 不迁移。
+旧的 `kg_*.json` 与 `llm_cache/` 已移到 `data/deepeval/_obsolete_ragas_cache/`（未删除），确认无需复用后人工清理该目录。
 
 ---
 

@@ -172,7 +172,7 @@ services:
       LOG_DIR: /data/logs
     volumes:
       - app_logs:/data/logs
-      - ./data/ragas:/app/data/ragas
+      - ./data/deepeval:/app/data/deepeval
     depends_on:
       redis:
         condition: service_healthy
