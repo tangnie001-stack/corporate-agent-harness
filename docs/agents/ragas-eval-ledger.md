@@ -29,6 +29,7 @@
 | 2 | 2026-10-15 14:52 | `ragas_eval_20261015_065238` | 报告未记录（推定：思考 OFF · 细粒度超时 · cap 8192） | 19 | 0.9089 | 0.8584 | 0.5303 | 0.8619 | 0.5809 | ❌ cp | 3 行 context_recall `RuntimeError` | N/A | 未启用 |
 | 3 | 2026-10-15 16:03 | `ragas_eval_20261015_080359` | 报告未记录（推定：思考 OFF · cap 4096 · attempts=3） | 19 | 0.8530 | 0.8644 | 0.5227 | 0.8500 | 0.6071 | ❌ cp | 5 行 `IncompleteOutputException`（cap 顶格） | N/A | 未启用 |
 | 4 | 2026-10-15 16:47 | `ragas_eval_20261015_084734` | 报告未记录（推定：思考 OFF · cap 8192 · attempts=3 · 细粒度超时 · temp=0） | 19 | 0.7813 | 0.8537 | 0.5004 | 0.8412 | 0.6164 | ❌ faith + cp | 1 行 `IncompleteOutputException`（Q16）+ Q4 空检索 | N/A | 未启用 |
+| 5 | 2026-10-17 13:55 | `ragas_eval_20261017_055527` | 桥裁判（思考 OFF · cap 8192 · 细粒度 `http_async_client`/`http_client` 超时 · SDK retries=0 · 串行评分） | 19 | 0.8263 | 0.8848 | 0.5073 | 0.8195 | N/A | 未跑（首轮 --no-gate） | 无（Q8 为 `web` 样本，context_precision 三次裁判超时后 NaN，不入主分） | bridge-0.3.9 / v5 | 未启用 |
 
 > **四轮都卡在 context_precision**（0.7571 → 0.5303 → 0.5227 → 0.5004），且它在两次配置间逐题剧烈翻转——见下方「已知口径与坑」。
 
