@@ -1133,9 +1133,9 @@ Expected: PASS（Q1 探测已证该形态；若 FAIL，说明 deepeval 内部实
 
 Run:
 ```bash
-grep -rn "ragas.metrics.collections\|llm_factory\|embedding_factory\|@experiment\|build_ragas_judge\|build_ragas_embeddings\|build_native_client\|RAGAS_EVAL_CONCURRENCY" src/ tests/
+grep -rn "ragas.metrics.collections\|llm_factory\|embedding_factory\|@experiment\|build_ragas_judge\|build_ragas_embeddings\|build_native_client\|RAGAS_EVAL_CONCURRENCY" src/ tests/ --include='*.py' | grep -v 'test_no_modern_factories.py'
 ```
-Expected: **无输出**（出题路的 `default_transforms_for_prechunked` 是 0.3.x 例外，已在 `eval_ragas_generate.py:294/307` 函数级导入处保留、由 Task 1 的文件头标注说明，**不计入本条违反**）。
+Expected: **无输出**（`test_no_modern_factories.py` 的 `assert not hasattr(...)` 反向断言天然包含这些名字，排除；出题路的 `default_transforms_for_prechunked` 是 0.3.x 例外，已在 `eval_ragas_generate.py:294/307` 函数级导入处保留、由 Task 1 的文件头标注说明，**不计入本条违反**）。
 
 - [ ] **Step 5: 跑通并提交**
 
