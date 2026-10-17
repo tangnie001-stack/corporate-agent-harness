@@ -25,12 +25,14 @@ POSTGRES_HOST=localhost .venv/bin/python -m src.cli.eval_ragas \
 | 级 | 开始（本地） | 结束 | 耗时（日志窗口） | 耗时（墙钟） | 报告 | QA | NaN |
 |---|---|---|---|---|---|---|---|
 | 1 题 | 12:11:12 | 12:12:41 | 1m29s | 1m35s | `ragas_eval_20261017_041112.md` | 1 | 0/4 |
-| 5 题（失败） | 12:12:58 | 12:16:26 后无日志 | — | 人工终止 | 无 | 5 | — |
+| 5 题（失败） | 12:12:58 | 12:16:47 后僵住（末条日志 12:16:27.730） | — | 人工终止 | 无 | 5（题集条数） | — |
 | 5 题 | 12:42:48 | 12:49:57 | 7m09s | 7m18s | `ragas_eval_20261017_044248.md` | 5 | 0/20 |
-| 21 题（失败） | 12:50:23 | 12:57:48 后无日志 | — | 人工终止（`timeout 3600`） | 无 | 21 | — |
+| 21 题（失败） | 12:50:23 | 12:57:53 后僵住 | — | `timeout 3600` 终止 | 无 | 21（题集条数） | — |
 | 21 题 | 13:55:27 | 14:50:50 | 55m23s | 55m42s | `ragas_eval_20261017_055527.md` | 21 | 0/76 |
 
 耗时的两个口径：日志窗口 = 该轮首条 `[cli] testset loaded` 到末条 `[cli] evaluation done`（或最后一条活动）的差；墙钟 = 控制器观测的 `time` 输出（含解释器启动与收尾）。两者差 6–19 秒，属正常。
+
+失败轮无报告，"QA" 列填的是**题集条数**，不是报告里的 `QA Pairs`；两轮都以僵住告终，耗时口径不适用，故记 `—`。
 
 四指标与行为轴均从**报告正文**读取/计算，不引第三方汇总。
 
@@ -42,6 +44,7 @@ POSTGRES_HOST=localhost .venv/bin/python -m src.cli.eval_ragas \
 - 报告：`data/ragas/reports/ragas_eval_20261017_041112.md` / `.csv`
 - 行为产物：`data/ragas/reports/behaviour_20261017_041112/test_run_20261017_121140.json`
 - 日志窗口：12:11:12.443 → 12:12:41.975（1m29s）
+- 退出码：未记录（由控制端驱动）
 - `**QA Pairs:** 1`，`**NaN cells:** 0/4 (rate=0.0)`
 - `**Main scores (pure-KB):**` faithfulness=1.0000, answer_relevancy=0.9855, context_precision=1.0000, context_recall=1.0000
 - Caliber / Judge：`caliber=bridge-0.3.9, judge=qwen3.8-flash, model_arg_explicit=True`；`Runner versions: ragas=0.3.9, deepeval=4.2.9`
@@ -56,13 +59,14 @@ Agent 行为轴（1 行）：Task Completion=1.0000，Step Efficiency=1.0000，A
 
 ---
 
-## 失败 #1：5 题 · 卡在裁判同步路径（12:12–12:38）
+## 失败 #1：5 题 · 行为轴写盘后卡在 RAGAS 评估开始前（12:12–12:38）
 
 - 命令：`… --testset-version 5 --limit 5`
-- 日志：12:12:58.524 `testset loaded count=5` → 12:16:26.213 `question answer done index=5` 后**再无该进程日志**；下一轮 5 题于 12:42:48 启动。空窗 26m22s。
-- 关键缺失：**从未出现 `[cli] evaluation start samples=5`**，即卡在"答案生成完成 → RAGAS 评估开始"之间（行为轴 + 裁判同步路径），进程内无细粒度超时事件可观测。
-- 另有 `question answer failed index=3 err=""`（12:16:16，约 3 分钟后失败，err 为空）。
-- 产物：**无报告/无 CSV**。但行为目录 `behaviour_20261017_041258/` 下留有 `test_run_20261017_121647.json`（1.6 MB，12:16:47 写入）——即行为轴已落盘、卡在其后的 RAGAS 裁判阶段。此条与"无产物"的说法有出入，按实际记录。
+- 日志：12:12:58.524 `testset loaded count=5` → 12:16:26.213 `question answer done index=5`；末条日志为 12:16:27.730 的 Langfuse `Unexpected error`，此后到 12:42:48.635 下一轮启动**无任何日志**。
+- 关键缺失：**从未出现 `[cli] evaluation start samples=5`**，即卡在"答案生成完成 → RAGAS 评估开始"之间，进程内无细粒度超时事件可观测。
+- 另有 `question answer failed index=3 err=""`（12:16:16.928，约 3 分钟后失败，err 为空）。
+- 产物：**无报告 / 无 CSV**；行为目录 `behaviour_20261017_041258/` 下留有 `test_run_20261017_121647.json`（1.6 MB，12:16:47 写入），其 `testCases=4`——与 `index=3` 无答案一致，即**行为轴产物为 4/5**。JSON 写入于 12:16:47，**之后**才卡住，位置在 RAGAS 评估开始前（无 `judge call` 日志）。
+- 空窗：自行为 JSON 写入 **12:16:47** 至下一轮 12:42:48，26m01s。
 - 处置：人工终止。根因与修复见 Task 1b（裁判路径细粒度超时）。
 
 ---
@@ -73,6 +77,7 @@ Agent 行为轴（1 行）：Task Completion=1.0000，Step Efficiency=1.0000，A
 - 报告：`data/ragas/reports/ragas_eval_20261017_044248.md` / `.csv`
 - 行为产物：`data/ragas/reports/behaviour_20261017_044248/test_run_20261017_124402.json`
 - 日志窗口：12:42:48.635 → 12:49:57.547（7m09s）
+- 退出码：未记录（由控制端驱动）
 - `**QA Pairs:** 5`，`**NaN cells:** 0/20 (rate=0.0)`
 - `**Main scores (pure-KB):**` faithfulness=0.8000, answer_relevancy=0.9301, context_precision=0.5400, context_recall=1.0000
 - 行为轴段行数 = 5，无 `RuntimeError: 行为分题数不齐`
@@ -91,14 +96,16 @@ Agent 行为轴（5 行均值）：Task Completion=0.9700，Step Efficiency=0.70
 
 ---
 
-## 失败 #2：21 题 · 行为轴 53 分钟无日志（12:50–13:50）
+## 失败 #2：21 题 · judge 400 后进程僵住（12:50–13:50）
 
 - 命令：`… --testset-version 5`（21 题，后台）
-- 日志：12:50:23.180 `testset loaded count=21` → 12:57:48.823 `question answer done index=21` 后**再无该进程日志**，直至 13:55:27 下一轮启动。空窗 57m39s。
-- 现象（控制器观测）：行为轴阶段 53 分钟无日志，DashScope 返回 400 `Range of input length should be [1, 991808]`，`timeout 3600` 到期终止。
-- 日志核对：`logs/app_2026-10-17.log` 中检索 `Range of input length` = **0 条**。该错误串未落入应用日志，来源仅为控制器侧进程输出；此处如实标注，不做推断。
+- 12:50:23.180 `testset loaded count=21`。
+- 12:57:48.823 **第 21 题答案完成**（`[cli] question answer done index=21`，`logs/app_2026-10-17.log:17985`）。
+- 12:57:53.069 **bridge judge 收到 `status=400`**（`[provider] bridge judge http non-2xx`，trace `trace_ccc326a1-…`，`:17986`）。应用日志只记状态码，响应体文本 `Range of input length …` 来自控制器侧进程 traceback。
+- 同一秒内 **39 条 `caught asyncio.CancelledError`**（12:57:53.097–.113，`:17987-18025`）。
+- 此后**无任何日志**；下一条是 13:55:27.475（下一轮 21 题开始，`:18026`）⇒ **400 后进程僵住（CancelledError 后未退出）**，`timeout 3600` 于 13:50 到期终止。
 - 另：`question answer failed index=5 err=""`（12:54:01，约 3 分钟失败，流程继续）。
-- 产物：**无报告 / 无 CSV / 无行为目录**（`data/ragas/reports/behaviour_*` 下无 12:57–13:55 之间的目录）。
+- 产物：**无报告 / 无 CSV / 无行为目录**（`data/ragas/reports/behaviour_*` 下无 12:50–13:55 之间的目录），该轮未产出任何报告。
 - 处置：`timeout 3600` 终止。根因与修复见 Task 1c（超长 prompt 截断），复跑时共触发 36 次截断（见下）。
 
 ---
@@ -153,7 +160,7 @@ awk '/^2026-10-17 [0-9]{2}:[0-9]{2}:[0-9]{2}\./ && substr($0,1,19) > "2026-10-17
 
 - 36 次，全部落在 **14:01:34–14:02:04**，即行为轴（DeepEval 桥）阶段；RAGAS `evaluation start samples=21` 在 14:02:20 之后，RAGAS 裁判阶段 0 次。
 - prompt 长度 min=503,705 / max=2,261,560（字符），limit=400,000；单次最大丢弃 1,861,560。
-- 与失败 #2（400 `Range of input length`）互为印证：不截断则超限，截断后跑通。
+- 与失败 #2（400 `Range of input length`，`logs/app_2026-10-17.log:17986` 记 `status=400`）互为印证：不截断则超限，截断后跑通。
 
 ---
 
@@ -165,6 +172,7 @@ awk '/^2026-10-17 [0-9]{2}:[0-9]{2}:[0-9]{2}\./ && substr($0,1,19) > "2026-10-17
 python3 - <<'PY'
 import glob, json
 f = sorted(glob.glob("data/ragas/reports/behaviour_20261017_055527/test_run_*.json"))[-1]
+print("file:", f)
 d = json.load(open(f))
 tc = d["testCases"]
 assert len(tc) == 21, len(tc)
