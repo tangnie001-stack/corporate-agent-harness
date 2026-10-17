@@ -75,7 +75,8 @@
 | CLI 模块 | `src/cli/eval_ragas.py` | `src/cli/eval_deepeval.py` |
 | 对应测试 | `tests/cli/test_eval_bridge_*.py` / `test_eval_ragas*.py` | `tests/cli/test_eval_native_*.py` / `test_eval_deepeval*.py` |
 | 数据根 | `data/ragas/` | `data/deepeval/` |
-| 配置前缀 | `RAGAS_JUDGE_*` / `RAGAS_HTTP_TIMEOUT_*` / `RAGAS_METRIC_MAX_ATTEMPTS` / `RAGAS_LLM_MODEL` / `RAGAS_PROVIDER` | `JUDGE_*` |
+| 配置前缀 | `RAGAS_JUDGE_*` / `RAGAS_HTTP_TIMEOUT_*` / `RAGAS_LLM_MODEL` / `RAGAS_PROVIDER` | `JUDGE_*` |
+| 评测指标重试 | `RAGAS_METRIC_MAX_ATTEMPTS` | `EVAL_METRIC_MAX_ATTEMPTS` |
 | SDK 重试配置 | `RAGAS_HTTP_MAX_RETRIES` | **删除**（裁判硬编码 `max_retries=0`） |
 | 评测目录 | `RAGAS_DATA_DIR` / `RAGAS_TESTSET_DIR` / `RAGAS_REPORT_DIR` / `RAGAS_LLM_CACHE_DIR` / `RAGAS_USER_ID` | `EVAL_*` |
 | 指标白名单 | `RAGAS_METRIC_COLUMNS` | `EVAL_METRIC_COLUMNS` |
