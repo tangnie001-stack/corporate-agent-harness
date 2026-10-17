@@ -313,12 +313,12 @@ Expected：打印 `OK testCases=21; metricsData present; …`。若失败 ⇒ �
 
 - [ ] **Step 6: 取证「NaN 重试是否触发过」**
 
-Run（本轮运行的日志按天落盘在 `logs/app_<YYYYMMDD>.log`；若宿主机无 `logs/`，改用容器内 `/data/logs/`）：
+Run（本轮运行的日志按天落盘在 `logs/app_<YYYY-MM-DD>.log`；`LOG_DIR` 默认 `logs`，文件名带横线；若宿主机无 `logs/`，改用容器内 `/data/logs/`）：
 
 ```bash
-DAY=$(date +%Y%m%d)
-echo "retry events: $(grep -c 'metric retry' logs/app_${DAY}.log 2>/dev/null || echo 0)"
-echo "failed judge calls: $(grep -cE 'judge call.*ok=(False|false)' logs/app_${DAY}.log 2>/dev/null || echo 0)"
+DAY=$(date +%F)
+echo "retry events: $(grep -c 'metric retry' "logs/app_${DAY}.log" 2>/dev/null || echo 0)"
+echo "failed judge calls: $(grep -cE 'judge call.*ok=(False|false)' "logs/app_${DAY}.log" 2>/dev/null || echo 0)"
 grep -E 'metric retry|judge call.*ok=(False|false)' "logs/app_${DAY}.log" 2>/dev/null | tail -5
 ```
 
