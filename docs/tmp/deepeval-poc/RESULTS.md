@@ -366,3 +366,23 @@ NLI 理由: "上下文指出'归属于上市公司股东的净利润'，而陈�
 **生产路径不会混淆**（已核）：`src/cli/eval_ragas.py` 里 SUT = `get_llm()`、judge = `build_bridge_judge(evidence=…)` 是两个对象；只有冒烟为了省事把两者并成了一个。
 
 **留给 Phase 3–4**：真 SUT + 真 KB 的全量行为分布、阈值、NaN 行为 —— 本冒烟**不能**代表真实 agent 路径。
+
+---
+
+## Phase 4：v5 新尺子基线（2026-10-17）
+
+**口径**：`bridge-0.3.9 / v5`（DeepEval 桥 + ragas 0.3.9，四指标串行，行为轴三项）。
+**运行**：1 → 5 → 21 题逐级，`--no-gate`；命令与耗时见同目录 `PHASE4-RUNS.md`。
+
+**分布**（21 题全量；四指标为纯 KB 19 题均值，行为轴为 21 题均值）：
+- 四指标：faithfulness **0.8263** / answer_relevancy **0.8848** / context_precision **0.5073** / context_recall **0.8195**
+- 行为轴：Task Completion **0.9024** / Step Efficiency **0.5929** / Agent Loop Detection **1.0000**（单轮观测，不构成稳定性结论）
+- NaN：**0/76**（率 0.0）。唯一 NaN 是 Q8 的 `context_precision`；Q8 为 `web` 样本，不入主分分母
+
+**运行事实**：墙钟 55m42s（日志窗口 55m23s）；截断告警 36 次，均落在行为轴阶段。
+
+**结论（本轮只记录、不标定）**：
+1. 四指标与行为轴**均有值**，链路可用；
+2. **阈值不标定**：R11 已证 `faithfulness` 在本判官下不可复现，本轮分布只作**基线锚点**，不作门禁阈值的推导依据；
+3. **`answer_relevancy` 对残句答案敏感**（D3 语义：生成器看不到 context），v5 中此类题的低分是题集口径问题，不是检索问题；
+4. 阈值标定与 NaN 率复核（tasks 10.4 / 10.5）**延后到 v6 定稿后**，届时以 `v6 + 新尺子` 的分布为准。
