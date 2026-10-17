@@ -1387,7 +1387,7 @@ metadata 中的 ragas_version / synthesizer_name 为历史测试集文件的遗�
 | `question` / `ground_truth` | 题面与参考答案 |
 | `trace_id` | 该题 trace，可按 trace 回溯 / 定位回写的分数 |
 | `q_index` | 题号（0 起） |
-| `error` | 该题评分失败摘要；无失败为空串 |
+| `error` | 本题任一指标（含诊断指标）最终失败的错误摘要；主指标成功但诊断失败时也非空，无失败为空串 |
 | 四个指标列 | `faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`，按 `EVAL_METRIC_COLUMNS` 顺序 |
 | `contextual_relevancy` / `non_advice` | **诊断指标**：写 CSV 但不进主分与门禁（`--deepeval-only` 不产出） |
 | `tool_correctness` | v6 预留；当前**恒为 null** |

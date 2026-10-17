@@ -1,6 +1,10 @@
 import pandas as pd
 
-from src.cli.eval_deepeval import _build_eval_detail, save_markdown_report
+from src.cli.eval_deepeval import (
+    _build_eval_detail,
+    _build_markdown_table,
+    save_markdown_report,
+)
 from src.config.const import (
     EVAL_RELEVANCY_MAX_CONTEXTS,
     SAMPLE_CLASS_EMPTY,
@@ -80,3 +84,21 @@ def test_report_diagnostic_section_uses_const_and_counts_nan(tmp_path):
     )
     assert "contextual_relevancy" not in main_line
     assert "non_advice" not in main_line
+
+
+def test_markdown_table_escapes_pipe_in_error_cell():
+    """error 文本含 "|" / 换行时归一化为 "/" 与单空格，避免破坏 Markdown 列。"""
+    df = pd.DataFrame(
+        {
+            "faithfulness": [0.5],
+            "error": ["faithfulness: bad | timeout\nretry"],
+        }
+    )
+
+    lines = _build_markdown_table(df, ["faithfulness"], None, None)
+    row = lines[2]
+
+    assert "bad / timeout retry" in row
+    assert "bad | timeout" not in row
+    # 表格列数不被 error 内容里的 "|" 改变：头部 3 列 -> 4 个分隔符
+    assert row.count("|") == 4

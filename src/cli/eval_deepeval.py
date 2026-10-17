@@ -902,7 +902,9 @@ def _build_markdown_table(
     for i in range(len(df)):
         vals = [f"Q{i + 1}"] + [f"{df[m].iloc[i]:.4f}" for m in metric_cols]
         if "error" in df.columns:
-            vals.append(str(df["error"].iloc[i]))
+            # 异常消息可能含 "|"，会破坏 Markdown 列，按行为轴同款口径归一化
+            error_text = " ".join(str(df["error"].iloc[i]).split()).replace("|", "/")
+            vals.append(error_text)
         if trace_ids is not None:
             if i < len(trace_ids):
                 vals.append(trace_ids[i])
