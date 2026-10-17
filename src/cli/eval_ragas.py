@@ -49,7 +49,8 @@ from src.config import settings
 from src.config.const import (
     EVAL_PASS_THRESHOLD,
     EVAL_RETRIEVAL_COVERAGE_MIN,
-    RAGAS_EVAL_CONCURRENCY,  # noqa: F401  # 打分并发预算留给 Phase 3，暂留符号
+    LANGFUSE_SCORE_SUFFIX,
+    RAGAS_EVAL_CONCURRENCY,  # noqa: F401  # 删除归 Phase 3 Task 6（处置失义并发常量）
     RAGAS_METRIC_COLUMNS,
     SAMPLE_CLASS_EMPTY,
     SAMPLE_CLASS_PURE_KB,
@@ -1149,7 +1150,7 @@ def main() -> None:
         )
 
         # 观测旁路回写：排在落库之后、门禁之前（失败只记 warning，见 write_scores）
-        _write_langfuse_scores(masked_df, trace_ids)
+        _write_langfuse_scores(masked_df, trace_ids, behaviour_rows)
 
         if args.gate:
             check_gate(masked_df, questions)
@@ -1179,8 +1180,12 @@ def _print_metric_averages(df: pd.DataFrame) -> None:
         print(f"  {metric}: {means[metric]:.4f}")
 
 
-def _write_langfuse_scores(masked_df: pd.DataFrame, trace_ids: list[str]) -> None:
-    """把已掩码表的逐题指标分数按 trace_id 显式回写 Langfuse（观测旁路）。
+def _write_langfuse_scores(
+    masked_df: pd.DataFrame,
+    trace_ids: list[str],
+    behaviour_rows: list[dict] | None = None,
+) -> None:
+    """把已掩码表的逐题指标分数（+ 行为轴）按 trace_id 显式回写 Langfuse（观测旁路）。
 
     评分在批量 evaluate() 之后才产出、逐题 @observe 已关闭，故回写必须显式定位
     trace，不能依赖「当前 trace」的隐式上下文。值取已掩码表（空材料样本的
@@ -1188,19 +1193,36 @@ def _write_langfuse_scores(masked_df: pd.DataFrame, trace_ids: list[str]) -> Non
     避免额外数值列混入。回写失败（客户端获取或逐条写）由 write_scores 吞掉，
     不影响评测主流程。
 
+    score 名统一带口径后缀（`LANGFUSE_SCORE_SUFFIX`，design D9）：新口径与历史同名
+    score 并存、SHALL NOT 覆盖；行为轴指标与四项同级、共用同一 trace_id；
+    NaN 由 write_scores 跳过（SHALL NOT 写 0）。
+
     Args:
         masked_df: 经 apply_sample_masks 掩码、含 sample_class 列的结果表
-        trace_ids: 每题的 trace_id（行序与 masked_df 对齐，已由调用方校验）
+        trace_ids: 每题的 trace_id（行序与 masked_df / behaviour_rows 对齐）
+        behaviour_rows: 逐题行为分（见 read_behaviour_scores）；传入后一并回写。
+            行数必须与 trace_ids 等长，否则快速失败（防分数写到别的 trace）
     """
-    write_scores(
-        trace_ids,
-        {
-            col: list(masked_df[col])
-            for col in RAGAS_METRIC_COLUMNS
-            if col in masked_df.columns
-        },
-        enabled=settings.LANGFUSE_ENABLE,
-    )
+    scores: dict[str, list] = {
+        f"{col}{LANGFUSE_SCORE_SUFFIX}": list(masked_df[col])
+        for col in RAGAS_METRIC_COLUMNS
+        if col in masked_df.columns
+    }
+    if behaviour_rows is not None:
+        if len(behaviour_rows) != len(trace_ids):
+            raise RuntimeError(
+                f"行为轴行数 ({len(behaviour_rows)}) != trace_ids ({len(trace_ids)})"
+            )
+        names: list[str] = []
+        for row in behaviour_rows:
+            for name in row.get("metrics") or {}:
+                if name not in names:
+                    names.append(name)
+        for name in names:
+            scores[f"{name}{LANGFUSE_SCORE_SUFFIX}"] = [
+                (row.get("metrics") or {}).get(name) for row in behaviour_rows
+            ]
+    write_scores(trace_ids, scores, enabled=settings.LANGFUSE_ENABLE)
 
 
 def _build_eval_detail(

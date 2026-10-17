@@ -547,6 +547,9 @@ RAGAS_EVAL_CONCURRENCY: int = 5
 # NaN 率门禁：分母 = 纯 KB 样本 × 四指标（格数）；分子 = 纯 KB 格里的全部 NaN。
 # 10% 为**经验初值**（依据仅换尺子前 21 题 1 例 ≈4.8%，样本薄），首轮全量后复核定稿。
 EVAL_NAN_RATE_MAX: float = 0.10
+# Langfuse score 名的口径后缀：新口径（DeepEval 桥 + ragas 0.3.9）与历史
+# （modern-0.4.x）并存，SHALL NOT 同名覆盖（design D9）。四项与行为轴共用此后缀。
+LANGFUSE_SCORE_SUFFIX: str = "@bridge-0.3.9"
 # 评测「通过」阈值（单一来源：落库 passed 与 kb_eval API 下发同用此值）。
 # 口径已由旧「四项加权、未掩码」改为「纯 KB 四项均值」，新口径系统性偏低
 # 0.03~0.13（实测 n=7，区间 0.68~0.92）——此值**待标定**，暂沿用 0.70。
