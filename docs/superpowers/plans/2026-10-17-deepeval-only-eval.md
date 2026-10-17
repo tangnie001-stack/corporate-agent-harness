@@ -561,3 +561,47 @@ git commit -m "docs(superpowers): deepeval-only-eval 验收记录"
 - **RAGAS 四指标的角色决策**（继续走桥 / 独立跑）：待 DeepEval 自闭环稳定后另定。
 - **行为分回写 Langfuse**：该模式缺 `masked_df`；如需，另做（不阻塞）。
 - **`eval_report` schema 改 nullable**：不采纳（见 design D2）。
+
+---
+
+## 执行记录与交接（2026-10-17）
+
+**状态：4/4 任务完成。** 分支 `feat/deepeval-only-eval`，基点 `6e8e843c`，共 5 个提交。
+
+### 交付物与提交
+
+| 任务 | 提交 | 内容 |
+|---|---|---|
+| T1 | `095a7bee` | `--deepeval-only` 参数 + 与 `--gate` 互斥 + `main()` 跳过四指标 |
+| T2 | `99632d7` / `9b0d935` | 报告/落库/CSV 的无 RAGAS 语义；修复 T1 遗漏的 `test_tracing_order` 假 Namespace |
+| T3 | `e6419c6d` | CLI README 用法与台账口径 |
+| T4 | 本提交 | 验收记录 |
+
+### 静态闸门
+
+- `pytest tests/ -q` → **1893 passed, 3 skipped**
+- `ruff format --check src/ tests/` → 501 files clean
+- `ruff check src/ tests/` → 1 error（`engine.py:33` UP047，**BASE 既有**）
+- `pyright src/` → 2 errors（`eval_ragas_generate.py:290/313`，**BASE 既有**）
+- `openspec validate deepeval-only-eval --strict` → valid
+- `check_docs` → 23 篇 / 0 error；`check_adr` → 26 条 / 0 error
+
+### 活体验收
+
+| 场景 | 耗时 | 结果 |
+|---|---|---|
+| `--deepeval-only --limit 1` | 27s | 报告含 `RAGAS: 未跑` + 行为轴（TC/SE/ALD 均 1.0）；**无 CSV**；`eval_report` 28→28 |
+| `--deepeval-only --limit 5` | 1m20s（重跑） | QA 5；行为轴 5 行；无 CSV；`eval_report` 28→28 |
+| 默认路径 `--limit 1` | 2m4s | 四指标 1.0/0.976/1.0/1.0；CSV 存在；`eval_report` 28→29 |
+
+**发现（既有风险，不属本 change）**：5 题首跑时第 5 题（`净利润变动主要原因`）跑图失败，`err=""`、卡约 3 分钟，`assert_behaviour_scores_complete` 按设计 **fail-loud**（questions=5 rows=4），整轮退出。重跑通过。根因在生产模型超时/取消，与本开关无关；但"单题失败导致整轮评测不可用"值得后续评估（是否允许部分题缺失并标注）。
+
+### 未证明
+
+- 21 题全量（本阶段为可选，未跑）；长上下文/多跳题在该模式下的稳定性未验证。
+- 行为分未回写 Langfuse（该模式缺 `masked_df`，按设计跳过）。
+
+### 交接
+
+- 下一步：`deepeval-native-metrics`（换原生四指标 + 移除 RAGAS）。
+- **必做项**：删除 `ragas` 依赖前，先处理 `version("ragas")` 的调用点（`build_report_meta` 的 `runner_versions`），否则 `PackageNotFoundError`。
