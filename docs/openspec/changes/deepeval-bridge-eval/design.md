@@ -307,8 +307,9 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
 
 - **落地现状（2026-10-17，明写避免误期待）**：`http_async_client` 的 hooks 当前只记录
   `url` / `status` / `body_bytes` / `json_ok` / `finish_reason`（响应体不可解析时另有 `body_exc`），
-  **仅在失败时产日志行**；`model` 由每轮一次的 `eval model init` 承载、耗时由每次尝试的
-  `judge call` 承载。**请求体摘要 / 响应体摘要 / 成功路径日志尚未落地**；需要完整形态时另立项
+  **仅在失败时产日志行**；`model` 由每轮一次的 `eval model init` 承载、耗时由四指标路径每次尝试的
+  `judge call` 承载（行为轴判官调用发生在 `evals_iterator` 内，不产生 `judge call`，故其耗时无日志）。
+  **请求体摘要 / 响应体摘要 / 成功路径日志尚未落地**；需要完整形态时另立项
   （已登记见 ADR-0026 的复查触发条件 ④）。
 
 ## Risks / Trade-offs
@@ -323,7 +324,7 @@ DeepEval 有**四种执行入口**：`evaluate([tc],[m])`（批量事后，官�
 | R6 | **口径变化被误当"分数回归"** | 换尺子后四个指标的分数都会动 | 台账加口径版本列；首轮重跑只用于**标定阈值**，不与历史比 |
 | R7 | **喂法未修，context 轴仍偏低** | 本次不解决"多轮并集当单轮 `c(q)`" | 显式写成 Non-Goal；context 轴的根治（per-step 单轮化）另行跟踪 |
 | R8 | **出题生成成为死代码**（注意：模块**不是**死代码） | 出题生成不再调用，但**测试集加载器仍被评测路径使用**（`eval_ragas.py:803/818`），文件不可删 | 在文件头与台账标注"**出题生成**保留未调用"（区分生成入口与加载器）；重启需先解决 0.4.x；`--generate` 加**硬护栏**（见 D8） |
-| R9 | **行为轴的取分路径（最高风险；已由 spike 定案并修正）** | 原设想"透传 `messages` 自建轨迹"不被接受；**改成只挂 `CallbackHandler` 后实测仍拿不到分**（`metric.score=None`、`reason=''`） | **定案**：必须 `EvaluationDataset.evals_iterator(metrics=[…])` 驱动；**逐题分从 `test_run_*.json` 的 `testCases[].metricsData` 回读**（`metricsScores` 只是按指标聚合，见 D6）；加"轨迹非空 **且**取到分 **且** 生成器已耗尽（JSON 已落盘）"fail-loud；`ainvoke`（异步）兼容性**已验**（Q1 探测：外层 `asyncio.run` 内两路均 WORKS，机制为 `nest_asyncio.apply()` 同一 loop 重入）；**⚠️ 且行为轴 SHALL 走异步配置**（2026-10-17 spike：同步分支经 `.invoke()` 落到 langchain 同步 client，桥裁判只挂 `http_async_client` ⇒ **hooks 零触发**，实测 `hook_events=0` vs 异步 `8`）⇒ SHALL 断言 `hook_events > 0`；**归因边界（延后 Phase 3，见 tasks 组 8）**：行为轴判官调用**无法**按题经请求级 hooks 归因——DeepEval 在 `evals_iterator` 耗尽后才评分（异步路径），而证据桶为单槽、届时证据桶尚未 mark 任何题（trace_id 记为空，不做逐题归因）；行为轴逐题失败证据取 `test_run_*.json` 的 `testCases[].metricsData[].reason` |
+| R9 | **行为轴的取分路径（最高风险；已由 spike 定案并修正）** | 原设想"透传 `messages` 自建轨迹"不被接受；**改成只挂 `CallbackHandler` 后实测仍拿不到分**（`metric.score=None`、`reason=''`） | **定案**：必须 `EvaluationDataset.evals_iterator(metrics=[…])` 驱动；**逐题分从 `test_run_*.json` 的 `testCases[].metricsData` 回读**（`metricsScores` 只是按指标聚合，见 D6）；加"轨迹非空 **且**取到分 **且** 生成器已耗尽（JSON 已落盘）"fail-loud；`ainvoke`（异步）兼容性**已验**（Q1 探测：外层 `asyncio.run` 内两路均 WORKS，机制为 `nest_asyncio.apply()` 同一 loop 重入）；**⚠️ 且行为轴 SHALL 走异步配置**（2026-10-17 spike：同步分支经 `.invoke()` 落到 langchain 同步 client，桥裁判只挂 `http_async_client` ⇒ **hooks 零触发**，实测 `hook_events=0` vs 异步 `8`）⇒ SHALL 断言 `hook_events > 0`；**归因边界（Phase 3 已收敛，见 tasks 组 8 与 spec 的对应措辞）**：行为轴判官调用**无法**按题经请求级 hooks 归因——DeepEval 在 `evals_iterator` 耗尽后才评分（异步路径），而证据桶为单槽、届时证据桶尚未 mark 任何题（trace_id 记为空，不做逐题归因）；行为轴逐题失败证据取 `test_run_*.json` 的 `testCases[].metricsData[].reason` |
 | R10 | **行为轴对被测图有侵入，且每题多一次裁判调用** | 评测运行时图会多挂一层 handler；每题多一次裁判调用（spike 1 题 30–38s，含跑图） | 仅在**评测路径**做（生产链路不动）；**每题新建独立 handler**（并发负向验证）；时间成本计入评测预算 |
 | R11 | **`faithfulness` 在本判官下分数不可复现（两个独立病因，实测）** | `thinking=False` 时，答案凡是 context 的**缩写/改写**即可能触发：(①) 中→英转换迫使 NLI 做**亿↔billion 换算**、偶发算错 ⇒ **二值抖动**（同题 `[0.0,1.0,0.0,1.0]`）；或 (②) **NLI 读错中文 context 的数值**（`857 亿元`→`857 billion`）或纠结**限定词省略**（`净利润` vs `归母净利润`）⇒ **稳定判 0**（实测 10/10）。两者都使 `faithfulness` 偏离真值，且**换中文提示词只治①**（见 D3 硬约束②） | **决策挂起至题集重出**（2026-10-16 决定）：现有 21 题的**口径待重做**，在其上继续抽样/调参价值低 ⇒ R11 的处置（①D+双 judge / ②降级）待新题集定稿后一并拍板。**⚠️ 但须记明：本风险的机制是判官/指标级，不随题集改变**——新题集只能**降低暴露率**（例：参考答案不写残句、答案自包含），**不会消除**它；只要答案仍是对中文 context 的缩写、context 仍含数字/限定词，同样会触发。故新题集的出题规格 SHALL 把本项列为输入（见下） |
 
