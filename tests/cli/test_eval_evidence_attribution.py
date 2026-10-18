@@ -29,7 +29,12 @@ def test_q21_retrieval_miss():
             },
             "metric_attempted": True,
             "judge_failed": False,
-        }
+        },
+        judge={
+            "context_recall": {},
+            "context_precision": {},
+            "faithfulness": {},
+        },
     )
     out = attribute_question(c, sample_class="pure_kb", sample_failed=False)
     assert out["context_recall"]["root_cause"] == "retrieval_miss"
@@ -61,7 +66,8 @@ def test_failed_run_is_skipped_not_prompt_or_generation():
             "skipped_reason": "failed",
             "error": "failed",
             "judge_failed": False,
-        }
+        },
+        judge={"faithfulness": {}, "context_recall": {}},
     )
     out = attribute_question(c, sample_class="pure_kb", sample_failed=True)
     assert out["faithfulness"]["root_cause"] == "inconclusive"
@@ -77,7 +83,8 @@ def test_faithfulness_failed_answer_with_attempted_metric():
             "metric_attempted": True,
             "judge_failed": False,
             "fact_in_corpus": None,
-        }
+        },
+        judge={"faithfulness": {}},
     )
     out = attribute_question(c, sample_class="pure_kb", sample_failed=True)
     assert out["faithfulness"]["root_cause"] == "prompt_or_generation"
@@ -93,7 +100,8 @@ def test_null_fact_does_not_become_parsing():
             "fact_coverage": {"corpus": None, "final": None},
             "metric_attempted": True,
             "judge_failed": False,
-        }
+        },
+        judge={"context_recall": {}},
     )
     out = attribute_question(c, sample_class="web", sample_failed=False)
     assert out["context_recall"]["root_cause"] == "inconclusive"
@@ -114,7 +122,8 @@ def test_null_fact_marker_confidence_is_inconclusive():
             },
             "metric_attempted": True,
             "judge_failed": False,
-        }
+        },
+        judge={"context_recall": {}},
     )
     out = attribute_question(c, sample_class="pure_kb", sample_failed=False)
     assert out["context_recall"]["root_cause"] == "inconclusive"
@@ -127,7 +136,8 @@ def test_empty_sample_is_not_judge_failure():
             "metric_attempted": False,
             "skipped_reason": "sample_class=empty",
             "judge_failed": False,
-        }
+        },
+        judge={"context_recall": {}},
     )
     out = attribute_question(c, sample_class="empty", sample_failed=False)
     assert out["context_recall"]["root_cause"] == "inconclusive"
@@ -141,7 +151,10 @@ def test_empty_sample_tool_correctness_stays_attempted():
             "skipped_reason": "sample_class=empty",
             "judge_failed": False,
         },
-        judge={"tool_correctness": {"score": 1.0, "metric_attempted": True}},
+        judge={
+            "context_recall": {},
+            "tool_correctness": {"score": 1.0, "metric_attempted": True},
+        },
     )
     out = attribute_question(c, sample_class="empty", sample_failed=False)
     assert out["context_recall"]["root_cause"] == "inconclusive"
@@ -155,7 +168,8 @@ def test_metric_attempted_false_beats_judge_failed():
             "metric_attempted": False,
             "skipped_reason": "empty",
             "judge_failed": True,
-        }
+        },
+        judge={"context_recall": {}},
     )
     out = attribute_question(c, sample_class="empty", sample_failed=False)
     assert out["context_recall"]["root_cause"] == "inconclusive"
@@ -163,15 +177,38 @@ def test_metric_attempted_false_beats_judge_failed():
 
 
 def test_skipped_fallback_never_uses_sample_class():
-    c = _collector({"metric_attempted": False, "judge_failed": False})
+    c = _collector(
+        {"metric_attempted": False, "judge_failed": False},
+        judge={"context_recall": {}},
+    )
     out = attribute_question(c, sample_class="pure_kb", sample_failed=False)
     assert out["context_recall"]["evidence"] == "skipped:failed"
 
 
 def test_empty_sample_without_reason_falls_back_to_empty():
-    c = _collector({"metric_attempted": False, "judge_failed": False})
+    c = _collector(
+        {"metric_attempted": False, "judge_failed": False},
+        judge={"context_recall": {}},
+    )
     out = attribute_question(c, sample_class="empty", sample_failed=False)
     assert out["context_recall"]["evidence"] == "skipped:empty"
+
+
+def test_unmeasured_metrics_are_not_attributed():
+    """--deepeval-only 无 judge 快照：只输出 tool_correctness 与行为指标。"""
+    c = _collector({"metric_attempted": True, "judge_failed": False})
+    out = attribute_question(c, sample_class="pure_kb", sample_failed=False)
+    assert set(out) == {"tool_correctness"}
+
+    c.behavior = {"metrics": {"Step Efficiency": 0.1}}
+    c.attribution = attribute_question(c, sample_class="pure_kb", sample_failed=False)
+    assert set(c.attribution) == {"tool_correctness", "StepEfficiency"}
+    summary = summarize_attribution([c])
+    assert summary["scored_metric_count"] == 2
+    assert summary["root_cause_counts"]["total"] == {
+        "inconclusive": 1,
+        "agent_orchestration": 1,
+    }
 
 
 def test_web_judge_failure_wins():
@@ -217,7 +254,8 @@ def test_web_ignores_non_null_fact_chain():
             "fact_coverage": {"corpus": 1.0, "candidates": 0.0, "final": 0.0},
             "metric_attempted": True,
             "judge_failed": False,
-        }
+        },
+        judge={"context_recall": {}},
     )
     out = attribute_question(c, sample_class="web", sample_failed=False)
     assert out["context_recall"]["root_cause"] == "inconclusive"
@@ -238,7 +276,8 @@ def test_fact_not_in_corpus_is_parsing_or_chunking():
             },
             "metric_attempted": True,
             "judge_failed": False,
-        }
+        },
+        judge={"context_recall": {}, "contextual_relevancy": {}},
     )
     out = attribute_question(c, sample_class="pure_kb", sample_failed=False)
     assert out["context_recall"]["root_cause"] == "parsing_or_chunking"
@@ -260,7 +299,8 @@ def test_candidate_dropped_before_final_is_rerank_or_topk():
             },
             "metric_attempted": True,
             "judge_failed": False,
-        }
+        },
+        judge={"context_precision": {}},
     )
     out = attribute_question(c, sample_class="pure_kb", sample_failed=False)
     assert out["context_precision"]["root_cause"] == "rerank_or_topk"
@@ -305,7 +345,8 @@ def test_partial_fact_coverage_is_inconclusive():
             "missing_fact_tokens": ["80,348万元"],
             "metric_attempted": True,
             "judge_failed": False,
-        }
+        },
+        judge={"context_recall": {}},
     )
     out = attribute_question(c, sample_class="pure_kb", sample_failed=False)
     assert out["context_recall"]["root_cause"] == "inconclusive"
@@ -322,7 +363,8 @@ def test_numeric_conflict_is_testset_error():
             "testset_conflict": {"numeric_conflict": True, "period_conflict": None},
             "metric_attempted": True,
             "judge_failed": False,
-        }
+        },
+        judge={"context_recall": {}},
     )
     out = attribute_question(c, sample_class="pure_kb", sample_failed=False)
     assert out["context_recall"]["root_cause"] == "testset_error"
@@ -347,7 +389,9 @@ def test_retrieval_miss_confidence_from_gold():
         "judge_failed": False,
     }
     out = attribute_question(
-        _collector(facts), sample_class="pure_kb", sample_failed=False
+        _collector(facts, judge={"context_recall": {}}),
+        sample_class="pure_kb",
+        sample_failed=False,
     )
     assert out["context_recall"]["root_cause"] == "retrieval_miss"
     assert out["context_recall"]["confidence"] == "high"
@@ -605,6 +649,24 @@ def test_summary_counts_root_causes_and_skipped_separately():
     assert out["scored_metric_count"] == 3
     assert out["skipped_metric_count"] == 3
     assert out["inconclusive_count"] == 1
+
+
+def test_deepeval_only_omits_unmeasured_metrics():
+    c = _collector({"metric_attempted": True, "judge_failed": False}, judge={})
+    c.behavior = {
+        "metrics": {"Task Completion": 0.1, "Step Efficiency": 0.1},
+        "reasons": {},
+    }
+    out = attribute_question(c, sample_class="pure_kb", sample_failed=False)
+    assert set(out) == {"tool_correctness", "TaskCompletion", "StepEfficiency"}
+    c.attribution = out
+    summary = summarize_attribution([c])
+    assert summary["root_cause_counts"]["by_metric"].keys() == {
+        "tool_correctness",
+        "TaskCompletion",
+        "StepEfficiency",
+    }
+    assert summary["scored_metric_count"] == 3
 
 
 def test_summary_is_empty_without_attribution():

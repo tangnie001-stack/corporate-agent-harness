@@ -347,7 +347,9 @@ def attribute_question(
 ) -> dict[str, dict]:
     """按指标输出确定性归因。
 
-    规则顺序：跳过 → judge_failed → 指标专属规则 → 事实链。
+    规则顺序：跳过 → judge_failed → 指标专属规则 → 事实链。只对
+    `collector.judge` 里实际存在的指标输出归因（`tool_correctness` 例外：
+    `--deepeval-only` 没有评分快照，但工具分由轨迹独立计算）。
 
     Args:
         collector: 本题证据
@@ -362,6 +364,8 @@ def attribute_question(
     out: dict[str, dict] = {}
 
     for metric in _METRICS:
+        if metric != "tool_correctness" and metric not in judge:
+            continue
         item = judge.get(metric) or {}
         if not _metric_attempted(facts, item):
             out[metric] = _result(

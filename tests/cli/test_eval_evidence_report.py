@@ -74,6 +74,28 @@ def test_web_main_score_does_not_trigger():
     assert should_write_evidence(row, "web", _behavior(), all_questions=False) is False
 
 
+def test_web_selected_when_tool_correctness_low():
+    row = _df(
+        faithfulness=1.0,
+        answer_relevancy=1.0,
+        context_precision=1.0,
+        context_recall=1.0,
+        tool_correctness=0.0,
+    ).iloc[0]
+    assert should_write_evidence(row, "web", _behavior(), all_questions=False) is True
+
+
+def test_web_main_scores_do_not_trigger_with_perfect_tool():
+    row = _df(
+        faithfulness=0.1,
+        answer_relevancy=0.1,
+        context_precision=0.1,
+        context_recall=0.1,
+        tool_correctness=1.0,
+    ).iloc[0]
+    assert should_write_evidence(row, "web", _behavior(), all_questions=False) is False
+
+
 def test_empty_always_selected():
     row = _df(
         faithfulness=None,
@@ -320,17 +342,91 @@ def test_deepeval_only_selects_from_behaviour(tmp_path, monkeypatch):
 def test_probe_failure_is_contained(tmp_path, monkeypatch):
     run, collector = _run()
     collector.testset = {"reference": "2024年营收 12 亿元"}
+    second = run.new_question(1)
+    second.testset = {"reference": ""}
 
-    def _boom(*args, **kwargs):
-        raise RuntimeError("probe down")
+    def _boom(reference, *args, **kwargs):
+        if reference:
+            raise RuntimeError("probe down")
+        return {}
 
     monkeypatch.setattr(writer, "probe_reference_chunks", _boom)
     _write(
         tmp_path,
         monkeypatch,
         run,
+        questions=["Q0", "Q1"],
+        scored_df=None,
+        sample_classes=["pure_kb", "pure_kb"],
+        all_questions=True,
+    )
+
+    assert not (tmp_path / "r1" / "q_0.json").exists()
+    assert (tmp_path / "r1" / "q_1.json").exists()
+    summary = _payload(tmp_path, "summary.json")
+    assert summary["evidence_files"] == ["q_1.json"]
+    assert summary["low_score_questions"] == [1]
+
+
+def test_attribution_failure_still_writes_question(tmp_path, monkeypatch):
+    run, collector = _run()
+    collector.testset = {"reference": ""}
+    collector.judge = {"faithfulness": {"score": 0.2, "metric_attempted": True}}
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("attribution down")
+
+    monkeypatch.setattr(writer, "attribute_question", _boom)
+    _write(
+        tmp_path,
+        monkeypatch,
+        run,
         scored_df=pd.DataFrame([{"q_index": 0, "faithfulness": 0.2, "error": ""}]),
     )
+
+    attribution = _payload(tmp_path)["attribution"]
+    assert attribution["faithfulness"]["evidence"] == "attribution_failed"
+    assert attribution["tool_correctness"]["evidence"] == "attribution_failed"
+    assert (tmp_path / "r1" / "summary.json").exists()
+
+
+def test_non_finite_scores_serialized_as_null(tmp_path, monkeypatch):
+    run, collector = _run()
+    collector.testset = {"reference": ""}
+    collector.judge = {
+        "faithfulness": {
+            "score": float("nan"),
+            "error": "",
+            "metric_attempted": True,
+        }
+    }
+    _write(
+        tmp_path,
+        monkeypatch,
+        run,
+        scored_df=pd.DataFrame([{"q_index": 0, "faithfulness": 0.2, "error": ""}]),
+        behaviour_rows=_behavior(
+            {
+                "Task Completion": float("nan"),
+                "Step Efficiency": 1.0,
+                "Agent Loop Detection": 1.0,
+            }
+        ),
+    )
+
+    raw = (tmp_path / "r1" / "q_0.json").read_text(encoding="utf-8")
+    assert "NaN" not in raw
+    payload = json.loads(raw)
+    assert payload["judge"]["faithfulness"]["score"] is None
+    assert payload["behavior"]["metrics"]["Task Completion"] is None
+
+
+def test_evidence_dir_is_report_dir_sibling():
+    from pathlib import Path
+
+    from src.config import EVAL_REPORT_DIR
+
+    assert Path(report.EVAL_EVIDENCE_DIR) == Path(EVAL_REPORT_DIR).parent / "evidence"
 
 
 def test_atomic_write_leaves_no_temp_files(tmp_path, monkeypatch):
@@ -370,10 +466,12 @@ def test_snapshot_judge_marks_empty_metrics_skipped_but_keeps_tool():
         "tool_correctness": 1.0,
         "error": "sample_class=empty",
     }
-    out = _snapshot_judge(scored, None)
+    out = _snapshot_judge(scored, None, None)
     assert out["faithfulness"]["metric_attempted"] is False
     assert out["faithfulness"]["skipped_reason"] == "sample_class=empty"
     assert out["tool_correctness"]["metric_attempted"] is True
+    assert out["tool_correctness"]["skipped_reason"] is None
+    assert out["tool_correctness"]["error"] == ""
 
 
 def test_snapshot_judge_failed_run_skips_tool():
@@ -385,9 +483,64 @@ def test_snapshot_judge_failed_run_skips_tool():
         "tool_correctness": None,
         "error": "failed",
     }
-    out = _snapshot_judge(scored, None)
+    out = _snapshot_judge(scored, None, None)
     assert out["faithfulness"]["skipped_reason"] == "failed"
     assert out["tool_correctness"]["metric_attempted"] is False
+    assert out["tool_correctness"]["skipped_reason"] == "failed"
+
+
+def test_snapshot_judge_uses_per_metric_errors():
+    from src.cli.eval_deepeval import _snapshot_judge
+
+    scored = {
+        "q_index": 0,
+        "faithfulness": float("nan"),
+        "context_recall": 0.9,
+        "error": "faithfulness:boom",
+    }
+    out = _snapshot_judge(scored, None, {"faithfulness": "faithfulness:boom"})
+    assert out["faithfulness"]["error"] == "faithfulness:boom"
+    assert out["faithfulness"]["metric_attempted"] is True
+    assert out["faithfulness"]["skipped_reason"] is None
+    assert out["context_recall"]["error"] == ""
+    assert out["context_recall"]["skipped_reason"] is None
+
+
+def test_score_rows_passes_per_metric_errors(monkeypatch):
+    from src.cli import eval_deepeval
+
+    run, collector = _run()
+
+    def _fake_score(name, metric, case, row, evidence):
+        if name == "faithfulness":
+            return float("nan"), "faithfulness:boom"
+        return 0.9, ""
+
+    monkeypatch.setattr(eval_deepeval, "_score_metric_with_retry", _fake_score)
+    rows = [
+        {
+            "q_index": 0,
+            "question": "q",
+            "answer": "ok",
+            "ground_truth": "gt",
+            "contexts": ["c"],
+            "trajectory": {},
+            "expected_tools": None,
+            "sample_class": "pure_kb",
+            "trace_id": "t0",
+        }
+    ]
+    eval_deepeval.score_rows(
+        rows,
+        {"faithfulness": object(), "context_recall": object()},
+        evidence_run=run,
+    )
+
+    judge = collector.judge
+    assert judge["faithfulness"]["error"] == "faithfulness:boom"
+    assert judge["faithfulness"]["skipped_reason"] is None
+    assert judge["context_recall"]["error"] == ""
+    assert judge["context_recall"]["skipped_reason"] is None
 
 
 class _FakeHookEvidence:
@@ -415,6 +568,22 @@ def test_capture_evidence_deep_copies_measures():
     assert collector.trace["judge_measures"] == [
         {"metric": "faithfulness", "calls": [{"call_index": 1, "status": 200}]}
     ]
+
+
+def test_capture_evidence_swallows_malformed_measure():
+    from src.cli.eval_deepeval import _capture_evidence
+
+    class _BrokenEvidence:
+        """measure 记录结构损坏，模拟上游异常。"""
+
+        def __init__(self):
+            self.measures = [None]
+
+    run, collector = _run()
+    _capture_evidence(
+        {"q_index": 0, "faithfulness": 0.5, "error": ""}, run, _BrokenEvidence()
+    )
+    assert collector.judge == {}
 
 
 def test_pure_kb_fact_chain_with_real_chunks(tmp_path, monkeypatch):

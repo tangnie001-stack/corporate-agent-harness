@@ -26,7 +26,7 @@ from src.config.const import (
 )
 from src.core.eval_evidence import EvidenceRun, QuestionEvidence
 
-EVAL_EVIDENCE_DIR = str(Path(EVAL_REPORT_DIR) / "evidence")
+EVAL_EVIDENCE_DIR = str(Path(EVAL_REPORT_DIR).parent / "evidence")
 _BEHAVIOR_KEYS = ("Task Completion", "Step Efficiency", "Agent Loop Detection")
 
 
@@ -69,9 +69,9 @@ def should_write_evidence(
 ) -> bool:
     """低分/异常选题；web 主分不触发；无主分行时只看行为。
 
-    选题顺序：全量 → empty / 跑图失败 → 行为分缺失或过低 → web 短路
-    → 主分门禁 → 工具选择。web 样本没有 KB 事实链，主分低不代表检索问题，
-    故一律不因主分选中。
+    选题顺序：全量 → empty / 跑图失败 → 行为分缺失或过低 → 工具选择
+    → web 短路 → 主分门禁。web 样本没有 KB 事实链，主分低不代表检索问题，
+    故不因主分选中；但工具选择错误与行为异常仍应入选。
 
     Args:
         row: 该题评分行（无主分时只含 q_index）
@@ -98,6 +98,16 @@ def should_write_evidence(
             return True
         if _as_float(value) < 0.5:
             return True
+    tool_reason = row.get("tool_correctness_reason")
+    if not isinstance(tool_reason, str):
+        tool_reason = ""
+    if tool_reason in ("failed", "metric_unavailable"):
+        return True
+    if tool_reason.startswith("tool_correctness:"):
+        return True
+    tool_value = row.get("tool_correctness")
+    if not is_nan(tool_value) and _as_float(tool_value) < 1.0:
+        return True
     if sample_class == SAMPLE_CLASS_WEB:
         return False
     if not any(metric in row.index for metric in GATE_THRESHOLDS):
@@ -111,17 +121,7 @@ def should_write_evidence(
             return True
         if _as_float(value) < threshold:
             return True
-    tool_reason = row.get("tool_correctness_reason")
-    if not isinstance(tool_reason, str):
-        tool_reason = ""
-    if tool_reason in ("failed", "metric_unavailable"):
-        return True
-    if tool_reason.startswith("tool_correctness:"):
-        return True
-    tool_value = row.get("tool_correctness")
-    if is_nan(tool_value):
-        return False
-    return _as_float(tool_value) < 1.0
+    return False
 
 
 def _score_rows(scored_df: DataFrame | None) -> dict[int, Series]:
@@ -178,6 +178,45 @@ def _select_collectors(
         yield collector, row, sample_class
 
 
+def _write_summary(
+    target_dir: Path,
+    *,
+    run: EvidenceRun,
+    questions: list[str],
+    run_id: str,
+    run_trace_id: str | None,
+    files: list[str],
+    low: list[int],
+    started: float,
+) -> None:
+    """汇总并写 `summary.json`；失败只 warning。
+
+    Args:
+        target_dir: 本轮输出目录
+        run: 本轮证据容器（用于根因汇总）
+        questions: 题面列表
+        run_id: 整轮 run id
+        run_trace_id: 整轮 trace id
+        files: 已写出的证据文件名
+        low: 已写证据的题号
+        started: 本轮起始 `time.monotonic()`
+    """
+    try:
+        summary = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "run_trace_id": run_trace_id,
+            "qa_count": len(questions),
+            "low_score_questions": low,
+            "evidence_files": files,
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            **summarize_attribution(run.collectors),
+        }
+        atomic_json(target_dir / "summary.json", summary)
+    except Exception as exc:  # noqa: BLE001  # 观测旁路，失败不影响评测
+        logger.warning("[cli] evidence summary write failed err={}", exc)
+
+
 def write_evidence_run(
     run: EvidenceRun,
     *,
@@ -209,40 +248,52 @@ def write_evidence_run(
     target_dir = Path(EVAL_EVIDENCE_DIR) / run_id
     files: list[str] = []
     low: list[int] = []
+    chunk_list = run.corpus_chunks or []
+    selected: list[tuple[QuestionEvidence, Series, str]] = []
     try:
         rows = _score_rows(scored_df)
         linked = {
             row.get("q_index"): row
             for row in link_behavior_traces(behaviour_rows, trace_ids)
         }
-        chunk_list = run.corpus_chunks or []
-        selected = _select_collectors(
-            run, rows, sample_classes, behaviour_rows, all_questions=all_questions
-        )
-        for collector, row, sample_class in selected:
-            low.append(collector.q_index)
-            files.append(
-                write_question(
-                    collector,
-                    row,
-                    sample_class,
-                    target_dir=target_dir,
-                    behaviour_rows=behaviour_rows,
-                    linked=linked,
-                    chunk_list=chunk_list,
-                    run_trace_id=run_trace_id,
-                )
+        selected = list(
+            _select_collectors(
+                run, rows, sample_classes, behaviour_rows, all_questions=all_questions
             )
-        summary = {
-            "schema_version": 1,
-            "run_id": run_id,
-            "run_trace_id": run_trace_id,
-            "qa_count": len(questions),
-            "low_score_questions": low,
-            "evidence_files": files,
-            "elapsed_ms": int((time.monotonic() - started) * 1000),
-            **summarize_attribution(run.collectors),
-        }
-        atomic_json(target_dir / "summary.json", summary)
-    except Exception as exc:  # noqa: BLE001  # 观测旁路，失败不影响评测
-        logger.warning("[cli] evidence write failed err={}", exc)
+        )
+    except Exception as exc:  # noqa: BLE001  # 选题失败只放弃本轮，仍写空 summary
+        logger.warning("[cli] evidence selection failed err={}", exc)
+        linked = {}
+
+    # 单题失败只丢该题，后续题与 summary 照常产出
+    for collector, row, sample_class in selected:
+        try:
+            name = write_question(
+                collector,
+                row,
+                sample_class,
+                target_dir=target_dir,
+                behaviour_rows=behaviour_rows,
+                linked=linked,
+                chunk_list=chunk_list,
+                run_trace_id=run_trace_id,
+            )
+        except Exception as exc:  # noqa: BLE001  # 观测旁路，失败不影响评测
+            logger.warning(
+                "[cli] evidence question write failed q_index={} err={}",
+                collector.q_index,
+                exc,
+            )
+            continue
+        low.append(collector.q_index)
+        files.append(name)
+    _write_summary(
+        target_dir,
+        run=run,
+        questions=questions,
+        run_id=run_id,
+        run_trace_id=run_trace_id,
+        files=files,
+        low=low,
+        started=started,
+    )

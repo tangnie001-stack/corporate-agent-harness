@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
 from pandas import Series
 
 from src.cli.eval_evidence_attribution import attribute_question
@@ -48,6 +49,20 @@ def is_nan(value: Any) -> bool:
         return False
 
 
+def text_value(value: Any) -> str:
+    """把可能为 NaN 的单元格转成字符串。
+
+    Args:
+        value: 任意单元格值（pandas 缺失值为 NaN，不是 None）
+
+    Returns:
+        字符串原样返回；非字符串（含 NaN / None）返回空串
+    """
+    if isinstance(value, str):
+        return value
+    return ""
+
+
 def error_text(row: Series) -> str:
     """取评分行的跑图错误标记。
 
@@ -57,10 +72,7 @@ def error_text(row: Series) -> str:
     Returns:
         `error` 列文本；非字符串（含 NaN）时返回空串
     """
-    value = row.get("error")
-    if isinstance(value, str):
-        return value
-    return ""
+    return text_value(row.get("error"))
 
 
 def judge_failed(collector: QuestionEvidence) -> bool:
@@ -83,18 +95,44 @@ def judge_failed(collector: QuestionEvidence) -> bool:
     return False
 
 
+def _json_safe(value: Any) -> Any:
+    """把非有限浮点数递归替换为 None，保证严格 JSON。
+
+    Args:
+        value: 待序列化的任意结构
+
+    Returns:
+        可被 `json.dump(allow_nan=False)` 接受的等价结构
+    """
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        return None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def atomic_json(path: Path, payload: dict) -> None:
     """临时文件 + `os.replace` 原子写盘。
 
     Args:
         path: 目标文件
-        payload: 待写 JSON 结构
+        payload: 待写 JSON 结构（NaN/Inf 落为 null）
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            json.dump(
+                _json_safe(payload),
+                handle,
+                ensure_ascii=False,
+                indent=2,
+                allow_nan=False,
+            )
         os.replace(tmp, path)
     except Exception:
         try:
@@ -192,6 +230,27 @@ def question_payload(collector: QuestionEvidence, run_trace_id: str | None) -> d
     }
 
 
+def _failed_attribution(collector: QuestionEvidence) -> dict[str, dict]:
+    """归因失败时的占位结果：所有已测指标标记 inconclusive。
+
+    Args:
+        collector: 本题证据
+
+    Returns:
+        指标名到 `{root_cause, confidence, evidence}` 的字典
+    """
+    metrics = {str(name) for name in (collector.judge or {})}
+    metrics.add("tool_correctness")
+    return {
+        metric: {
+            "root_cause": "inconclusive",
+            "confidence": "inconclusive",
+            "evidence": "attribution_failed",
+        }
+        for metric in sorted(metrics)
+    }
+
+
 def write_question(
     collector: QuestionEvidence,
     row: Series,
@@ -234,14 +293,22 @@ def write_question(
         sample_class=sample_class,
         numeric_risk=bool((collector.testset or {}).get("numeric_risk")),
         sample_failed=sample_failed,
-        tool_correctness_reason=str(row.get("tool_correctness_reason") or ""),
+        tool_correctness_reason=text_value(row.get("tool_correctness_reason")),
         answer=collector.answer,
         tool_calls=collector.tool_calls,
         judge_failed=judge_failed(collector),
     )
-    collector.attribution = attribute_question(
-        collector, sample_class=sample_class, sample_failed=sample_failed
-    )
+    try:
+        collector.attribution = attribute_question(
+            collector, sample_class=sample_class, sample_failed=sample_failed
+        )
+    except Exception as exc:  # noqa: BLE001  # 归因失败只降级本题 attribution
+        logger.warning(
+            "[cli] evidence attribution failed q_index={} err={}",
+            collector.q_index,
+            exc,
+        )
+        collector.attribution = _failed_attribution(collector)
     name = f"q_{collector.q_index}.json"
     atomic_json(target_dir / name, question_payload(collector, run_trace_id))
     return name

@@ -866,21 +866,24 @@ def _score_tool_correctness(row: dict, metric) -> tuple[float | None, str]:
     return score, " ".join(reason.replace("|", "/").split())
 
 
-def _snapshot_judge(scored: dict, evidence) -> dict:
+def _snapshot_judge(
+    scored: dict, evidence, metric_errors: dict[str, str] | None = None
+) -> dict:
     """把一行评分结果与 measure 记录转成 `evidence.judge`。
 
     Args:
         scored: 本题评分行（含各指标分数与 error）
         evidence: 可选证据桶；None 表示没有 HTTP 侧 measure
+        metric_errors: 逐指标错误（键为指标名）；None 表示无逐指标信息
 
     Returns:
         以指标名为键、含 `score` / `error` / `reason` / `metric_attempted` /
         `skipped_reason` 的字典
     """
-    measures = {
-        str(item.get("metric")): item
-        for item in (evidence.measures if evidence is not None else [])
-    }
+    measures: dict[str, dict] = {}
+    if evidence is not None:
+        for item in evidence.measures:
+            measures[str(item.get("metric"))] = item
     names = [
         name
         for name in (
@@ -894,6 +897,7 @@ def _snapshot_judge(scored: dict, evidence) -> dict:
         )
         if name in scored
     ]
+    errors = metric_errors or {}
     skipped = scored.get("error") in ("sample_class=empty", "failed")
     out: dict[str, dict] = {}
     for name in names:
@@ -903,11 +907,11 @@ def _snapshot_judge(scored: dict, evidence) -> dict:
         if name == "tool_correctness" and skipped:
             attempted = scored.get("error") == "sample_class=empty"
         skipped_reason = None
-        if skipped:
+        if not attempted:
             skipped_reason = scored.get("error")
         out[name] = {
             "score": scored.get(name),
-            "error": scored.get("error", ""),
+            "error": errors.get(name, ""),
             "reason": measure.get("reason"),
             "metric_attempted": attempted,
             "skipped_reason": skipped_reason,
@@ -915,25 +919,38 @@ def _snapshot_judge(scored: dict, evidence) -> dict:
     return out
 
 
-def _capture_evidence(scored: dict, evidence_run, evidence) -> None:
+def _capture_evidence(
+    scored: dict,
+    evidence_run,
+    evidence,
+    metric_errors: dict[str, str] | None = None,
+) -> None:
     """把本题评分快照写进 evidence_run 的 collector。
 
     深拷 measure 必须发生在本题评分结束、下一题 `evidence.reset()` 之前，
-    否则逐题 measure 会被清空。
+    否则逐题 measure 会被清空。采集失败只记 warning，评分照常继续。
 
     Args:
         scored: 本题评分行
         evidence_run: 本轮证据容器；None 表示未开启
         evidence: HTTP 证据桶；None 表示无 measure 来源
+        metric_errors: 逐指标错误
     """
     if evidence_run is None:
         return
-    collector = evidence_run.collector(int(scored["q_index"]))
-    if collector is None:
-        return
-    collector.judge = _snapshot_judge(scored, evidence)
-    if evidence is not None:
-        collector.trace["judge_measures"] = copy.deepcopy(evidence.measures)
+    try:
+        collector = evidence_run.collector(int(scored["q_index"]))
+        if collector is None:
+            return
+        collector.judge = _snapshot_judge(scored, evidence, metric_errors)
+        if evidence is not None:
+            collector.trace["judge_measures"] = copy.deepcopy(evidence.measures)
+    except Exception as exc:  # noqa: BLE001  # 观测旁路，失败不影响评分
+        logger.warning(
+            "[cli] evidence capture failed q_index={} err={}",
+            scored.get("q_index"),
+            exc,
+        )
 
 
 def score_rows(
@@ -981,6 +998,7 @@ def score_rows(
         with _trace_scope(row.get("trace_id")):
             scored: dict = {"q_index": row["q_index"], "error": ""}
             errors: list[str] = []
+            metric_errors: dict[str, str] = {}
 
             tool_metric = None
             if diagnostic_metrics is not None:
@@ -992,18 +1010,24 @@ def score_rows(
             if row.get("sample_class") == SAMPLE_CLASS_EMPTY or is_failed_run(
                 row.get("answer"), row.get("trajectory")
             ):
+                if row.get("sample_class") == SAMPLE_CLASS_EMPTY:
+                    branch_error = "sample_class=empty"
+                else:
+                    branch_error = "failed"
                 for name in metrics:
                     scored[name] = float("nan")
+                    metric_errors[name] = branch_error
+                scored["error"] = branch_error
                 if diagnostic_metrics is not None:
                     for name in diagnostic_metrics:
                         if name == "tool_correctness":
                             continue
                         scored[name] = float("nan")
-                if row.get("sample_class") == SAMPLE_CLASS_EMPTY:
-                    scored["error"] = "sample_class=empty"
-                else:
-                    scored["error"] = "failed"
-                _capture_evidence(scored, evidence_run, evidence)
+                        metric_errors[name] = branch_error
+                if branch_error == "failed":
+                    # 失败题的工具分未调 measure（_score_tool_correctness 短路）
+                    metric_errors["tool_correctness"] = "failed"
+                _capture_evidence(scored, evidence_run, evidence, metric_errors)
                 out.append(scored)
                 continue
 
@@ -1015,6 +1039,7 @@ def score_rows(
                 scored[name] = value
                 if err:
                     errors.append(err)
+                    metric_errors[name] = err
 
             if diagnostic_metrics is not None:
                 relevancy = diagnostic_metrics.get("contextual_relevancy")
@@ -1033,6 +1058,7 @@ def score_rows(
                     scored["contextual_relevancy"] = value
                     if err:
                         errors.append(err)
+                        metric_errors["contextual_relevancy"] = err
                 non_advice = diagnostic_metrics.get("non_advice")
                 if non_advice is not None:
                     value, err = _score_metric_with_retry(
@@ -1046,9 +1072,10 @@ def score_rows(
                     scored["non_advice"] = value
                     if err:
                         errors.append(err)
+                        metric_errors["non_advice"] = err
 
             scored["error"] = ";".join(errors)
-            _capture_evidence(scored, evidence_run, evidence)
+            _capture_evidence(scored, evidence_run, evidence, metric_errors)
             out.append(scored)
     return out
 
