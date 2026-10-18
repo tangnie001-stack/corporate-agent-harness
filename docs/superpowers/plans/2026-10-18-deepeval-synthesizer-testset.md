@@ -2974,6 +2974,54 @@ git commit -m "docs(eval): record v6 baseline and acceptance"
 
 ---
 
+## 执行记录（Task 11，2026-10-18）
+
+### dry-run
+
+```
+contexts=25 chunks=51 covered=50
+calls=每 context 5-8 次，单轮约 125-200
+```
+
+生成前目标文件不存在；复跑 dry-run 时 v6 已存在，提示需 `--force`，与预期一致。
+
+### 正式出题
+
+`EVAL_SYNTH_GOLDENS_PER_CONTEXT=1` 首轮，`kept < 15` 时按 2 重跑一次。
+
+| 运行 | generated | kept | 结果 |
+|---|---|---|---|
+| 1（旧门，无锚定） | 25 | 16 | 写出 v6；发现跨期/跨公司穿门，补 `check_grounding` |
+| 2（首轮 13 → 重跑） | — | 13 | `13 < 15`，未写文件，exit 1 |
+| 3（重跑 goldens=2） | 50 | 22 | 写出 v6，耗时 146.3s，`failed_contexts=0` |
+
+第 3 次 `gate_stats`：
+
+```
+generated=50 kept=22 language_checked=25 self_contained_rewritten=4
+dropped={self_contained:0, grounding:5, not_complete_sentence:20,
+         language:3, duplicate:0, hop_ratio:0}
+```
+
+### 核对（22 题）
+
+- `testset_size == len(samples) == kept == 22`；`generated - Σdropped = 50 - 28 = 22`。
+- `hop_stats`：`single_hop=16`、`multi_hop=6`，占比 27.3% ≤ 1/3。
+- 文档覆盖：`neusoft_2025_q1.pdf` 7 题、`tencent_2024_annual.pdf` 15 题，两文档均覆盖。
+- 每个样本 `reference_contexts` 均为 2 块；首行全部为 `【中文公司全称 · 报告期】`，年份与文档一致。
+- `expected_tools` 全部为 `["retrieve_kb"]`；`source_chunks=51`、`covered_chunks=50`（余 1 块为尾单块）。
+
+### 已知质量问题（不阻塞验收，评测时需计入噪声）
+
+- 语义重复：第 14、15 题问同一组「盈利 / 资本开支」，去重门按题干归一化无法识别。
+- 期间错标：第 14 题题干写「2024年」，参考答案用的是 Q4 数据（盈利 515 亿、资本开支 366 亿），与第 9 题的全年口径（+66% / +221%）冲突；锚定门只校验年份与实体出现，校验不了口径。
+- 缺单位：第 20–22 题参考答案只有数字（如「1,284,815」），没带千元 / 百万元单位。
+- 题干预设因果：第 8 题问「如何推动收入增长 8%」，参考答案只给营收数，未回答因果。
+
+`not_complete_sentence` 丢弃 20/50（40%）为当前提示词下的稳定现象，两次运行分别 36% / 40%。
+
+---
+
 ## 执行偏差（2026-10-18）
 
 ### 1. Task 3 返回 `(Golden, ContextGroup)` 而非 sample
