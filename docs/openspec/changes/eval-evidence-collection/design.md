@@ -76,7 +76,7 @@ class EvidenceRun:
 - **评分阶段显式传参**：`run_evaluation(..., evidence_run=None)` → `score_rows(..., evidence_run=None)`；`score_rows` 每行按 `row["q_index"]` 从 `evidence_run.collectors` 取 collector，`current_evidence.set(collector)`，评分结束把 `HookEvidence.measures` 拷进去。不新增第二个全局 `current_evidence_run`。`evidence_run=None` 或 `collectors[q_index] is None` 时 SHALL 跳过采集，不中断评分。
 - **子代理隔离**：`SkillExecutor._run_fork` 切到子 `current_request_ctx` 时，同时 `current_evidence.set(None)`，`finally` 恢复；子代理的 `retrieve_kb` 不得写进父题证据。
 - 采集器只接受 dict/list/基本类型；`ChunkResult` 由调用方转成 dict 后写入，避免 core 依赖 infra。
-- 归因/探针/写盘放在 `src/cli/eval_evidence_report.py`（CLI 专用，可 import `ChunkResult`/`VectorStore`）。
+- 归因/探针/写盘拆为 `src/cli/eval_evidence_probe.py` / `src/cli/eval_evidence_attribution.py` / `src/cli/eval_evidence_report.py`（CLI 专用，可 import `ChunkResult`/`VectorStore`）；单文件不超过 400 行红线。
 - 理由：`rag` 只能 import `core`，不能反向依赖 `cli`；把“采集”和“报告”拆开，避免循环与职责混杂。
 
 ### D3：检索链记录“三张快照 + 去重 + 截断 + 最终上下文”

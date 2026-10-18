@@ -74,7 +74,7 @@
   - `src/agents/tools/rag_tools.py`（工具调用与最终 contexts 证据）；
   - `src/agents/skills/executor.py`（子代理执行时清空 `current_evidence`，父题不采集子代理检索）；
   - `src/core/eval_evidence.py`（`EvidenceRun` / `QuestionEvidence` / `current_evidence`，不 import rag）；
-  - `src/cli/eval_evidence_report.py`（探针 / 归因 / 原子写）；
+  - `src/cli/eval_evidence_probe.py` / `eval_evidence_attribution.py` / `eval_evidence_report.py`（探针 / 归因 / 原子写，拆分以满足 400 行红线）；
   - `src/cli/eval_deepeval.py`（CLI 开关、编排、评分后 drain、门禁前写盘）；
   - `src/cli/testset_io.py`（不动；evidence 模式单独 `load_testset_samples`）。
 - **测试**：证据 schema、低分选择、no-op、失败降级、RRF 分数、dedup/top-k 丢弃 ID、chunk 探针、parent/child 等价、归因规则、summary 计数、CLI 组合、写盘顺序。

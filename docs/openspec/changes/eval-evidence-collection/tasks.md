@@ -5,7 +5,7 @@
 - [ ] 1.3 生成阶段每题 set/reset `current_evidence`；评分阶段 `run_evaluation(..., evidence_run=None)` → `score_rows(..., evidence_run=None)` 显式传同一 `EvidenceRun`，每行按 `q_index` 取 collector、set `current_evidence`，评分结束 drain judge；`evidence_run=None` / collector 缺失时跳过采集，不中断评分。
 - [ ] 1.4 `main()` 把空库检查读到的全量 chunks 交给 `EvidenceRun.corpus_chunks`；探针不二次读库。
 - [ ] 1.5 evidence 模式单独 `load_testset_samples` 并按 `--limit` 切片，拿 `reference_contexts` / `source_file` / `source_chunk_ids` / `match_scope` / `chunking_version` / `numeric_risk`；默认评测路径的三元组加载不动。
-- [ ] 1.6 新建 `src/cli/eval_evidence_report.py`：探针、归因、落盘；可 import `ChunkResult` / `VectorStore`，不反向被 core 依赖。
+- [ ] 1.6 新建 `src/cli/eval_evidence_probe.py` / `eval_evidence_attribution.py` / `eval_evidence_report.py`：探针、归因、落盘分文件；可 import `ChunkResult` / `VectorStore`，不反向被 core 依赖。
 - [ ] 1.7 单测：关闭时 no-op；开启时同一题内多次记录合并；异常不冒泡；`--deepeval-only` 下不因主分缺失而选全部。
 - [ ] 1.8 `src/agents/skills/executor.py:_run_fork`：切子 `current_request_ctx` 时同时 `current_evidence.set(None)`，`finally` 恢复；单测子代理 `retrieve_kb` 不写入父题证据。
 
