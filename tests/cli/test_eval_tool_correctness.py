@@ -1,3 +1,4 @@
+import pytest
 from deepeval.config.eval_mode import EvalMode
 from deepeval.models import DeepEvalBaseLLM
 
@@ -144,6 +145,63 @@ def test_empty_sample_with_labels_scores_zero():
     )
     assert out[0]["tool_correctness"] == 0.0
     assert math.isnan(out[0]["contextual_relevancy"])
+
+
+@pytest.mark.parametrize("trajectory", [{}, {"failed": True, "tool_calls": []}])
+def test_failed_run_with_materials_masks_metrics_without_scoring(trajectory):
+    import math
+
+    from src.cli.eval_deepeval import score_rows
+
+    invoked: list[str] = []
+
+    class _Bomb:
+        def __init__(self, name):
+            self.name = name
+
+        def measure(self, test_case):
+            invoked.append(self.name)
+            raise AssertionError(f"{self.name} 不应对跑图失败样本评分")
+
+    _, tool_metric = _metric()
+    row = {
+        "q_index": 0,
+        "question": "question",
+        "answer": "",
+        "ground_truth": "gt",
+        "contexts": ["ctx"],
+        "sample_class": "pure_kb",
+        "expected_tools": ["retrieve_kb"],
+        "trajectory": trajectory,
+    }
+    out = score_rows(
+        [row],
+        {
+            "faithfulness": _Bomb("faithfulness"),
+            "answer_correctness": _Bomb("answer_correctness"),
+            "context_precision": _Bomb("context_precision"),
+            "context_recall": _Bomb("context_recall"),
+        },
+        diagnostic_metrics={
+            "contextual_relevancy": _Bomb("contextual_relevancy"),
+            "non_advice": _Bomb("non_advice"),
+            "tool_correctness": tool_metric,
+        },
+    )
+    result = out[0]
+    for name in (
+        "faithfulness",
+        "answer_correctness",
+        "context_precision",
+        "context_recall",
+        "contextual_relevancy",
+        "non_advice",
+    ):
+        assert math.isnan(result[name]), name
+    assert result["tool_correctness"] is None
+    assert result["tool_correctness_reason"] == "failed"
+    assert result["error"] == "failed"
+    assert invoked == []
 
 
 def test_metric_is_constructed_with_fixed_mode():

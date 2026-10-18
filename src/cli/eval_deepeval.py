@@ -710,17 +710,17 @@ def _score_tool_correctness(row: dict, metric) -> tuple[float | None, str]:
     calls = trajectory.get("tool_calls") or []
     actual_names = [str(call.get("name", "")) for call in calls]
 
-    test_case = LLMTestCase(
-        input=row.get("question", ""),
-        tools_called=[
-            ToolCall(name=name, input_parameters=(call.get("args") or {}))
-            for call, name in zip(calls, actual_names, strict=True)
-        ],
-        expected_tools=[
-            ToolCall(name=name, input_parameters=None) for name in expected_names
-        ],
-    )
     try:
+        test_case = LLMTestCase(
+            input=row.get("question", ""),
+            tools_called=[
+                ToolCall(name=name, input_parameters=(call.get("args") or {}))
+                for call, name in zip(calls, actual_names, strict=True)
+            ],
+            expected_tools=[
+                ToolCall(name=name, input_parameters=None) for name in expected_names
+            ],
+        )
         value = metric.measure(test_case)
     except Exception as exc:  # noqa: BLE001  # 诊断失败记 null，不重试
         return None, f"tool_correctness:{type(exc).__name__}"
@@ -752,8 +752,9 @@ def score_rows(
     表现为间歇性错分（design D7）。并发预算留给"跑图"那一侧。
 
     `ContextualRelevancy` 单独构造截断后的 test_case，共享 test_case 保持全量
-    contexts；`empty` 样本不调用四项主分指标与两项裁判诊断，`tool_correctness`
-    照常按轨迹评分。
+    contexts；`empty` 样本与跑图失败样本（`is_failed_run`）不调用四项主分指标
+    与两项裁判诊断，`tool_correctness` 照常按轨迹评分（失败样本由
+    `_score_tool_correctness` 记 None/"failed"）。
 
     Args:
         rows: 每题一行（含 q_index / trace_id / question / answer /
@@ -783,7 +784,9 @@ def score_rows(
         scored["tool_correctness"] = tool_value
         scored["tool_correctness_reason"] = tool_reason
 
-        if row.get("sample_class") == SAMPLE_CLASS_EMPTY:
+        if row.get("sample_class") == SAMPLE_CLASS_EMPTY or is_failed_run(
+            row.get("answer"), row.get("trajectory")
+        ):
             for name in metrics:
                 scored[name] = float("nan")
             if diagnostic_metrics is not None:
@@ -791,7 +794,10 @@ def score_rows(
                     if name == "tool_correctness":
                         continue
                     scored[name] = float("nan")
-            scored["error"] = "sample_class=empty"
+            if row.get("sample_class") == SAMPLE_CLASS_EMPTY:
+                scored["error"] = "sample_class=empty"
+            else:
+                scored["error"] = "failed"
             out.append(scored)
             continue
 
@@ -858,8 +864,10 @@ def run_evaluation(
 ) -> _EvalResult:
     """逐题打分并返回带 `.to_pandas()` 的结果（行序与输入一致）。
 
-    本函数是评测**评分后端边界**（逃生门接入点，design D10）：`metrics` 由调用方注入，
-    替代实现只需提供同签名的 `metrics`（及用例构造）即可替换，无需改这里的编排。
+    本函数是评测**评分后端边界**（逃生门接入点，design D10）：`metrics` 由调用方
+    注入，替代实现需同时提供同签名的 `metrics`、`expected_tools`、
+    `trajectories`（均为必填）以及配套的用例构造，才能在不改这里编排的前提下
+    替换评分后端。
 
     Args:
         questions: 题面列表
@@ -1107,6 +1115,8 @@ def _build_tool_correctness_section(df: pd.DataFrame) -> list[str]:
     metric_error = int(
         reason_text.str.startswith(("tool_correctness:", "metric_unavailable")).sum()
     )
+    # 四类互斥由 `_score_tool_correctness` 的返回分支保证（failed / 空 reason /
+    # metric_unavailable 或 tool_correctness:* / 有分数），no_label 是残差。
     no_label = total - scored - failed - metric_error
 
     lines.append("| Question | tool_correctness | reason |")
