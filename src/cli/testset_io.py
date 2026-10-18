@@ -29,7 +29,10 @@ def load_testset_samples(kb_id: str, version: int | None = None) -> list[dict]:
     if version is not None:
         target_file = testset_dir / f"testset_{kb_id}_v{version}.json"
         if not target_file.exists():
-            raise FileNotFoundError(f"测试集文件不存在: {target_file}")
+            raise FileNotFoundError(
+                f"测试集文件不存在: {target_file}。"
+                "请用 python -m src.cli.testset_synth 生成测试集"
+            )
         latest_file = target_file
     else:
         max_version = 0
@@ -45,7 +48,7 @@ def load_testset_samples(kb_id: str, version: int | None = None) -> list[dict]:
         if latest_file is None:
             raise FileNotFoundError(
                 f"No testset found for kb_id={kb_id}. "
-                "请先由 change deepeval-synthesizer-testset 生成测试集"
+                "请用 python -m src.cli.testset_synth 生成测试集"
             )
 
     data = json.loads(latest_file.read_text(encoding="utf-8"))

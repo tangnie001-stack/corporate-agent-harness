@@ -64,7 +64,6 @@ class Code:
     # 已下线端点
     GONE = "GONE"
     GONE_MSG = (
-        "RAGAS 出题已下线。前迁路径：DeepEval Synthesizer"
-        "（deepeval.synthesizer.Synthesizer.generate_goldens_from_docs）。"
-        "后续由 change deepeval-synthesizer-testset 提供。"
+        "RAGAS 出题已下线。请使用 DeepEval Synthesizer："
+        "python -m src.cli.testset_synth --kb-id <uuid> --version <n> --docs <文件...>"
     )

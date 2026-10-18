@@ -21,6 +21,7 @@
 | `[provider]` | 模型 provider 兼容层（infra/llm/provider；启动期定价 ensure 的无价告警与降级告警，均直调 logger，非 Event） |
 | `[alert]` | 阿里云告警接入（services/alert_service；入口载荷非法/去重丢弃/未配目标/回合繁忙/启动失败/超时/消费失败/空或异常回答/推送失败，均直调 logger，非 Event） |
 | `[degradation]` | 外部依赖降级留痕（事件：`degraded`；`reason` 取值集合见 spec 取值集合表，值域登记见下） |
+| `[synth]` | v6 出题（cli/testset_synth + synth_*；事件：testset synth start / gate / done / context failed） |
 
 新语义面前缀：先登记 `src/core/log_events.py` 的 `LOG_PREFIXES` + 本表加一行后启用，不预建。
 

@@ -24,3 +24,21 @@ def test_generate_flag_exits_with_migration_hint(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Synthesizer" in out
     assert "deepeval-synthesizer-testset" in out
+
+
+def test_generate_guard_points_to_new_command(monkeypatch, capsys):
+    """--generate 既要保留旧 token，也要给出新命令。"""
+    import sys
+
+    import pytest
+
+    from src.cli import eval_deepeval
+
+    monkeypatch.setattr(sys, "argv", ["eval_deepeval", "--kb-id", "kb", "--generate"])
+    with pytest.raises(SystemExit) as excinfo:
+        eval_deepeval.main()
+    assert excinfo.value.code == 1
+    out = capsys.readouterr().out
+    assert "Synthesizer" in out
+    assert "deepeval-synthesizer-testset" in out
+    assert "python -m src.cli.testset_synth" in out

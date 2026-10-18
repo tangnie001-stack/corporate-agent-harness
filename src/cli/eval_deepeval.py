@@ -1258,10 +1258,9 @@ def main() -> None:
     # 出题链已整体删除，此处显式拦下并给出前迁路径，SHALL NOT 让用户撞到裸 ImportError。
     if args.generate:
         print(
-            "error: --generate 已下线（出题生成入口不再经 CLI 提供）。\n"
-            "前迁路径：DeepEval 自带的出题器 Synthesizer"
-            "（deepeval.synthesizer.Synthesizer.generate_goldens_from_docs(...) -> List[Golden]），"
-            "由后续 change deepeval-synthesizer-testset 提供。"
+            "error: --generate 已下线。出题由 change deepeval-synthesizer-testset 提供，"
+            "使用 DeepEval Synthesizer：\n"
+            "  python -m src.cli.testset_synth --kb-id <uuid> --version <n> --docs <文件...>"
         )
         sys.exit(1)
 

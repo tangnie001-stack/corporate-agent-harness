@@ -10,3 +10,12 @@ def test_generate_endpoint_returns_410(auth_client):
     )
     assert response.status_code == 410
     assert response.json()["code"] == Code.GONE
+
+
+def test_gone_message_points_to_new_command(auth_client):
+    """410 的 message 来自 Code.GONE_MSG。"""
+    response = auth_client.post(
+        "/api/ragas/generate", json={"kb_name": "kb", "size": 1}
+    )
+    assert response.status_code == 410
+    assert "python -m src.cli.testset_synth" in response.json()["message"]

@@ -450,4 +450,22 @@ EVENT_SPECS: dict[str, EventSpec] = {
         "warning",
         ("reason", "err", "idle_s", "tier"),
     ),
+    "testset synth start": EventSpec(
+        "testset synth start", "synth", "info", ("kb_id", "docs", "contexts")
+    ),
+    "testset synth gate": EventSpec(
+        "testset synth gate",
+        "synth",
+        "info",
+        ("generated", "kept", "dropped", "failed_contexts", "language_checked"),
+    ),
+    "testset synth done": EventSpec(
+        "testset synth done", "synth", "info", ("path", "size")
+    ),
+    "testset synth context failed": EventSpec(
+        "testset synth context failed", "synth", "warning", ("err",)
+    ),
+    "eval testset version missing": EventSpec(
+        "eval testset version missing", "cli", "warning", ("kb_id",)
+    ),
 }

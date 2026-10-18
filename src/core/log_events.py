@@ -31,6 +31,7 @@ LOG_PREFIXES: frozenset[str] = frozenset(
         "provider",
         "alert",
         "degradation",
+        "synth",
     }
 )
 
@@ -230,6 +231,13 @@ class Event(str, Enum):
     # reason 取值取自 specs/degradation-policy 的取值集合表，不得自造；
     # 「谁处置谁留痕」—— 同一失败不在两层各记一次。
     DEGRADED = "degraded"
+
+    # [synth] v6 出题
+    SYNTH_START = "testset synth start"
+    SYNTH_GATE = "testset synth gate"
+    SYNTH_DONE = "testset synth done"
+    SYNTH_CONTEXT_FAILED = "testset synth context failed"
+    EVAL_TESTSET_VERSION_MISSING = "eval testset version missing"
 
 
 @dataclass(frozen=True)
