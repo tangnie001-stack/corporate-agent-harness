@@ -138,8 +138,10 @@ finally:
 
 ```python
 class HookEvidence:
-    def set_run(self, run_trace_id: str | None) -> None: ...
-    def reset(self) -> None: ...          # 清 events/_trace_id/_measure/_call_index，保留 run
+    def set_run(
+        self, run_trace_id: str | None, judge_model: str | None = None
+    ) -> None: ...
+    def reset(self) -> None: ...          # 清 events/_trace_id/_measure/_call_index/measures，保留 run
 
     def begin_measure(
         self, *, measure_id: str, metric: str, attempt: int,

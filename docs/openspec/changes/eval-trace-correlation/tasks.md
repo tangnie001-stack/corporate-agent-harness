@@ -16,7 +16,7 @@
 ## 3. 两级裁判 ID、JUDGE_CALL 与 JUDGE_HTTP
 
 - [ ] 3.1 `src/core/log_events.py` / `log_event_specs.py` 登记 `JUDGE_HTTP`（`[cli]` / info）；`JUDGE_CALL` 字段改为：`trace_id` / `run_trace_id` / `judge_measure_id` / `component` / `metric` / `attempt` / `q_index` / `model` / `latency_ms` / `ok` / `request_count` / `response_count` / `statuses` / `tokens_in` / `tokens_out` / `error_count` / `error` / `reason_len` / `reason_hash`；**移除** `seconds` / `note`，**不保留别名**。
-- [ ] 3.2 `src/infra/llm/provider/http_observability.py`：`HookEvidence.set_run(run_trace_id)`；`reset()` 清 `events/_trace_id/_measure/_call_index/measures`，保留 `_run_trace_id`；`begin_measure(measure_id, metric, attempt, trace_id, q_index)`；`end_measure(reason, error) -> dict`（schema 见 design D5），并把结果 append 到 `measures`。
+- [ ] 3.2 `src/infra/llm/provider/http_observability.py`：`HookEvidence.set_run(run_trace_id, judge_model=None)`；`reset()` 清 `events/_trace_id/_measure/_call_index/measures`，保留 `_run_trace_id`；`begin_measure(measure_id, metric, attempt, trace_id, q_index)`；`end_measure(reason, error) -> dict`（schema 见 design D5），并把结果 append 到 `measures`。
 - [ ] 3.3 `on_request`：有 active measure 时自增 `call_index`（1 起）、生成 `judge_call_id`、把 measure/call/开始时间写 `request.extensions["cb_judge"]`；无 active measure 时只 append request 事件，不分配 ID、不写 extensions。
 - [ ] 3.4 `on_response`：有 active measure 时解析 `usage`/`choices[].finish_reason`、计算 `latency_ms`、append response 事件并 `log_event(JUDGE_HTTP, ...)`（含 `trace_id` / `q_index` / `call_index`）；无 active measure 时只 append 事件，不产 `JUDGE_HTTP`。
 - [ ] 3.5 **异常隔离**：`on_request` / `on_response` 整个函数体包 `try/except Exception`，永不向 httpx 抛出；`log_event` 单独再包；`end_measure` / reason 读取 / `JUDGE_CALL` 拼装同样隔离。
