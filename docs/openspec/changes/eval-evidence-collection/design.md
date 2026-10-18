@@ -1,0 +1,154 @@
+## Context
+
+评测报告目前只有逐题分数、最终 contexts（`source/score/kind`）、工具名/参数/迭代与错误摘要。用它无法回答“事实在哪一步丢了”：
+
+- `retrieval_details` 没有 `chunk_id`，也没有 rerank 前后的候选集；
+- `trajectory` 没有工具结果数/耗时，也没有检索阶段快照；
+- 题集只有 `reference_contexts` 文本，没有 gold chunk 归属；
+- 裁判只有 `error` 摘要，没有 verdict/reason/raw output。
+
+本 change 新增一个**只读、可选、非评分**的逐题证据采集层，让 `eval-metrics-troubleshooting.md` 的 6 步证据链可执行。它不试图自动判定根因；它只把每一层的事实落下来。
+
+## Goals / Non-Goals
+
+**Goals:**
+
+- `--evidence` 开启后，为低分/NaN/失败/工具或行为异常的题生成逐题证据 JSON。
+- 证据覆盖：题集出处、query 路径、dense/lexical/RRF 候选、rerank 前后、最终 contexts、工具调用、answer、裁判 score/error/reason、行为分/reason。
+- 提供 chunk 探针：在 KB 全量分块中定位参考答案的数值/文本片段，区分“语料没有”与“语料有但没召回”。
+- 证据采集失败不影响评测主流程、主分、门禁、CSV、DB、Langfuse。
+- 默认关闭时零额外开销；证据只落本地 gitignored 目录。
+
+**Non-Goals:**
+
+- 不自动判定“是分块/检索/Agent/prompt”的最终根因。
+- 不改评分口径、指标实现、门禁、报告结构、DB schema。
+- 不扩测试集、不生成新题、不改出题器。
+- 不把证据上传 Langfuse、不新增 API。
+- 不展开子代理内部轨迹（顶层工具调用之外不可观测的部分记 null/unknown）。
+
+## Decisions
+
+### D1：opt-in + 非评分，默认零开销
+
+- 新增 CLI `--evidence`；`--evidence-all`（可选）写全部题，否则只写低分题。
+- 采集器在关闭时是 no-op；检索/评分路径只多一次 `None` 判断。
+- 证据写入包在 `try/except` 内：失败只 `warning`，不得改变退出码、分数、CSV/DB。
+- 不把证据放进 `detail_json`（避免 DB 膨胀与隐私面扩大）。
+
+### D2：用 ContextVar 采集器，不穿透业务签名
+
+新增 `src/core/eval_evidence.py`：
+
+- `EvidenceCollector`：每轮一个实例，记录 query/retrieval/rerank/tool/context/judge/behavior 快照。
+- `current_evidence: ContextVar[EvidenceCollector | None]`；默认 `None`。
+- 检索/工具/评分层通过 `current_evidence.get()` 取收集器；没有就跳过。
+- 这样不改 `retrieve_kb` / `search` / `rerank_results` 的公共签名，也不影响生产链路。
+
+理由：证据只服务评测 CLI；用 ContextVar 与现有 `RequestContext`/`current_trace_id` 的传播方式一致，避免把 debug 参数塞进每个函数。
+
+### D3：检索链记录“三张快照 + 最终上下文”
+
+在 `retrieval.search` / `rerank_results` / `retrieve_kb` 记录：
+
+1. **dense**：`[{"chunk_id","doc_id","source","page","score"}]`
+2. **lexical**：同上
+3. **RRF**：融合后的 `chunk_id + rrf_score + rank`
+4. **rerank 前**：每条 `chunk_id + rank_before + 原始 score`
+5. **rerank 后**：`chunk_id + rank_after + rerank_score`
+6. **最终 contexts**：`chunk_id + source + page + score + order_in_prompt`
+
+每阶段记录 `count` 与 `failed`（dense/lexical 单路失败必须可见）。候选列表有上限（默认 50 条/阶段），避免大 KB 把证据文件撑爆；截断时记 `truncated=true`。
+
+### D4：Query 路径记录“原始 → 实际工具 query → 可用的改写”
+
+- `original_query`：题集 `user_input`。
+- `tool_query`：`trajectory.tool_calls[].args.query`（现有数据即可）。
+- `rewritten_query` / `sub_queries`：如果 `QueryRouter` 在评测路径实际执行了改写，记录其输出；没有就 `null`，不伪造。
+- `intent_route` / `history_len`：有则记，无则 null。
+
+这条证据用于区分“query rewrite 把问题改坏”与“检索本身没召回”。
+
+### D5：Chunk 探针：先确认“语料有没有”
+
+对每题参考答案做确定性探针：
+
+1. 取 `reference` 中的数值 token（含千分位/百分号/单位附近的数字）与一个归一化文本片段（前 40 个有效字符）。
+2. 从 `VectorStore.get_all_chunks(kb_id)` 一次性取回全量分块（本次 run 只读一次）。
+3. 在 `content` 与 `parent_content` 中做归一化子串/数值匹配，记录命中的 `doc_id/chunk_id/source/page`。
+4. 输出：
+   - `matched_chunks`：命中 chunk 列表（上限 20）；
+   - `fact_in_corpus`：`true` / `false` / `null`（无法判定）；
+   - `probe_tokens`：实际用的数值/文本 token。
+
+它把“语料里没有（解析/分块/题集错）”与“语料里有但没召回（检索）”分开。探针只做确定性字符串/数值匹配，不调用 LLM。
+
+### D6：裁判与行为证据只记现有可观测值
+
+- 每个指标：`score`、`error`、`reason`；DeepEval 指标实例暴露 `reason` 就记，没有就 null。
+- 不解析/持久化 `verbose_logs` 全文；需要时用 `trace_id` 查 Langfuse/日志。
+- 行为轴：从 `behaviour_rows` 记 `metrics` 与 `reasons`；`failed` 题记 `score=null` / `reason=failed`。
+- 不把裁判 raw prompt 或完整 raw output 落盘；只记错误摘要与 reason，避免隐私与体积。
+
+### D7：低分选择与落盘
+
+低分判定（满足任一）：
+
+- 四主分任一 `< GATE_THRESHOLDS[...]` 或 NaN；
+- `tool_correctness` 有标签且 `< 1.0`，或 `tool_correctness_reason` 是 `failed` / `metric_unavailable` / `tool_correctness:*`；
+- 任一行为 `sample_class=empty` 或 `failed`；
+- 行为轴任一分 `< 0.5` 或缺失。
+
+`--evidence` 只写这些题；`--evidence-all` 写全部。落盘：
+
+```
+data/deepeval/evidence/<run_id>/
+  summary.json
+  q_<q_index>.json
+```
+
+`run_id` 用报告时间戳（与 CSV/MD 同源）。`summary.json` 记录：run_id、题数、低分题号、各题证据路径、采集耗时。写入用临时文件 + `os.replace` 原子落盘。
+
+### D8：隐私、保留与清理
+
+- 证据包含完整 answer / contexts / 题集 reference，属本地调试数据；目录必须加入 `.gitignore`。
+- 不上传 Langfuse、不写 DB、不暴露 API。
+- 保留策略：手动清理；README/排障手册提示“含原文，勿提交/外发”。
+- 证据文件名不含用户输入，只含 `q_index`。
+
+### D9：schema 版本与向后兼容
+
+- 证据 JSON 顶层 `schema_version: 1`。
+- 字段缺失统一写 `null`，不省略键，便于下游表格化。
+- 未来加字段只增不改；删除/改名必须升 `schema_version`。
+- 证据采集不依赖某个指标实现（RAGAS/DeepEval 都可）；取不到的值写 null。
+
+### D10：测试策略
+
+- 单测：schema、低分选择、no-op 关闭路径、写入失败不影响主流程、chunk 探针命中/未命中、候选截断。
+- 集成：用固定 fake retrieval/scorer 造一条“候选有但 rerank 后没有”的题，跑 `--evidence`，断言证据 JSON 的 `rank_before/rank_after/final_contexts`。
+- CLI：`--evidence` 与 `--deepeval-only` / `--gate` 组合不改变退出码；`--evidence-all` 写全部。
+- 性能：关闭时无额外 DB/文件 IO；开启时全量 chunk 只读一次。
+
+## Risks / Trade-offs
+
+- **证据体积**：候选集/上下文可能很大 → 每阶段上限 50、最终 contexts 全量、chunk 命中上限 20；截断记 `truncated`。
+- **隐私**：证据含原文 → gitignore、仅本地、文档提示；不写 DB/Langfuse。
+- **性能开销**：开启时多一次全量 chunk 读取 + 文件写；只用于调试，默认关闭。
+- **query rewrite 不可见**：评测路径可能不经 `QueryRouter`；取不到就写 null，不用工具 query 冒充改写结果。
+- **候选集重建不确定性**：必须运行期采集；事后重跑可能因 embedding/rerank 波动不同。证据文件记录 `captured_at` 与配置快照。
+- **子代理盲区**：`delegate_task` 只记顶层；子代理内部工具调用记 null/unknown，不伪造。
+- **schema 漂移**：用 `schema_version` 与字段全量 null 约束。
+
+## Migration Plan
+
+1. 先合并 `tool-correctness-diagnostic`，让 `tool_correctness` / `trajectory` / `expected_tools` 链路可用。
+2. 新增证据模块与 CLI 开关；默认关闭，无需迁移。
+3. 新增 `data/deepeval/evidence/` 到 `.gitignore`；历史报告不受影响。
+4. 回滚：删除开关与采集器即可；已落盘证据可手动清理。
+
+## Open Questions
+
+- 低分阈值是否要包含 `contextual_relevancy`？默认不包含（它是诊断，低分常态）；如需纳入，用常量扩展，不改 schema。
+- 是否要把 `source_chunk_ids` 写进题集？本 change 先用 chunk 探针；题集 schema 变更留给出题侧 change。
+- 证据保留期？暂定手动清理；若未来自动化，再定天数与清理命令。
