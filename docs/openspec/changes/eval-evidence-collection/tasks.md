@@ -64,8 +64,8 @@
 
 ## 8. 文档与验收
 
-- [ ] 8.1 `src/cli/README.md` 增加 `--evidence` / `--evidence-all`、证据路径、归因枚举、`--deepeval-only` 选择口径与 summary 说明。
-- [ ] 8.2 `docs/agents/eval-metrics-troubleshooting.md` 增加“6 步证据链 → 证据字段 → root_cause”对照表，并写明 `inconclusive` 是合法结果。
+- [ ] 8.1 `src/cli/README.md` 增加 `--evidence` / `--evidence-all`、证据路径、归因枚举、`--deepeval-only` 选择口径、web/F/多值边界与 summary 说明。
+- [ ] 8.2 `docs/agents/eval-metrics-troubleshooting.md` 增加“6 步证据链 → 证据字段 → root_cause”对照表，并写明 `inconclusive` 是合法结果、F v1 不判幻觉、多值题只给整体 inconclusive。
 - [ ] 8.3 `docs/agents/api_contract.md` 登记证据目录、归因枚举与“不进 API/DB”的边界。
 - [ ] 8.4 集成测试：构造“dense 有、rerank 后无、final 无”的题，跑 `--evidence`，断言 retrieval 证据与 `attribution.context_precision.root_cause=="rerank_or_topk"`。
 - [ ] 8.5 活体冒烟：对 v6 的 Q21 跑一次 `--evidence`，确认 `fact_in_corpus=true`、`fact_in_final=false`、`retrieval_miss` 或 `rerank_or_topk`；同时确认报告头 `Run trace` 与证据 `trace` 段一致。
