@@ -20,6 +20,11 @@ from src.config.const import (
     SSEInteractionTexts,
     resolve_source_tier,
 )
+from src.core.eval_evidence import (
+    EVIDENCE_CANDIDATE_CAP,
+    current_evidence,
+    parent_key,
+)
 from src.core.log_events import Event
 from src.core.logging import log_event
 from src.infra import retry_policy
@@ -83,6 +88,87 @@ def _path_status(failed: bool, results: list[ChunkResult]) -> str:
     return "empty"
 
 
+def _evidence_candidate(
+    chunk: ChunkResult,
+    *,
+    rank: int,
+    score: float | None,
+    score_kind: str,
+) -> dict:
+    """把 ChunkResult 转成证据候选（不保留正文）。
+
+    Args:
+        chunk: 该阶段的检索结果
+        rank: 在该阶段内的 0-based 排名
+        score: 该阶段的分数（取不到时为 None）
+        score_kind: 分数类型（cosine_similarity / lexical / rrf / rerank / fallback）
+
+    Returns:
+        含 chunk_id / parent_key / doc_id / source / page / rank / score /
+        score_kind / distance 的候选快照
+    """
+    meta = chunk.metadata or {}
+    doc_id = str(meta.get("doc_id") or "")
+    return {
+        "chunk_id": chunk.id,
+        "parent_key": parent_key(
+            doc_id, chunk.id, str(meta.get("parent_content") or "")
+        ),
+        "doc_id": doc_id,
+        "source": str(meta.get("source") or ""),
+        "page": int(meta.get("page") or 0),
+        "rank": rank,
+        "score": score,
+        "score_kind": score_kind,
+        "distance": chunk.distance,
+    }
+
+
+def _evidence_stage(
+    chunks: list[ChunkResult],
+    score_kind: str,
+    *,
+    score_fn=None,
+    failed: bool = False,
+) -> dict:
+    """构造单阶段证据；候选上限 EVIDENCE_CANDIDATE_CAP。
+
+    Args:
+        chunks: 该阶段的完整结果列表（截断前）
+        score_kind: 分数类型；rrf / lexical 分别取 ChunkResult 对应字段，
+            其余按 `1 - distance` 还原相似度
+        score_fn: 自定义取分函数；非 None 时优先于 score_kind 推断
+        failed: 该路本次调用是否失败
+
+    Returns:
+        {"items","count","total_count","truncated","failed"}
+    """
+    total = len(chunks)
+    kept = chunks[:EVIDENCE_CANDIDATE_CAP]
+    items = []
+    for rank, chunk in enumerate(kept):
+        if score_fn is not None:
+            score = score_fn(chunk)
+        elif score_kind == "rrf":
+            score = chunk.rrf_score
+        elif score_kind == "lexical":
+            score = chunk.lexical_score
+        elif chunk.distance is not None:
+            score = 1 - chunk.distance
+        else:
+            score = None
+        items.append(
+            _evidence_candidate(chunk, rank=rank, score=score, score_kind=score_kind)
+        )
+    return {
+        "items": items,
+        "count": len(kept),
+        "total_count": total,
+        "truncated": total > len(kept),
+        "failed": failed,
+    }
+
+
 async def search(
     query: str,
     kb_id: str,
@@ -129,6 +215,15 @@ async def search(
         else:
             sparse_results = sparse_out or []
         results = rrf_fusion(dense_results, sparse_results, k=RRF_K, top_n=RRF_TOP_N)
+        collector = current_evidence.get()
+        if collector is not None:
+            collector.retrieval["dense"] = _evidence_stage(
+                dense_results, "cosine_similarity", failed=dense_failed
+            )
+            collector.retrieval["lexical"] = _evidence_stage(
+                sparse_results, "lexical", failed=sparse_failed
+            )
+            collector.retrieval["rrf"] = _evidence_stage(results, "rrf")
         # 两路各自的贡献必须可见：任一路为 0 时该字段就是 0。
         # 只记融合后的总数会让"某一路长期失效"不可发现（trace_c54ce259 的教训）。
         # dense_status / sparse_status 另把"失败"与"成功但空"分开（规格要求）。
@@ -149,6 +244,13 @@ async def search(
         result_count = len(results)
     else:
         result_count = 0
+    collector = current_evidence.get()
+    if collector is not None:
+        collector.retrieval["dense"] = _evidence_stage(
+            results or [], "cosine_similarity"
+        )
+        # 非混合路没有融合结果：明确写空阶段，避免证据链缺键
+        collector.retrieval["rrf"] = _evidence_stage([], "rrf")
     log_event(
         Event.SEARCH_DONE,
         kb_id=kb_id,
@@ -209,6 +311,28 @@ def rerank_results(
     """
     if not results:
         log_event(Event.RERANK_SKIP, reason="empty_input")
+        collector = current_evidence.get()
+        if collector is not None:
+            # 空输入也把链路写全：后续事实归因看到的是"空阶段"，不是缺键
+            collector.retrieval["rerank_before"] = _evidence_stage([], "rrf")
+            collector.retrieval["rerank_after"] = {
+                "items": [],
+                "count": 0,
+                "total_count": 0,
+                "truncated": False,
+                "failed": False,
+                "reason": None,
+            }
+            collector.retrieval["dedup"] = {
+                "dropped_chunk_ids": [],
+                "kept_chunk_ids": [],
+            }
+            collector.retrieval["topk"] = {
+                "dropped_chunk_ids": [],
+                "kept_chunk_ids": [],
+                "rank_before_topk": 0,
+                "rank_after_topk": 0,
+            }
         return []
 
     docs = [r.content for r in results]
@@ -276,10 +400,55 @@ def rerank_results(
             latency_ms=rerank_ms,
             **_rerank_stats(reranked, used_fallback),
         )
+    collector = current_evidence.get()
+    if collector is not None:
+        after_score_kind = "rerank"
+        after_reason = None
+        if used_fallback:
+            after_score_kind = "fallback"
+            after_reason = "rerank_failed"
+        kept_after = reranked[:EVIDENCE_CANDIDATE_CAP]
+        collector.retrieval["rerank_before"] = _evidence_stage(results, "rrf")
+        collector.retrieval["rerank_after"] = {
+            "items": [
+                _evidence_candidate(
+                    results[item["index"]],
+                    rank=rank,
+                    score=float(item.get("relevance_score", 0)),
+                    score_kind=after_score_kind,
+                )
+                for rank, item in enumerate(kept_after)
+            ],
+            "count": len(kept_after),
+            "total_count": len(reranked),
+            "truncated": len(reranked) > EVIDENCE_CANDIDATE_CAP,
+            "failed": used_fallback,
+            "reason": after_reason,
+        }
     before = len(contexts)
+    before_contexts = list(contexts)
     contexts = _dedup_by_parent(contexts)
     log_event(Event.DEDUP_DONE, dropped=before - len(contexts), kept=len(contexts))
-    return contexts[:TOP_K_RERANK]
+    final_contexts = contexts[:TOP_K_RERANK]
+
+    collector = current_evidence.get()
+    if collector is not None:
+        kept_ids = {c.chunk_id for c in contexts}
+        dropped = [c.chunk_id for c in before_contexts if c.chunk_id not in kept_ids]
+        collector.retrieval["dedup"] = {
+            "dropped_chunk_ids": dropped,
+            "kept_chunk_ids": [c.chunk_id for c in contexts],
+        }
+        final_ids = {c.chunk_id for c in final_contexts}
+        collector.retrieval["topk"] = {
+            "dropped_chunk_ids": [
+                c.chunk_id for c in contexts if c.chunk_id not in final_ids
+            ],
+            "kept_chunk_ids": [c.chunk_id for c in final_contexts],
+            "rank_before_topk": len(contexts),
+            "rank_after_topk": len(final_contexts),
+        }
+    return final_contexts
 
 
 def expand_query(query: str, history: list[ChatMessage]) -> str:

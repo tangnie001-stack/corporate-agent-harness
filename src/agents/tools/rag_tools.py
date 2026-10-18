@@ -24,6 +24,11 @@ from src.config.const import (
     resolve_source_tier,
 )
 from src.core import logging as core_logging
+from src.core.eval_evidence import (
+    EVIDENCE_CANDIDATE_CAP,
+    current_evidence,
+    parent_key,
+)
 from src.core.log_events import Event, Signal
 from src.infra.db.vector_store import VectorStore
 from src.infra.llm.request_context import current_request_ctx
@@ -191,10 +196,57 @@ def make_rag_tools(
             # 降级路径未发生精排，不存在"精排后条数"：dropped 取"检索后条数 − 去重后条数"，
             # 与 rerank_results 成功路径口径同构；无条件落盘（无丢弃时 dropped=0）
             before = len(contexts)
+            contexts_before_dedup = list(contexts)
             contexts = retrieval._dedup_by_parent(contexts)
             core_logging.log_event(
                 Event.DEDUP_DONE, dropped=before - len(contexts), kept=len(contexts)
             )
+            # 证据旁路：超时分支无精排结果，但事实链要读到 rerank 失败标记与本阶段快照，
+            # 因此 rerank / rerank_after / dedup 三个键都要写，不能缺段
+            collector = current_evidence.get()
+            if collector is not None:
+                before_ids = [c.chunk_id for c in contexts_before_dedup]
+                after_ids = [c.chunk_id for c in contexts]
+                collector.retrieval["rerank"] = {
+                    "failed": True,
+                    "reason": "timeout",
+                    "score_kind": "fallback",
+                }
+                collector.retrieval["dedup"] = {
+                    "dropped_chunk_ids": [
+                        cid for cid in before_ids if cid not in set(after_ids)
+                    ],
+                    "kept_chunk_ids": after_ids,
+                }
+                rerank_items = []
+                for rank, chunk in enumerate(
+                    contexts_before_dedup[:EVIDENCE_CANDIDATE_CAP]
+                ):
+                    rerank_items.append(
+                        {
+                            "chunk_id": chunk.chunk_id,
+                            "parent_key": parent_key(
+                                chunk.doc_id,
+                                chunk.chunk_id,
+                                chunk.parent_content,
+                            ),
+                            "doc_id": chunk.doc_id,
+                            "source": chunk.source,
+                            "page": chunk.page,
+                            "rank": rank,
+                            "score": chunk.score,
+                            "score_kind": "fallback",
+                            "distance": None,
+                        }
+                    )
+                collector.retrieval["rerank_after"] = {
+                    "items": rerank_items,
+                    "count": len(rerank_items),
+                    "total_count": len(contexts_before_dedup),
+                    "truncated": len(contexts_before_dedup) > EVIDENCE_CANDIDATE_CAP,
+                    "failed": True,
+                    "reason": "timeout",
+                }
         contexts = contexts[:top_k]
 
         # iteration：显式形状判定。主循环已内化进装配产物，工具只会拿到映射承载，
