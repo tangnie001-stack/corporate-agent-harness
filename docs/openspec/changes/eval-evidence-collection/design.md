@@ -101,6 +101,8 @@ class EvidenceRun:
 
 **dedup / top-k 丢弃**：`_dedup_by_parent` 只返回 kept；在 `rerank_results` 内用 dedup 前后列表的 `parent_key` 集合差计算 dropped，不改 `_dedup_by_parent` 签名。
 
+**rerank 超时分支**：`retrieve_kb` 的 outer `TimeoutError` 分支不经过 `rerank_results`，会自建 contexts + dedup + `[:top_k]`；该分支也必须写证据：`rerank.failed=true` / `reason="timeout"`、`score_kind="fallback"`、dedup / top-k dropped IDs，禁止让证据链缺段。
+
 ### D4：Query 路径记录“原始 → 实际工具 query → 可用的改写”
 
 - `original_query`：题集 `user_input`。
@@ -115,7 +117,7 @@ class EvidenceRun:
 1. 题集可选字段 `source_chunk_ids`：
    - `match_scope="exact"` → `gold_chunk_source="testset"`、`gold_chunk_confidence="high"`；
    - `match_scope="group"` / `"partial"` → `gold_chunk_source="testset"`、`gold_chunk_confidence="medium"`（组级/部分匹配不是精确 gold）；
-   - 每个 id 必须能在本次 `corpus_chunks` 中找到；缺失/不属于同 doc → 记 warning，降级为探针或 null，不得假 high；
+   - 每个 id 必须使用 `ChunkResult.id` 的空间（`{doc_id}:{chunk_index}`），能在本次 `corpus_chunks` 中找到；缺失/不属于同 doc → 记 warning，降级为探针或 null，不得假 high；
 2. 否则用 chunk 探针匹配 `reference` 的数值/文本片段 → `gold_chunk_source="probe"`、`gold_chunk_confidence="medium"`；
 3. 都不可用 → `gold_chunk_ids=null`、`gold_chunk_source=null`、`gold_chunk_confidence=null`。
 
@@ -142,7 +144,7 @@ class EvidenceRun:
 - 文本片段：去掉 `【公司 · 报告期】` 头、压缩空白、转小写后做子串匹配；
 - 匹配不到时写 `null`，不得猜 `false`。
 
-**parent/child 等价**：`parent_key = (doc_id, md5(parent_content))`，与 `_dedup_by_parent` 同口径。`fact_in_candidates` / `fact_in_reranked` / `fact_in_final` 用 `chunk_id OR parent_key` 判交集，避免“同 parent 的另一个 child 在 final”被误判为未命中。
+- `parent_key`：`parent_content` 非空时为 `(doc_id, md5(parent_content))`，为空/None 时为 `(doc_id, chunk_id)`（与 `_dedup_by_parent` 的 passthrough 口径一致）。`fact_in_candidates` / `fact_in_reranked` / `fact_in_final` 用 `chunk_id OR parent_key` 判交集，避免“同 parent 的另一个 child 在 final”被误判为未命中。
 
 **testset_conflict**：
 
@@ -153,7 +155,7 @@ class EvidenceRun:
 ### D6：裁判、评分与行为证据
 
 - 每个指标：`score`、`error`、`reason`、`metric_attempted`、`skipped_reason`。
-- `metric_attempted`：该指标是否真的调用了 `measure`。`sample_class=empty` / 跑图失败时，四主分与两项裁判诊断未调用 → `false`；`tool_correctness` 仍按轨迹评分 → `true`。
+- `metric_attempted`：该指标是否真的调用了 `measure`。`sample_class=empty` 时四主分与两项裁判诊断未调用 → `false`；跑图失败时四主分与两项裁判诊断也未调用 → `false`；`tool_correctness` 在 empty 时仍按轨迹评分 → `true`，在 failed 时 `_score_tool_correctness` 直接返回 `(None,"failed")` 未调 measure → `false`。
 - `skipped_reason`：`sample_class=empty` / `failed` / `null`；仅当 `metric_attempted=false` 时有值。
 - `reason` 只在 measure 正常返回后读取，异常分支不读 `metric.reason`。
 - `score_rows` 每题评分结束、下一次 `evidence.reset()` 前，把 `HookEvidence.measures` 拷进当前 `QuestionEvidence.judge`；不重解析日志。
@@ -174,18 +176,18 @@ class EvidenceRun:
 
 ### D7：低分选择、落盘顺序与 `--deepeval-only`
 
-低分判定（满足任一）：
+低分判定（满足任一，数据源为**掩码前的逐题 rows**，带 `sample_class`；不得用 `masked_df`）：
 
-- 四主分任一 `< GATE_THRESHOLDS[...]` 或 NaN；
+- 四主分任一 `< GATE_THRESHOLDS[...]` 或 NaN（仅 `pure_kb`；web 主分不作触发）；
 - `tool_correctness` 有标签且 `< 1.0`，或 `tool_correctness_reason` 是 `failed` / `metric_unavailable` / `tool_correctness:*`；
 - `sample_class=empty` 或 `failed`；
 - 行为轴任一分 `< 0.5` 或缺失。
 
 `--evidence` 只写这些题；`--evidence-all` 写全部。
 
-**web 样本**：`--evidence` 仅在 `tool_correctness < 1.0` 或行为分 `< 0.5`/缺失时选；`--evidence-all` 写全部。web 题的主分归因写 `inconclusive`，`retrieval.status="not_applicable"`，`fact_in_* = null`，不得按 KB 链归因。
+**web 样本**：`--evidence` 仅在 `tool_correctness < 1.0` 或行为分 `< 0.5`/缺失时选；`--evidence-all` 写全部。web 题的主分归因：`judge_failed` → `judge_failure`；裁判成功但低分 → `inconclusive`；`tool_correctness` 期望工具缺失 → `inconclusive`（web fallback，不判 `tool_routing`）。`retrieval.status="not_applicable"`，`fact_in_* = null`，不得按 KB 链归因。
 
-**`--deepeval-only`**：没有四主分与 `masked_df`，只按行为分 `< 0.5` 或缺失选；不把“主分缺失”当成低分。
+**`--deepeval-only`**：没有四主分与 `masked_df`，只按行为分 `< 0.5` 或缺失选；不把“主分缺失”当成低分；证据写盘仍走同一位置（`save_markdown_report` 后、`check_gate` 前）。
 
 **落盘**：
 
@@ -225,7 +227,7 @@ data/deepeval/evidence/<run_id>/
 - `missing_fact_tokens`：未在 final 命中的 token；
 - `fact_in_corpus` / `fact_in_candidates` / `fact_in_reranked` / `fact_in_final`：各阶段是否**至少命中一个** token（bool）；具体根因要求 `fact_coverage.<stage> == 1.0`，部分命中写 `inconclusive`；
 - `answer_mentions_fact`：answer 中出现 gold 的数值/文本 token（同一归一化规则）；无 token 时 null；
-- `metric_attempted` / `skipped_reason`：指标是否真的调用过 measure；空样本/跑图失败为 false；
+- `metric_attempted` / `skipped_reason`：指标是否真的调用过 measure；empty 主分/failed 全部为 false，empty 的 tool_correctness 为 true；
 - `judge_failed`：`metric_attempted=true` 且（score 为 NaN 或 `error` 非空）；`metric_attempted=false` 时恒为 false；
 - `testset_conflict`：仅 `numeric_conflict` 为 true；`unit_missing` 只做信号；`period_conflict` v1 恒 null；
 - `tool_called` / `call_count`：顶层轨迹。
@@ -235,8 +237,8 @@ data/deepeval/evidence/<run_id>/
 | 指标 | 规则 |
 |---|---|
 | 任意主分/裁判诊断 | `metric_attempted=false` → `inconclusive`，`evidence` 写 `skipped:<sample_class=empty|failed>`；SHALL NOT 归 `judge_failure` |
-| 事实类指标 | `testset_conflict` → `testset_error`；`fact_coverage.<stage> < 1.0` → `inconclusive`，`evidence` 写 `partial_fact_coverage` + `missing_fact_tokens`；SHALL NOT 用部分覆盖断言具体层 |
-| `faithfulness` | judge_failed → `judge_failure`；`fact_in_final=false` → 事实阶段根因（从 `fact_in_corpus` 起，不用 testset_conflict）；`fact_in_final=true` 且 `answer_mentions_fact=false` → `prompt_or_generation`；否则 `inconclusive` |
+| 事实类指标 | `fact_in_* is None` → `inconclusive`（`missing_fact_tokens`/`probe_tokens` 为空）；`testset_conflict` → `testset_error`（medium）；`fact_coverage.<stage> < 1.0` → `inconclusive`（`partial_fact_coverage`）；SHALL NOT 用 null/部分覆盖断言具体层 |
+| `faithfulness` | **v1 不接入 gold 事实链**：judge_failed → `judge_failure`；answer 为空/failed → `prompt_or_generation`；否则 `inconclusive`（F 的幻觉诊断需要 claim 级证据，v1 不做） |
 | `answer_relevancy` | judge_failed → `judge_failure`；answer 为空/failed → `prompt_or_generation`；否则 `inconclusive` |
 | `context_precision` | judge_failed → `judge_failure`；gold 不在 candidates → `retrieval_miss`；gold 在 candidates 但不在 final → `rerank_or_topk`；gold 在 final 但分数低 → `rerank_or_topk`（排序/噪声）；否则 `inconclusive` |
 | `context_recall` | judge_failed → `judge_failure`；testset_conflict → `testset_error`；`fact_in_corpus=false` → `parsing_or_chunking`；`fact_in_final=false` → 事实阶段根因；否则 `inconclusive` |
@@ -247,23 +249,28 @@ data/deepeval/evidence/<run_id>/
 | `StepEfficiency` | 低分 → `agent_orchestration` |
 | `AgentLoopDetection` | 低分 → `agent_orchestration` |
 
-**事实阶段根因**（供 F/CR/CREL 使用；`testset_conflict → testset_error` 仅用于 CR/CREL，F 从 `fact_in_corpus` 起）：
+**事实阶段根因**（仅 CR/CREL；F v1 不接入；`fact_in_* is None` 一律先 `inconclusive`）：
 
 ```
-testset_conflict           → testset_error
-!fact_in_corpus            → parsing_or_chunking
-!fact_in_candidates        → retrieval_miss
-!fact_in_reranked          → rerank_or_topk
-!fact_in_final             → rerank_or_topk（dedup/top-k）
-否则                        → prompt_or_generation / inconclusive
+fact_in_corpus is None      → inconclusive
+fact_in_corpus is False     → parsing_or_chunking
+fact_in_candidates is None  → inconclusive
+fact_in_candidates is False → retrieval_miss
+fact_in_reranked is None    → inconclusive
+fact_in_reranked is False   → rerank_or_topk
+fact_in_final is None       → inconclusive
+fact_in_final is False      → rerank_or_topk（dedup/top-k）
+否则                         → prompt_or_generation / inconclusive
 ```
+
+`testset_conflict` 在事实阶段之前处理，`testset_error` 为 medium。
 
 ### D10：置信度规则
 
 | 置信度 | 条件 |
 |---|---|
-| `high` | judge_failed 明确；或 gold 来自 testset 且 `match_scope="exact"`、阶段 `fact_coverage=1.0`；或 testset 数值硬冲突 |
-| `medium` | gold 来自探针；或 `match_scope="group"/"partial"`；或事实阶段只能推断到层；或 `unit_missing` 仅作信号 |
+| `high` | judge_failed 明确；或 gold 来自 testset 且 `match_scope="exact"`、阶段 `fact_coverage=1.0` |
+| `medium` | gold 来自探针；或 `match_scope="group"/"partial"`；或 `numeric_conflict` / `testset_error`；或事实阶段只能推断到层；或 `unit_missing` 仅作信号 |
 | `low` | 只有间接证据（如 answer 未出现 token 但 reference 是抽象表述） |
 | `inconclusive` | 无规则命中，或关键事实标记为 null，或 `fact_coverage < 1.0` |
 
@@ -338,7 +345,7 @@ testset_conflict           → testset_error
 | 进了召回候选吗 | dense/lexical/RRF | `retrieval_miss` | medium（v6 无 gold ids） |
 | 进了 rerank 后吗 | rerank 前/后 + dedup/top-k | `rerank_or_topk` | medium |
 | 进了最终上下文吗 | final contexts（含 parent_key） | `rerank_or_topk` / `prompt_or_generation` | medium |
-| 回答用了吗 | `answer_mentions_fact` | `prompt_or_generation` | low/medium |
+| 回答用了吗 | `answer_mentions_fact` | v1 只作证据，不单独归因（F 不做 claim 诊断） | — |
 | 裁判是否挂了 | `judge_failed` + trace measure/calls | `judge_failure` | high |
 | 工具是否该调没调 | `tool_correctness` + trajectory | `tool_routing` | high（跑图成功时） |
 | 是否重复检索/打转 | StepEfficiency / LoopDetection | `agent_orchestration` | medium |
@@ -346,6 +353,8 @@ testset_conflict           → testset_error
 **不能回答（v1 明写）**：
 
 - 参考答案的数值在**语义上**是否正确（42% vs 53% 谁对）——只做存在性匹配；
+- **faithfulness 的幻觉诊断**——F 需要 claim 级“回答是否被 context 支撑”的证据，v1 只判 `judge_failure`/空回答，其余 `inconclusive`；
+- **多值参考答案的逐 fact 定位**——`fact_coverage < 1.0` 时 v1 只给整体 `inconclusive`，不区分“漏了哪一个 fact”；
 - 期间/季度是否错标——`period_conflict` 恒 null，Q15 类可能落到 `inconclusive` 或被其他事实带偏；
 - query rewrite 改了什么——评测路径不执行改写，`rewritten` 为 null；
 - 子代理内部检索——只看顶层 `delegate_task`；

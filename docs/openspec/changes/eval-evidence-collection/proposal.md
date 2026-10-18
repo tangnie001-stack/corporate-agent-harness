@@ -36,10 +36,13 @@
   - 根因枚举固定：`judge_failure` / `testset_error` / `parsing_or_chunking` / `retrieval_miss` / `rerank_or_topk` / `prompt_or_generation` / `tool_routing` / `agent_orchestration` / `inconclusive`；
   - `summary.json` 输出 `root_cause_counts.by_metric` / `total`、`scored_metric_count` / `skipped_metric_count` / `inconclusive_count`；
   - 空样本/失败样本未调用指标 → `metric_attempted=false`，归 `inconclusive`，不归 `judge_failure`；
+  - **faithfulness v1 不接入 gold 事实链**：只判 `judge_failure` / 空回答，其余 `inconclusive`（F 的幻觉诊断需要 claim 级证据）；
+  - web 样本的 `judge_failed` 优先为 `judge_failure`；裁判成功但低分 → `inconclusive`；web fallback 的 `tool_correctness` 不判 `tool_routing`；
   - 规则只使用本次运行期证据，不跨题推断、不调用 LLM。
 - **v1 明确边界**：
   - `period_conflict` 只记 null；不在 v1 做“期间/季度是否一致”的语义判断（避免把题集期间错标误判成检索问题）；
-  - `numeric_conflict` 只做“参考答案数值在语料中是否存在”的硬匹配；不做“42% vs 53% 谁对”的口径判断；
+  - `numeric_conflict` 只做“参考答案数值在语料中是否存在”的硬匹配，置信度最多 medium；不做“42% vs 53% 谁对”的口径判断；`unit_missing` 只做信号；
+  - 多值参考答案在 `fact_coverage < 1.0` 时只给整体 `inconclusive`，不做逐 fact 定位；
   - 子代理内部轨迹不展开；`delegate_task` 只记顶层，归因 `inconclusive`；
   - 不扩测试集、不生成新题、不改出题器。
 - **低分选择**：

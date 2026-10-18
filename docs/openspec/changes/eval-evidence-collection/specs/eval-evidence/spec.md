@@ -47,9 +47,11 @@
 
 - `run_evaluation` / `score_rows` SHALL 通过显式 `evidence_run` 参数消费同一轮 collectors；SHALL NOT 依赖第二个全局 run ContextVar。
 - `score_rows` 每行 SHALL 按 `q_index` 选中对应 collector，并把 `HookEvidence.measures` 拷入该题；不得归到别的题。`evidence_run=None` 或 collector 不存在时 SHALL 跳过采集，不中断评分。
+- empty/failed 的 early-continue 分支 SHALL 在 `continue` 前写 `metric_attempted=false` + `skipped_reason`；empty 的 `tool_correctness` 为 true，failed 的 `tool_correctness` 为 false（`_score_tool_correctness` 直接返回，未调 measure）。
 - 子代理执行（`SkillExecutor._run_fork`）SHALL 临时将 `current_evidence` 置为 null，并在 `finally` 恢复；子代理的 `retrieve_kb` SHALL NOT 写入父题证据。
-- `sample_class=web` 的题 SHALL 记 `retrieval.status="not_applicable"`，`fact_in_corpus/candidates/reranked/final=null`；主分归因 SHALL 为 `inconclusive`，SHALL NOT 按 KB 链归因。
+- `sample_class=web` 的题 SHALL 记 `retrieval.status="not_applicable"`，`fact_in_corpus/candidates/reranked/final=null`；`judge_failed` SHALL 优先为 `judge_failure`，裁判成功但低分 SHALL 为 `inconclusive`；`tool_correctness` 缺 `retrieve_kb` SHALL 为 `inconclusive`（web fallback），SHALL NOT 判 `tool_routing`。
 - `--evidence` 对 web 题 SHALL 只在 `tool_correctness < 1.0` 或行为分 `< 0.5`/缺失时选；`--evidence-all` SHALL 写全部 web 题。
+- 低分选择 SHALL 使用**掩码前的逐题 rows**（含 `sample_class`），SHALL NOT 使用 `masked_df`；web 的四主分 SHALL NOT 作为低分触发。
 
 #### Scenario: Subagent retrieval is not captured
 
@@ -63,8 +65,18 @@
 
 #### Scenario: Web sample is not KB attribution
 
-- **WHEN** `sample_class=web`
+- **WHEN** `sample_class=web` 且裁判成功但分数低
 - **THEN** `retrieval.status` SHALL 为 `not_applicable`，`fact_in_*` SHALL 为 null，主分 `root_cause` SHALL 为 `inconclusive`
+
+#### Scenario: Web judge failure still wins
+
+- **WHEN** `sample_class=web` 且 `judge_failed=true`
+- **THEN** 该指标 `root_cause` SHALL 为 `judge_failure`，SHALL NOT 因 web 身份降成 `inconclusive`
+
+#### Scenario: Web fallback is not tool routing
+
+- **WHEN** `sample_class=web` 且顶层只有 `search_web`、没有 `retrieve_kb`
+- **THEN** `tool_correctness` 的 `root_cause` SHALL 为 `inconclusive`（web fallback），SHALL NOT 为 `tool_routing`
 
 ### Requirement: Each evidence file covers the attribution chain
 
@@ -113,6 +125,7 @@
 - 最终 contexts SHALL 记录 `order_in_prompt`（1-based，全局引用编号）。
 - 每阶段候选 SHALL 有上限（默认 50）；截断时 SHALL 记 `truncated=true` 与 `total_count`。
 - dedup 与 top-k 截断 SHALL 记录被丢弃的 `chunk_id`，不得只记数量。
+- `retrieve_kb` 的 outer rerank timeout 分支 SHALL 记录 `rerank.failed=true` / `reason="timeout"` / `score_kind="fallback"`，并记录该分支的 dedup 与 top-k 丢弃 ID；SHALL NOT 让证据链缺段。
 - 候选 ID/分数 SHALL 来自运行期采集；SHALL NOT 事后用重跑结果替代。
 
 #### Scenario: RRF score is carried into evidence
@@ -143,9 +156,9 @@
 - `gold_chunk_ids` SHALL 优先取题集 `source_chunk_ids`；缺失时 SHALL 用探针命中结果；都没有时 SHALL 为 null。
 - `gold_chunk_source` SHALL 记 `testset` / `probe` / `null`；`gold_chunk_confidence` SHALL 记 `high` / `medium` / `null`。
 - 题集 `match_scope="exact"` 时 `gold_chunk_confidence` SHALL 为 `high`；`match_scope="group"` / `"partial"` 或缺失时 SHALL NOT 为 `high`（最高 medium）。
-- `source_chunk_ids` 中每个 id SHALL 能在本次 `corpus_chunks` 中找到且属于同一 `doc_id`；缺失/跨 doc 时 SHALL 记 warning 并降级为探针或 null，SHALL NOT 假 high。
+- `source_chunk_ids` 中每个 id SHALL 使用 `ChunkResult.id` 的空间（`{doc_id}:{chunk_index}`），且能在本次 `corpus_chunks` 中找到、属于同一 `doc_id`；缺失/跨 doc 时 SHALL 记 warning 并降级为探针或 null，SHALL NOT 假 high。
 - 题集可选的 `chunking_version` / `index_build_id` SHALL 随证据记录；缺失时写 null。
-- `gold_parent_keys` SHALL 记录命中的 parent 键；`fact_in_candidates` / `fact_in_reranked` / `fact_in_final` SHALL 用 `chunk_id OR parent_key` 判交集。
+- `gold_parent_keys` SHALL 记录命中的 parent 键；`fact_in_candidates` / `fact_in_reranked` / `fact_in_final` SHALL 用 `chunk_id OR parent_key` 判交集。`parent_content` 为空/None 时 `parent_key` SHALL 为 `(doc_id, chunk_id)`，与 `_dedup_by_parent` 的 passthrough 口径一致。
 - 探针与 `answer_mentions_fact` SHALL 使用同一归一化：全角→半角、去千分位逗号/空白、统一负号、数值键=数字+单位、文本去 `【公司 · 报告期】` 头并压缩空白。
 - 探针 SHALL NOT 调用 LLM；匹配 SHALL 为归一化字符串/数值匹配。
 - 全量分块 SHALL 复用 `main()` 空库检查已读取的 chunks；一次评测 run 内 SHALL NOT 二次读库。
@@ -203,12 +216,24 @@
 - `metric_attempted=false` 的主分/裁判诊断指标 SHALL 归为 `inconclusive`，`evidence` 写 `skipped:<sample_class=empty|failed>`；SHALL NOT 归为 `judge_failure`。
 - `judge_failed` SHALL 仅在 `metric_attempted=true` 且（score 为 NaN 或 error 非空）时为 true；`metric_attempted=false` 时 SHALL 为 false。
 - 事实类指标 SHALL 要求对应阶段 `fact_coverage == 1.0` 才给具体根因；`fact_coverage < 1.0` 时 SHALL 写 `inconclusive`，`evidence` 含 `partial_fact_coverage` 与 `missing_fact_tokens`，SHALL NOT 用部分命中断言 `retrieval_miss` / `rerank_or_topk`。
-- `tool_correctness` 的 `reason=="failed"`（跑图失败）SHALL 归为 `inconclusive`，SHALL NOT 归为 `tool_routing`；只有跑图成功且有标签、期望工具缺失才 SHALL 归为 `tool_routing`。
+- `fact_in_* is None` SHALL 先短路为 `inconclusive`，SHALL NOT 进入 `is False` 的事实阶段分支。
+- `faithfulness` SHALL NOT 接入 gold 事实链：`judge_failed` → `judge_failure`；answer 为空/failed → `prompt_or_generation`；其余 SHALL 为 `inconclusive`（v1 不做 claim 级幻觉诊断）。
+- `tool_correctness` 的 `reason=="failed"`（跑图失败）SHALL 归为 `inconclusive`，SHALL NOT 归为 `tool_routing`；web 样本缺 `retrieve_kb` SHALL 归为 `inconclusive`（web fallback）；只有跑图成功、非 web、有标签、期望工具缺失才 SHALL 归为 `tool_routing`。
 - `contextual_relevancy` 在 `fact_in_corpus=false` 时 SHALL 优先归为 `parsing_or_chunking` 或 `testset_error`，SHALL NOT 归为 `retrieval_miss`。
 - `confidence` SHALL 取 `high` / `medium` / `low`；`inconclusive` 时 SHALL 为 `inconclusive`。
 - `evidence` SHALL 是单行字符串，指出触发规则的证据（如 `fact_in_corpus=true, fact_in_candidates=false`），SHALL NOT 只写“低分”。
 - `root_cause` SHALL 表示“最可能丢在哪一层”，SHALL NOT 被描述为因果证明；`confidence` SHALL 反映证据质量。
 - `period_conflict` 在 v1 SHALL 恒为 null；归因 SHALL NOT 仅凭期间差异断言 `testset_error`。
+
+#### Scenario: Null fact markers are not false
+
+- **WHEN** `fact_in_corpus` / `fact_in_candidates` / `fact_in_final` 为 `null`（web、无 token、语料不可用）
+- **THEN** 归因 SHALL 为 `inconclusive`，SHALL NOT 进入 `is False` 的 `parsing_or_chunking` / `retrieval_miss` 分支
+
+#### Scenario: Faithfulness does not use the gold fact chain
+
+- **WHEN** `faithfulness` 非空、裁判成功但分数低
+- **THEN** `root_cause` SHALL 为 `inconclusive`，SHALL NOT 因 gold 不在 final 断言 `parsing_or_chunking` / `retrieval_miss`
 
 #### Scenario: Fact exists but is missing from candidates
 
@@ -228,7 +253,7 @@
 #### Scenario: Testset numeric conflict
 
 - **WHEN** 参考答案的数值在语料中不存在且 `numeric_risk=true`
-- **THEN** `context_recall` 的 `root_cause` SHALL 优先为 `testset_error`，SHALL NOT 先归因为检索
+- **THEN** `context_recall` 的 `root_cause` SHALL 优先为 `testset_error`，`confidence` SHALL 为 `medium`（`numeric_risk` 只是先验，不排除分块/解析丢失），SHALL NOT 先归因为检索
 
 #### Scenario: Period conflict is not guessed
 
