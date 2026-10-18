@@ -565,6 +565,61 @@ DEEPEVAL_BRIDGE_PROMPT_MAX_CHARS: int = 400_000
 # 0.03~0.13（实测 n=7，区间 0.68~0.92）——此值**待标定**，暂沿用 0.70。
 EVAL_PASS_THRESHOLD: float = 0.70
 
+# ── v6 出题（change: deepeval-synthesizer-testset） ──
+# 语言门：整体与句级的 CJK 占比下限
+EVAL_LANG_CJK_MIN_RATIO: float = 0.85
+EVAL_LANG_SENTENCE_CJK_MIN_RATIO: float = 0.5
+# 多跳门：Multi-context 占比上限
+EVAL_HOP_MULTI_MAX_RATIO: float = 1 / 3
+# 题量下限：低于此值先升 goldens 重跑一次，仍不足则失败
+EVAL_SYNTH_MIN_SAMPLES: int = 15
+# 每题期望工具（一次 retrieve_kb 返回 top-k，多跳不重复标）
+EVAL_SYNTH_EXPECTED_TOOLS: tuple[str, ...] = ("retrieve_kb",)
+# evolution 权重：num_evolutions=1，键为 deepeval 的 Evolution.value
+EVAL_SYNTH_EVOLUTION_WEIGHTS: dict[str, float] = {
+    "Multi-context": 0.28,
+    "Reasoning": 0.12,
+    "Concretizing": 0.12,
+    "Constrained": 0.12,
+    "Comparative": 0.12,
+    "Hypothetical": 0.12,
+    "In-Breadth": 0.12,
+}
+# 数值型答案的指标词表（主体检查用）
+EVAL_NUMERIC_METRIC_WORDS: tuple[str, ...] = (
+    "营业收入",
+    "收入",
+    "营收",
+    "营业额",
+    "净利润",
+    "归母净利润",
+    "毛利",
+    "毛利率",
+    "经营盈利",
+    "利润总额",
+    "资产",
+    "负债",
+    "现金流",
+    "资本开支",
+    "研发支出",
+    "持股比例",
+    "持股数量",
+    "每股收益",
+)
+# 数值型答案的主体词表
+EVAL_SYNTH_SUBJECT_WORDS: tuple[str, ...] = (
+    "公司",
+    "集团",
+    "本集团",
+    "母公司",
+    "股东",
+)
+# 适配器重试：3 次重试（共 4 次尝试）
+SYNTH_RETRY_MAX_ATTEMPTS: int = 3
+SYNTH_RETRY_BASE_DELAY: float = 0.5
+SYNTH_RETRY_MAX_DELAY: float = 8.0
+SYNTH_RETRY_AFTER_MAX: float = 30.0
+
 
 # ── 阿里云告警接入（change: alibaba-alert-notify） ──
 

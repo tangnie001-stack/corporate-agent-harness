@@ -218,6 +218,16 @@ JUDGE_HTTP_TIMEOUT_POOL: float = float(os.getenv("JUDGE_HTTP_TIMEOUT_POOL", "10"
 # 而不重试会把失败行踢出均值，造成乐观偏差 + 分母不齐。取 3（两次重试）。
 # 超时也重试（实测抓到一次 150s 超时重试后成功恢复）。代价上界 = attempts × read 上限。
 EVAL_METRIC_MAX_ATTEMPTS: int = int(os.getenv("EVAL_METRIC_MAX_ATTEMPTS", "3"))
+# v6 出题：每个上下文包含的连续分块数
+EVAL_SYNTH_CHUNKS_PER_CONTEXT: int = int(
+    os.getenv("EVAL_SYNTH_CHUNKS_PER_CONTEXT", "2")
+)
+# v6 出题：每个上下文生成多少条题（低产出时升到 2）
+EVAL_SYNTH_GOLDENS_PER_CONTEXT: int = int(
+    os.getenv("EVAL_SYNTH_GOLDENS_PER_CONTEXT", "1")
+)
+# v6 出题：并发上下文数（默认 100 会打出 429 风暴）
+EVAL_SYNTH_MAX_CONCURRENT: int = int(os.getenv("EVAL_SYNTH_MAX_CONCURRENT", "4"))
 # 裁判单次生成的最大输出 token。RAGAS 内建默认仅 **1024**，会截断正常输出 → 必须上调。
 # 取 **8192** 而非 4096：两处独立观测都显示 8192 的失败**不多于** 4096
 # （A/B 探针 15 次/档：4096 失败 1、8192 失败 0；真实 21 题全量：4096 → 5/21、8192 → 3/21），
