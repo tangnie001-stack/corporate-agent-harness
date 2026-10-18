@@ -2,21 +2,39 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import time
+from pathlib import Path
 from typing import Any
 
 from rich.progress import Progress
 
 # 先 import settings，确保 DEEPEVAL_* 环境变量已设置
 from src.config import settings
-from src.config.const import EVAL_SYNTH_EVOLUTION_WEIGHTS
+from src.config.const import EVAL_SYNTH_EVOLUTION_WEIGHTS, EVAL_SYNTH_MIN_SAMPLES
 
 # isort: split
 from deepeval.synthesizer import Synthesizer
 from deepeval.synthesizer.config import EvolutionConfig, FiltrationConfig, StylingConfig
 from deepeval.synthesizer.types import Evolution
 
-from src.cli.synth_contexts import ContextGroup, render_context
+from src.cli.synth_contexts import (
+    ContextGroup,
+    build_contexts,
+    load_chunks,
+    render_context,
+)
+from src.cli.synth_gates import run_gates
+from src.cli.synth_writer import (
+    build_metadata,
+    golden_to_sample,
+    public_sample,
+    write_testset,
+)
+from src.cli.testset_io import next_testset_version
+from src.core import logging as core_logging
+from src.core.log_events import Event
 from src.infra.llm.provider.deepeval_synth_llm import SynthDeepEvalLLM
 
 
@@ -138,3 +156,178 @@ async def _synthesize(
             continue
         pairs.extend(result)
     return pairs, failed, last_error
+
+
+def parse_args() -> argparse.Namespace:
+    """解析出题命令行参数。
+
+    Returns:
+        已校验的参数命名空间
+
+    Raises:
+        SystemExit: 参数非法（argparse 以退出码 2 结束）
+    """
+    parser = argparse.ArgumentParser(description="DeepEval v6 测试集出题")
+    parser.add_argument("--kb-id", required=True, help="知识库 UUID")
+    parser.add_argument(
+        "--version", type=int, default=None, help="版本号（省略=最大版本+1）"
+    )
+    parser.add_argument(
+        "--docs", nargs="*", default=None, help="限定文档文件名（省略=全部）"
+    )
+    parser.add_argument("--kb-name", default="", help="写入元数据的知识库名")
+    parser.add_argument("--force", action="store_true", help="允许覆盖已存在版本")
+    parser.add_argument("--dry-run", action="store_true", help="只打印计划，不调用 LLM")
+    args = parser.parse_args()
+    if args.version is not None and not args.docs:
+        parser.error("显式 --version 时必须同时提供 --docs（保证版本可复现）")
+    return args
+
+
+async def _run(args: argparse.Namespace) -> None:
+    """执行出题（调用方负责 asyncio.run(run_and_dispose(...))）。
+
+    Args:
+        args: 已解析的命令行参数
+
+    Raises:
+        SystemExit: 语料不匹配、生成全失败、语言门失效或样本不足
+        FileExistsError: 目标版本已存在且未传 --force
+    """
+    from src.infra.llm.provider.factory import build_bridge_judge
+    from src.infra.llm.provider.http_observability import HookEvidence
+
+    started = time.monotonic()
+    if args.version is not None:
+        version = args.version
+    else:
+        version = next_testset_version(args.kb_id)
+    chunks = await load_chunks(args.kb_id, args.docs)
+    if args.docs:
+        found = {str(c.metadata.get("source")) for c in chunks}
+        missing = [name for name in args.docs if name not in found]
+        if missing:
+            raise SystemExit(f"error: --docs 未匹配到分块: {', '.join(missing)}")
+
+    contexts = build_contexts(chunks, settings.EVAL_SYNTH_CHUNKS_PER_CONTEXT)
+    covered = sum(len(g.chunks) for g in contexts)
+    target = Path(settings.EVAL_TESTSET_DIR) / f"testset_{args.kb_id}_v{version}.json"
+    if args.dry_run:
+        print(f"version={version}")
+        print(f"docs={sorted({g.source for g in contexts})}")
+        print(f"contexts={len(contexts)} chunks={len(chunks)} covered={covered}")
+        print(
+            f"calls=每 context 5-8 次，单轮约 {len(contexts) * 5}-{len(contexts) * 8}"
+        )
+        print(f"target={target} exists={target.exists()}")
+        if target.exists():
+            print("目标已存在：正式运行需 --force")
+        return
+
+    judge = build_bridge_judge(evidence=HookEvidence())
+    synth = _build_synthesizer(judge)
+
+    core_logging.log_event(
+        Event.SYNTH_START,
+        kb_id=args.kb_id,
+        docs=len({g.source for g in contexts}),
+        contexts=len(contexts),
+    )
+
+    async def _attempt(goldens_per_context: int) -> tuple[list[dict], dict, int, str]:
+        """跑一轮出题 + 质量门。
+
+        Args:
+            goldens_per_context: 每个 context 生成多少题
+
+        Returns:
+            `(kept, stats, failed_contexts, last_error)`
+        """
+        pairs, failed, last_error = await _synthesize(
+            contexts, synth, goldens_per_context=goldens_per_context
+        )
+        samples = [golden_to_sample(golden, group) for golden, group in pairs]
+        aliases = {g.company.strip().lower(): set(g.aliases) for g in contexts}
+        kept, stats = run_gates(samples, aliases)
+        stats["failed_contexts"] = failed
+        return kept, stats, failed, last_error
+
+    kept, stats, failed, last_error = await _attempt(
+        settings.EVAL_SYNTH_GOLDENS_PER_CONTEXT
+    )
+    used_goldens = settings.EVAL_SYNTH_GOLDENS_PER_CONTEXT
+
+    if stats["generated"] == 0:
+        raise SystemExit(
+            f"error: 所有上下文都失败（failed={failed}），最后错误：{last_error}"
+        )
+    if stats["language_checked"] == 0:
+        raise SystemExit("error: 没有样本进入语言门（语言失效）")
+    language_rate = stats["dropped"]["language"] / stats["language_checked"]
+    if language_rate > 0.5:
+        raise SystemExit(
+            f"error: 语言门丢弃率 {language_rate:.0%} > 50%，出题器语言约束失效"
+        )
+    if len(kept) < EVAL_SYNTH_MIN_SAMPLES:
+        kept, stats, failed, last_error = await _attempt(2)
+        used_goldens = 2
+        if len(kept) < EVAL_SYNTH_MIN_SAMPLES:
+            raise SystemExit(
+                f"error: 仅 {len(kept)} 条通过质量门"
+                f"（< {EVAL_SYNTH_MIN_SAMPLES}），未写文件"
+            )
+
+    if failed > 0:
+        core_logging.log_event(
+            Event.SYNTH_CONTEXT_FAILED,
+            err=f"count={failed} last={last_error}",
+        )
+
+    doc_names = sorted({g.source for g in contexts})
+    doc_ids = sorted({g.doc_id for g in contexts})
+    hop_stats = {
+        "single_hop": sum(1 for s in kept if s["hop_type"] == "single_hop"),
+        "multi_hop": sum(1 for s in kept if s["hop_type"] == "multi_hop"),
+    }
+    metadata = build_metadata(
+        kb_id=args.kb_id,
+        kb_name=args.kb_name,
+        version=version,
+        samples=kept,
+        stats=stats,
+        params={
+            "chunks_per_context": settings.EVAL_SYNTH_CHUNKS_PER_CONTEXT,
+            "goldens_per_context": used_goldens,
+            "max_concurrent": settings.EVAL_SYNTH_MAX_CONCURRENT,
+            "evolution_weights": dict(EVAL_SYNTH_EVOLUTION_WEIGHTS),
+        },
+        doc_names=doc_names,
+        doc_ids=doc_ids,
+        source_chunks=len(chunks),
+        covered_chunks=covered,
+        company_source={g.source: g.company_source for g in contexts},
+        hop_stats=hop_stats,
+        elapsed_seconds=time.monotonic() - started,
+    )
+    payload = {"metadata": metadata, "samples": [public_sample(s) for s in kept]}
+    write_testset(target, payload, force=args.force)
+    core_logging.log_event(
+        Event.SYNTH_GATE,
+        generated=stats["generated"],
+        kept=stats["kept"],
+        dropped=stats["dropped"],
+        failed_contexts=stats["failed_contexts"],
+        language_checked=stats["language_checked"],
+    )
+    core_logging.log_event(Event.SYNTH_DONE, path=str(target), size=len(kept))
+
+
+def main() -> None:
+    """出题入口。"""
+    from src.infra.db.engine import run_and_dispose
+
+    asyncio.run(run_and_dispose(_run(parse_args())))
+
+
+if __name__ == "__main__":
+    main()

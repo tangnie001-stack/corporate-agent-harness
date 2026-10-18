@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from dataclasses import dataclass, field
 from typing import cast
 
+import pytest
 from deepeval.dataset import Golden
 
 from src.cli import testset_synth
@@ -101,3 +103,22 @@ def test_async_signature_has_no_send_data():
     assert "_send_data" not in params
     assert "_progress" in params
     assert "_pbar_id" in params
+
+
+def test_explicit_version_requires_docs(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys, "argv", ["testset_synth", "--kb-id", "kb", "--version", "6"]
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        testset_synth.parse_args()
+    assert excinfo.value.code == 2
+    assert "--docs" in capsys.readouterr().err
+
+
+def test_docs_without_version_uses_next_version(monkeypatch):
+    monkeypatch.setattr(
+        sys, "argv", ["testset_synth", "--kb-id", "kb", "--docs", "a.pdf"]
+    )
+    args = testset_synth.parse_args()
+    assert args.version is None
+    assert args.docs == ["a.pdf"]
