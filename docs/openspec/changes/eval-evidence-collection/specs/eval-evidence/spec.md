@@ -215,7 +215,7 @@
 - 归因规则 SHALL 先处理 `metric_attempted=false`（空样本/失败样本）与 `judge_failed`、`testset_conflict`，再按事实阶段（corpus → candidates → rerank → final）定位；无法判定时 SHALL 写 `inconclusive`。
 - `metric_attempted=false` 的主分/裁判诊断指标 SHALL 归为 `inconclusive`，`evidence` 写 `skipped:<sample_class=empty|failed>`；SHALL NOT 归为 `judge_failure`。
 - `judge_failed` SHALL 仅在 `metric_attempted=true` 且（score 为 NaN 或 error 非空）时为 true；`metric_attempted=false` 时 SHALL 为 false。
-- 事实类指标 SHALL 要求对应阶段 `fact_coverage == 1.0` 才给具体根因；`fact_coverage < 1.0` 时 SHALL 写 `inconclusive`，`evidence` 含 `partial_fact_coverage` 与 `missing_fact_tokens`，SHALL NOT 用部分命中断言 `retrieval_miss` / `rerank_or_topk`。
+- 事实类指标 SHALL 要求对应阶段 `fact_coverage == 1.0` 才给具体根因；`0 < fact_coverage < 1.0` 时 SHALL 写 `inconclusive`，`evidence` 含 `partial_fact_coverage` 与 `missing_fact_tokens`，SHALL NOT 用部分命中断言 `retrieval_miss` / `rerank_or_topk`。
 - `fact_in_* is None` SHALL 先短路为 `inconclusive`，SHALL NOT 进入 `is False` 的事实阶段分支。
 - `faithfulness` SHALL NOT 接入 gold 事实链：`judge_failed` → `judge_failure`；answer 为空/failed → `prompt_or_generation`；其余 SHALL 为 `inconclusive`（v1 不做 claim 级幻觉诊断）。
 - `tool_correctness` 的 `reason=="failed"`（跑图失败）SHALL 归为 `inconclusive`，SHALL NOT 归为 `tool_routing`；web 样本缺 `retrieve_kb` SHALL 归为 `inconclusive`（web fallback）；只有跑图成功、非 web、有标签、期望工具缺失才 SHALL 归为 `tool_routing`。
@@ -242,7 +242,7 @@
 
 #### Scenario: Partial fact coverage is inconclusive
 
-- **WHEN** `fact_coverage.<stage> < 1.0`（只命中部分参考数值）
+- **WHEN** `0 < fact_coverage.<stage> < 1.0`（只命中部分参考数值）
 - **THEN** 相关指标 SHALL 为 `inconclusive`，`evidence` SHALL 含 `partial_fact_coverage` 与 `missing_fact_tokens`，SHALL NOT 断言具体层
 
 #### Scenario: Candidate exists but is dropped before final

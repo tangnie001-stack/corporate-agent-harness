@@ -46,7 +46,7 @@
 ## 6. 确定性归因引擎
 
 - [ ] 6.1 定义根因枚举：`judge_failure` / `testset_error` / `parsing_or_chunking` / `retrieval_miss` / `rerank_or_topk` / `prompt_or_generation` / `tool_routing` / `agent_orchestration` / `inconclusive`。
-- [ ] 6.2 事实阶段 helper：`fact_in_* is None → inconclusive`；`testset_conflict → testset_error（medium）`；`fact_coverage.<stage> < 1.0 → inconclusive（partial_fact_coverage + missing_fact_tokens）`；`fact_in_corpus is False → parsing_or_chunking`；`fact_in_candidates is False → retrieval_miss`；`fact_in_reranked is False → rerank_or_topk`；`fact_in_final is False → rerank_or_topk`；否则 `prompt_or_generation`/`inconclusive`。
+- [ ] 6.2 事实阶段 helper：`fact_in_* is None → inconclusive`；`testset_conflict → testset_error（medium）`；`0 < fact_coverage.<stage> < 1.0 → inconclusive（partial_fact_coverage + missing_fact_tokens）`；`fact_in_corpus is False → parsing_or_chunking`；`fact_in_candidates is False → retrieval_miss`；`fact_in_reranked is False → rerank_or_topk`；`fact_in_final is False → rerank_or_topk`；否则 `prompt_or_generation`/`inconclusive`。
 - [ ] 6.3 metric-scoped 规则（design D9）：先判 `metric_attempted=false` → `inconclusive`（`skipped:<reason>`），再判 `judge_failed`/`testset_conflict`/`fact_coverage`；`judge_failed` 仅在 attempted=true 且 NaN/error 时为 true；`faithfulness` SHALL NOT 接入事实链（只 judge_failed/空回答，其余 inconclusive）；web 的 `judge_failed` 优先于 web→inconclusive；web 的 tool_correctness 缺 retrieve_kb → `inconclusive`（fallback），不是 `tool_routing`；`tool_correctness_reason=="failed"` → `inconclusive`；CREL 的 `fact_in_corpus=false` → `parsing_or_chunking`/`testset_error`。
 - [ ] 6.4 置信度：high/medium/low/inconclusive 按 design D10；`numeric_conflict`/`testset_error` 为 medium；`evidence` 单行、可核查。
 - [ ] 6.5 归因异常隔离：某题归因失败只把该题 attribution 写全 `inconclusive`，不影响证据写入/评测。

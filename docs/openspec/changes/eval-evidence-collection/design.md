@@ -237,7 +237,7 @@ data/deepeval/evidence/<run_id>/
 | 指标 | 规则 |
 |---|---|
 | 任意主分/裁判诊断 | `metric_attempted=false` → `inconclusive`，`evidence` 写 `skipped:<sample_class=empty|failed>`；SHALL NOT 归 `judge_failure` |
-| 事实类指标 | `fact_in_* is None` → `inconclusive`（`missing_fact_tokens`/`probe_tokens` 为空）；`testset_conflict` → `testset_error`（medium）；`fact_coverage.<stage> < 1.0` → `inconclusive`（`partial_fact_coverage`）；SHALL NOT 用 null/部分覆盖断言具体层 |
+| 事实类指标 | `fact_in_* is None` → `inconclusive`（`missing_fact_tokens`/`probe_tokens` 为空）；`testset_conflict` → `testset_error`（medium）；`0 < fact_coverage.<stage> < 1.0` → `inconclusive`（`partial_fact_coverage`）；SHALL NOT 用 null/部分覆盖断言具体层 |
 | `faithfulness` | **v1 不接入 gold 事实链**：judge_failed → `judge_failure`；answer 为空/failed → `prompt_or_generation`；否则 `inconclusive`（F 的幻觉诊断需要 claim 级证据，v1 不做） |
 | `answer_relevancy` | judge_failed → `judge_failure`；answer 为空/failed → `prompt_or_generation`；否则 `inconclusive` |
 | `context_precision` | judge_failed → `judge_failure`；gold 不在 candidates → `retrieval_miss`；gold 在 candidates 但不在 final → `rerank_or_topk`；gold 在 final 但分数低 → `rerank_or_topk`（排序/噪声）；否则 `inconclusive` |
@@ -272,7 +272,7 @@ fact_in_final is False      → rerank_or_topk（dedup/top-k）
 | `high` | judge_failed 明确；或 gold 来自 testset 且 `match_scope="exact"`、阶段 `fact_coverage=1.0` |
 | `medium` | gold 来自探针；或 `match_scope="group"/"partial"`；或 `numeric_conflict` / `testset_error`；或事实阶段只能推断到层；或 `unit_missing` 仅作信号 |
 | `low` | 只有间接证据（如 answer 未出现 token 但 reference 是抽象表述） |
-| `inconclusive` | 无规则命中，或关键事实标记为 null，或 `fact_coverage < 1.0` |
+| `inconclusive` | 无规则命中，或关键事实标记为 null，或 `0 < fact_coverage < 1.0` |
 
 不把 `low` 自动升级为 `high`；`inconclusive` 是合法结果。
 
@@ -354,7 +354,7 @@ fact_in_final is False      → rerank_or_topk（dedup/top-k）
 
 - 参考答案的数值在**语义上**是否正确（42% vs 53% 谁对）——只做存在性匹配；
 - **faithfulness 的幻觉诊断**——F 需要 claim 级“回答是否被 context 支撑”的证据，v1 只判 `judge_failure`/空回答，其余 `inconclusive`；
-- **多值参考答案的逐 fact 定位**——`fact_coverage < 1.0` 时 v1 只给整体 `inconclusive`，不区分“漏了哪一个 fact”；
+- **多值参考答案的逐 fact 定位**——`0 < fact_coverage < 1.0` 时 v1 只给整体 `inconclusive`，不区分“漏了哪一个 fact”；
 - 期间/季度是否错标——`period_conflict` 恒 null，Q15 类可能落到 `inconclusive` 或被其他事实带偏；
 - query rewrite 改了什么——评测路径不执行改写，`rewritten` 为 null；
 - 子代理内部检索——只看顶层 `delegate_task`；
