@@ -23,9 +23,9 @@
 - 新增 `eval_deepeval --evidence`（可选 `--evidence-all`）调试开关：默认关闭，关闭时零额外开销。
 - **采集架构**：每轮一个 `EvidenceRun`，内含按 `q_index` 的 `QuestionEvidence`；生成阶段每题 set/reset `current_evidence`，评分阶段把 `HookEvidence.measures` 归到同一题；评分结束后再决定写哪些题。
 - **全量分块复用**：`main()` 空库检查已经读了一次 `get_all_chunks`；开启 evidence 时把结果交给 `EvidenceRun`，探针不再二次读库。
-- **题集样本单独加载**：evidence 模式额外调用 `load_testset_samples` 并按 `--limit` 切片，拿到 `reference_contexts` / `source_file` / 可选 `source_chunk_ids`；默认评测路径的三元组加载不动。
+- **题集样本单独加载**：evidence 模式额外调用 `load_testset_samples` 并按 `--limit` 切片，拿到 `reference_contexts` / `source_file` / 可选 `source_chunk_ids` / `match_scope` / `chunking_version`；默认评测路径的三元组加载不动。
 - 证据包覆盖：
-  - **题集**：`reference` / `reference_contexts` / `source_file` / `expected_tools` / 可选 `source_chunk_ids` / `numeric_risk`；
+  - **题集**：`reference` / `reference_contexts` / `source_file` / `expected_tools` / 可选 `source_chunk_ids` / `match_scope` / `chunking_version` / `numeric_risk`；
   - **query 路径**：`original` / `tool_queries`（实际 `retrieve_kb.args.query`）/ `rewritten` / `sub_queries` / `intent_route`；评测路径不执行改写时写 null；
   - **检索链**：dense / lexical / RRF / rerank 前 / rerank 后 / dedup / top-k / final contexts；每条候选带 `chunk_id`、`parent_key`、`doc_id`、`source`、`page`、`rank`、`score`、`score_kind`；
   - **工具链**：工具名、参数、结果数、耗时、迭代、`call_index`；`delegate_task` 只记顶层；
@@ -34,7 +34,8 @@
 - **确定性归因**：
   - 每题按指标输出 `attribution`：`root_cause` / `confidence` / `evidence`；
   - 根因枚举固定：`judge_failure` / `testset_error` / `parsing_or_chunking` / `retrieval_miss` / `rerank_or_topk` / `prompt_or_generation` / `tool_routing` / `agent_orchestration` / `inconclusive`；
-  - `summary.json` 输出 `root_cause_counts.by_metric` / `total` 与 `inconclusive_count`；
+  - `summary.json` 输出 `root_cause_counts.by_metric` / `total`、`scored_metric_count` / `skipped_metric_count` / `inconclusive_count`；
+  - 空样本/失败样本未调用指标 → `metric_attempted=false`，归 `inconclusive`，不归 `judge_failure`；
   - 规则只使用本次运行期证据，不跨题推断、不调用 LLM。
 - **v1 明确边界**：
   - `period_conflict` 只记 null；不在 v1 做“期间/季度是否一致”的语义判断（避免把题集期间错标误判成检索问题）；

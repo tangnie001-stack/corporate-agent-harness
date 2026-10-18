@@ -45,7 +45,7 @@
 
 每题证据 SHALL 是一个带 `schema_version` 的 JSON，覆盖从题集到裁判的链路；取不到的值 SHALL 写 `null`，SHALL NOT 省略键或伪造值。
 
-- `testset` SHALL 含 `reference`、`reference_contexts`、`source_file`、`expected_tools`、`numeric_risk`，可选 `source_chunk_ids`。
+- `testset` SHALL 含 `reference`、`reference_contexts`、`source_file`、`expected_tools`、`numeric_risk`，可选 `source_chunk_ids` / `match_scope` / `chunking_version`。
 - `query` SHALL 含 `original` 与 `tool_queries`；可用的 `rewritten` / `sub_queries` / `intent_route` 有则记录，无则 null。
 - `retrieval` SHALL 含 dense / lexical / RRF / rerank before / rerank after / dedup / top-k / final contexts 的快照与各阶段 `count`、`total_count`、`failed`、`truncated`。
 - `tool_calls` SHALL 含工具名、参数、结果数、迭代数、`call_index`；`delegate_task` 只记顶层。
@@ -53,7 +53,7 @@
 - `trace` SHALL 含 `run_trace_id`、`sut_trace_id`、`judge_measures[]`（`judge_measure_id` / metric / attempt / model / latency_ms / request_count / response_count / statuses / tokens_in / tokens_out / reason / error）、嵌套 `judge_calls[]`（`judge_call_id` / call_index / status / finish_reasons / tokens / latency / json_ok / error）与行为轴 `trace_id`/`link_method`；`judge_calls` SHALL 能通过 `judge_measure_id` 归到对应 measure。
 - `trace` 的 ID 与 measure 记录 SHALL 直接消费 `eval-trace-correlation` 的进程内接口（`HookEvidence.measures` / `EvalTraceContext` / `link_behavior_traces`），SHALL NOT 重解析日志或重新生成；缺失时写 null。
 - 行为轴 judge 的内部调用不在 v1 范围：SHALL NOT 伪造缺失的 `judge_calls`；只记行为分与 `trace_id` 映射。
-- `facts` SHALL 含 `fact_in_corpus`、`fact_in_candidates`、`fact_in_reranked`、`fact_in_final`、`answer_mentions_fact`、`testset_conflict`、`judge_failed`、`tool_called`；无法判定时写 null。
+- `facts` SHALL 含 `fact_in_corpus`、`fact_in_candidates`、`fact_in_reranked`、`fact_in_final`、`answer_mentions_fact`、`testset_conflict`、`judge_failed`、`metric_attempted`、`skipped_reason`、`tool_called`；无法判定时写 null。
 - `attribution` SHALL 按指标输出 `root_cause` / `confidence` / `evidence`。
 
 #### Scenario: Evidence includes retrieval stage snapshots
@@ -116,22 +116,36 @@
 - 探针 SHALL 记录命中的 `doc_id`、`chunk_id`、`parent_key`、`source`、`page`，并给出 `fact_in_corpus` 的 `true`/`false`/`null`。
 - `gold_chunk_ids` SHALL 优先取题集 `source_chunk_ids`；缺失时 SHALL 用探针命中结果；都没有时 SHALL 为 null。
 - `gold_chunk_source` SHALL 记 `testset` / `probe` / `null`；`gold_chunk_confidence` SHALL 记 `high` / `medium` / `null`。
+- 题集 `match_scope="exact"` 时 `gold_chunk_confidence` SHALL 为 `high`；`match_scope="group"` / `"partial"` 或缺失时 SHALL NOT 为 `high`（最高 medium）。
+- `source_chunk_ids` 中每个 id SHALL 能在本次 `corpus_chunks` 中找到且属于同一 `doc_id`；缺失/跨 doc 时 SHALL 记 warning 并降级为探针或 null，SHALL NOT 假 high。
+- 题集可选的 `chunking_version` / `index_build_id` SHALL 随证据记录；缺失时写 null。
 - `gold_parent_keys` SHALL 记录命中的 parent 键；`fact_in_candidates` / `fact_in_reranked` / `fact_in_final` SHALL 用 `chunk_id OR parent_key` 判交集。
+- 探针与 `answer_mentions_fact` SHALL 使用同一归一化：全角→半角、去千分位逗号/空白、统一负号、数值键=数字+单位、文本去 `【公司 · 报告期】` 头并压缩空白。
 - 探针 SHALL NOT 调用 LLM；匹配 SHALL 为归一化字符串/数值匹配。
 - 全量分块 SHALL 复用 `main()` 空库检查已读取的 chunks；一次评测 run 内 SHALL NOT 二次读库。
 - 命中数 SHALL 有上限（默认 20），截断时记 `truncated=true`。
 - `numeric_conflict` SHALL 为 `true` 当参考答案有数值 token、语料中完全找不到、且题集 `numeric_risk=true`；找到时为 `false`；无数值 token 或语料不可用时为 `null`。
-- `unit_missing` SHALL 记录参考数值附近是否缺单位；`period_conflict` 在 v1 SHALL 恒为 `null`。
+- `unit_missing` SHALL 检查数值 token 后 4 个字符内是否有单位（元/万元/亿元/%/百分点）；有单位 `false`、无单位 `true`、无数值/语料不可用 `null`。`period_conflict` 在 v1 SHALL 恒为 `null`。
 
 #### Scenario: Fact exists in corpus but was not retrieved
 
 - **WHEN** 参考答案中的数值/文本能在某个 chunk 中命中，但该 chunk 不在最终 contexts
 - **THEN** 证据 SHALL 记 `fact_in_corpus=true` 并列出命中 chunk，`gold_chunk_source=probe`
 
-#### Scenario: Testset provides source chunk ids
+#### Scenario: Testset provides exact source chunk ids
 
-- **WHEN** 题集样本带 `source_chunk_ids`
+- **WHEN** 题集样本带 `source_chunk_ids` 且 `match_scope="exact"`
 - **THEN** 证据 SHALL 使用该字段作为 `gold_chunk_ids`，记 `gold_chunk_source=testset`、`gold_chunk_confidence=high`，SHALL NOT 用探针覆盖
+
+#### Scenario: Testset provides group-scope ids
+
+- **WHEN** 题集样本带 `source_chunk_ids` 但 `match_scope="group"` 或 `"partial"`
+- **THEN** `gold_chunk_source=testset`，`gold_chunk_confidence` SHALL 为 `medium`，SHALL NOT 为 `high`
+
+#### Scenario: Stale source chunk ids are downgraded
+
+- **WHEN** `source_chunk_ids` 中的 id 在本次 `corpus_chunks` 中不存在或属于不同 `doc_id`
+- **THEN** 证据 SHALL 记 warning，`gold_chunk_source` SHALL 降级为 `probe` 或 `null`，SHALL NOT 继续标记 `high`
 
 #### Scenario: Fact is absent from corpus
 
@@ -159,7 +173,9 @@
 
 - `attribution` SHALL 以指标名为键，每项含 `root_cause`、`confidence`、`evidence`。
 - `root_cause` SHALL 取自固定枚举：`judge_failure`、`testset_error`、`parsing_or_chunking`、`retrieval_miss`、`rerank_or_topk`、`prompt_or_generation`、`tool_routing`、`agent_orchestration`、`inconclusive`。
-- 归因规则 SHALL 先处理 `judge_failed` 与 `testset_conflict`，再按事实阶段（corpus → candidates → rerank → final）定位；无法判定时 SHALL 写 `inconclusive`。
+- 归因规则 SHALL 先处理 `metric_attempted=false`（空样本/失败样本）与 `judge_failed`、`testset_conflict`，再按事实阶段（corpus → candidates → rerank → final）定位；无法判定时 SHALL 写 `inconclusive`。
+- `metric_attempted=false` 的主分/裁判诊断指标 SHALL 归为 `inconclusive`，`evidence` 写 `skipped:<sample_class=empty|failed>`；SHALL NOT 归为 `judge_failure`。
+- `judge_failed` SHALL 仅在 `metric_attempted=true` 且（score 为 NaN 或 error 非空）时为 true；`metric_attempted=false` 时 SHALL 为 false。
 - `tool_correctness` 的 `reason=="failed"`（跑图失败）SHALL 归为 `inconclusive`，SHALL NOT 归为 `tool_routing`；只有跑图成功且有标签、期望工具缺失才 SHALL 归为 `tool_routing`。
 - `contextual_relevancy` 在 `fact_in_corpus=false` 时 SHALL 优先归为 `parsing_or_chunking` 或 `testset_error`，SHALL NOT 归为 `retrieval_miss`。
 - `confidence` SHALL 取 `high` / `medium` / `low`；`inconclusive` 时 SHALL 为 `inconclusive`。
@@ -170,7 +186,7 @@
 #### Scenario: Fact exists but is missing from candidates
 
 - **WHEN** `fact_in_corpus=true` 且 `fact_in_candidates=false`
-- **THEN** 相关指标的 `root_cause` SHALL 为 `retrieval_miss`，`confidence` SHALL 为 `high`（gold 来自 testset）或 `medium`（gold 来自探针）
+- **THEN** 相关指标的 `root_cause` SHALL 为 `retrieval_miss`，`confidence` SHALL 为 `high`（gold 来自 testset 且 `match_scope="exact"`）或 `medium`（其余情况）
 
 #### Scenario: Candidate exists but is dropped before final
 
@@ -189,8 +205,13 @@
 
 #### Scenario: Judge failed
 
-- **WHEN** 指标 score 为 NaN 或 error 非空
+- **WHEN** `metric_attempted=true` 且指标 score 为 NaN 或 error 非空
 - **THEN** 该指标的 `root_cause` SHALL 为 `judge_failure`，`confidence=high`
+
+#### Scenario: Empty sample is not a judge failure
+
+- **WHEN** `sample_class=empty` 或跑图失败导致主分/裁判诊断未调用（`metric_attempted=false`）
+- **THEN** 该指标 SHALL 为 `inconclusive`，`evidence` SHALL 写 `skipped:<reason>`；SHALL NOT 为 `judge_failure`
 
 #### Scenario: Failed run is not tool routing
 
@@ -208,7 +229,10 @@
 
 - SHALL 含 `run_id`、`run_trace_id`、`qa_count`、`low_score_questions`、`evidence_files`、`elapsed_ms`。
 - SHALL 含 `root_cause_counts.by_metric` 与 `root_cause_counts.total`。
-- SHALL 含 `inconclusive_count`。
+- SHALL 含 `scored_metric_count`、`skipped_metric_count`、`inconclusive_count`。
+- `root_cause_counts` SHALL 只统计 `metric_attempted=true` 的指标；`skipped_metric_count` SHALL 单独计数，SHALL NOT 混入 `inconclusive_count`。
+- `low_score_questions` SHALL 为 0-based `q_index`；`evidence_files` SHALL 为相对目录的文件名。
+- 没有低分题时 SHALL 仍写 `summary.json`（空 `evidence_files`、零计数），SHALL NOT 静默跳过。
 - 计数 SHALL 与逐题 `attribution` 一致；同一题不同指标分别计数。
 - `summary.json` SHALL 与逐题证据同目录、同样的原子写语义。
 
@@ -221,6 +245,11 @@
 
 - **WHEN** 若干指标无法归因
 - **THEN** `inconclusive_count` SHALL 明确计数，SHALL NOT 把它们计入任何具体根因
+
+#### Scenario: No low-score question still writes summary
+
+- **WHEN** `--evidence` 开启但没有任何题命中低分选择
+- **THEN** SHALL 仍写 `summary.json`，`evidence_files=[]` 且计数全 0，SHALL NOT 静默不写
 
 ### Requirement: Evidence is local, private and atomically written
 

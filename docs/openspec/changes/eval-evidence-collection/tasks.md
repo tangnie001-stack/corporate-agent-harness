@@ -27,28 +27,29 @@
 
 - [ ] 4.1 Query：记录 `original`、`tool_queries`（每次 retrieve 的实际 query + `call_index`）、`rewritten` / `sub_queries` / `intent_route`；评测路径不执行改写时写 null，不伪造。
 - [ ] 4.2 工具链：记录 name/args/result_count/latency/iteration/call_index；`delegate_task` 只记顶层，不展开子代理。
-- [ ] 4.3 评分：`score_rows` 每题结束、下一次 `evidence.reset()` 前，把 `HookEvidence.measures` 拷入当前 `QuestionEvidence.judge`；`reason` 只在 measure 成功后读取；不持久化 verbose_logs。
+- [ ] 4.3 评分：`score_rows` 每题结束、下一次 `evidence.reset()` 前，把 `HookEvidence.measures` 拷入当前 `QuestionEvidence.judge`；记录 `metric_attempted` / `skipped_reason`（empty/failed 不调用 measure → false）；`reason` 只在 measure 成功后读取；不持久化 verbose_logs。
 - [ ] 4.4 行为轴：从 `behaviour_rows` 记录 metrics/reasons；failed 题写 `score=null` / `reason=failed`；用 `link_behavior_traces` 得到 `trace_id` / `link_method`。
-- [ ] 4.5 trace：`run_trace_id` / `sut_trace_id` / `judge_measures[]` / 嵌套 `judge_calls[]`；缺失写 null；不重新生成。
-- [ ] 4.6 单测：judge 无 reason → null；failed 行为题 → null/failed；measure 记录按题归属；行为轴不产 `judge_calls`；`link_behavior_traces` 被消费。
+- [ ] 4.5 token 归一化 helper：全角→半角、去千分位逗号/空白、统一负号、数值键=数字+单位、文本去 `【公司 · 报告期】` 头并压缩空白；探针与 `answer_mentions_fact` 共用。
+- [ ] 4.6 trace：`run_trace_id` / `sut_trace_id` / `judge_measures[]` / 嵌套 `judge_calls[]`；缺失写 null；不重新生成。
+- [ ] 4.7 单测：judge 无 reason → null；failed 行为题 → null/failed；measure 记录按题归属；空样本 `metric_attempted=false`；行为轴不产 `judge_calls`；`link_behavior_traces` 被消费；归一化正负号/千分位/全角。
 
 ## 5. Gold chunk 与 Chunk 探针
 
-- [ ] 5.1 读取题集可选 `source_chunk_ids`：存在则 `gold_chunk_ids` 用它，`gold_chunk_source=testset`、`gold_chunk_confidence=high`，不跑探针覆盖。
-- [ ] 5.2 缺失时 `probe_reference_chunks(reference, chunks)`：提取数值 token（负号/千分位/百分号/单位）与归一化文本片段，在 `content`/`parent_content` 中匹配，返回 `gold_chunk_ids` / `gold_parent_keys` / `fact_in_corpus` / `probe_tokens`（命中上限 20）。
+- [ ] 5.1 读取题集可选 `source_chunk_ids` / `match_scope` / `chunking_version`：`match_scope="exact"` → `gold_chunk_source=testset`、`gold_chunk_confidence=high`；`group`/`partial`/缺失 → 最高 medium；校验每个 id 在 `corpus_chunks` 中存在且同 doc，缺失/跨 doc → warning + 降级探针或 null，不跑探针覆盖 exact。
+- [ ] 5.2 缺失时 `probe_reference_chunks(reference, chunks)`：用 4.5 的归一化提取数值 token（负号/千分位/百分号/单位）与文本片段（数字 + 稀有词窗口），在 `content`/`parent_content` 中匹配，返回 `gold_chunk_ids` / `gold_parent_keys` / `fact_in_corpus` / `probe_tokens`（命中上限 20）。
 - [ ] 5.3 复用 `EvidenceRun.corpus_chunks`；为空时 `fact_in_corpus=null` 并 warning，不二次读库。
-- [ ] 5.4 `testset_conflict`：`numeric_conflict`（数值 token 不存在且 `numeric_risk=true`）、`unit_missing`；`period_conflict` v1 恒 null。
+- [ ] 5.4 `testset_conflict`：`numeric_conflict`（数值 token 不存在且 `numeric_risk=true`）、`unit_missing`（数值后 4 字符内无 元/万元/亿元/%/百分点）；`period_conflict` v1 恒 null。
 - [ ] 5.5 `fact_in_candidates` / `fact_in_reranked` / `fact_in_final` 用 `chunk_id OR parent_key` 判交集。
-- [ ] 5.6 单测：Q21 类“语料有但没召回” → true；臆造数值 + numeric_risk → numeric_conflict；无 token → null；source_chunk_ids 优先；parent/child 等价；命中截断；KB 不可用 → null。
+- [ ] 5.6 单测：Q21 类“语料有但没召回” → true；臆造数值 + numeric_risk → numeric_conflict；无 token → null；source_chunk_ids + exact → high；group/partial → medium；stale id → 降级；parent/child 等价；命中截断；KB 不可用 → null。
 
 ## 6. 确定性归因引擎
 
 - [ ] 6.1 定义根因枚举：`judge_failure` / `testset_error` / `parsing_or_chunking` / `retrieval_miss` / `rerank_or_topk` / `prompt_or_generation` / `tool_routing` / `agent_orchestration` / `inconclusive`。
 - [ ] 6.2 事实阶段 helper：`testset_conflict → testset_error`；`!fact_in_corpus → parsing_or_chunking`；`!fact_in_candidates → retrieval_miss`；`!fact_in_reranked → rerank_or_topk`；`!fact_in_final → rerank_or_topk`；否则 `prompt_or_generation`/`inconclusive`。
-- [ ] 6.3 metric-scoped 规则（design D9）：F/AR/CP/CR/CREL/NonAdvice/ToolCorrectness/TaskCompletion/StepEfficiency/AgentLoopDetection；`tool_correctness_reason=="failed"` → `inconclusive`，不是 `tool_routing`；CREL 的 `fact_in_corpus=false` → `parsing_or_chunking`/`testset_error`。
+- [ ] 6.3 metric-scoped 规则（design D9）：先判 `metric_attempted=false` → `inconclusive`（`skipped:<reason>`），再判 `judge_failed`/`testset_conflict`；`judge_failed` 仅在 attempted=true 且 NaN/error 时为 true；`tool_correctness_reason=="failed"` → `inconclusive`，不是 `tool_routing`；CREL 的 `fact_in_corpus=false` → `parsing_or_chunking`/`testset_error`。
 - [ ] 6.4 置信度：high/medium/low/inconclusive 按 design D10；`evidence` 单行、可核查。
 - [ ] 6.5 归因异常隔离：某题归因失败只把该题 attribution 写全 `inconclusive`，不影响证据写入/评测。
-- [ ] 6.6 单测：Q21 retrieval_miss；Q20 rerank_or_topk；Q19 testset_error；Q16/Q22 judge_failure；failed run 不归 tool_routing；CREL 语料缺失不归 retrieval_miss；抽象题 inconclusive；source_chunk_ids 优先；置信度分级。
+- [ ] 6.6 单测：Q21 retrieval_miss；Q20 rerank_or_topk；Q19 testset_error；Q16/Q22 judge_failure；空样本/失败样本不归 judge_failure；failed run 不归 tool_routing；CREL 语料缺失不归 retrieval_miss；抽象题 inconclusive；source_chunk_ids exact high / group medium；置信度分级。
 
 ## 7. 低分选择、落盘与汇总
 
@@ -56,9 +57,9 @@
 - [ ] 7.2 `--deepeval-only` 下只按行为分 <0.5/缺失选；没有主分时不写全部、不把缺失当 0。
 - [ ] 7.3 写盘顺序：`_save_eval_report` / `_write_langfuse_scores` 之后、`check_gate` 之前；`--gate` 的 `sys.exit` 不丢证据。
 - [ ] 7.4 写入 `data/deepeval/evidence/<run_id>/q_<q_index>.json` + `summary.json`；临时文件 + `os.replace` 原子落盘。
-- [ ] 7.5 `summary.json`：run_id / run_trace_id / qa_count / low_score_questions / evidence_files / elapsed_ms / root_cause_counts.by_metric / total / inconclusive_count；计数与逐题 attribution 对账。
+- [ ] 7.5 `summary.json`：run_id / run_trace_id / qa_count / low_score_questions（0-based）/ evidence_files（相对名）/ elapsed_ms / root_cause_counts.by_metric / total / scored_metric_count / skipped_metric_count / inconclusive_count；root_cause_counts 只统计 attempted；无低分题也写 summary（零计数 + 空 evidence_files）。
 - [ ] 7.6 `.gitignore` 增加 `data/deepeval/evidence/`；文档提示含原文、勿外发。
-- [ ] 7.7 单测：低分选择、deepeval-only 选择、summary 计数、写入失败不阻断、原子写、gate 退出前已落盘、归因失败隔离。
+- [ ] 7.7 单测：低分选择、deepeval-only 选择、summary 计数（scored/skipped/inconclusive 对账）、无低分仍写 summary、写入失败不阻断、原子写、gate 退出前已落盘、归因失败隔离。
 
 ## 8. 文档与验收
 

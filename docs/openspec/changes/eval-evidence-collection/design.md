@@ -107,13 +107,18 @@ class EvidenceRun:
 
 **gold_chunk_ids 来源优先级**：
 
-1. 题集可选字段 `source_chunk_ids` → `gold_chunk_source="testset"`、`gold_chunk_confidence="high"`；
+1. 题集可选字段 `source_chunk_ids`：
+   - `match_scope="exact"` → `gold_chunk_source="testset"`、`gold_chunk_confidence="high"`；
+   - `match_scope="group"` / `"partial"` → `gold_chunk_source="testset"`、`gold_chunk_confidence="medium"`（组级/部分匹配不是精确 gold）；
+   - 每个 id 必须能在本次 `corpus_chunks` 中找到；缺失/不属于同 doc → 记 warning，降级为探针或 null，不得假 high；
 2. 否则用 chunk 探针匹配 `reference` 的数值/文本片段 → `gold_chunk_source="probe"`、`gold_chunk_confidence="medium"`；
 3. 都不可用 → `gold_chunk_ids=null`、`gold_chunk_source=null`、`gold_chunk_confidence=null`。
 
+题集可选字段还包括 `match_scope`（`exact` / `group` / `partial`）与 `chunking_version`（或 `index_build_id`）；缺失时按 `match_scope=null` 处理，置信度不得超过 medium。
+
 **探针**：
 
-1. 取 `reference` 中的数值 token（含负号、千分位、百分号、万元/亿元等单位）与归一化文本片段（前 40 个有效字符）。
+1. 取 `reference` 中的数值 token（含负号、千分位、百分号、万元/亿元等单位）与归一化文本片段（优先“数字 + 稀有词”窗口，不只用前 40 字）。
 2. 从 `EvidenceRun.corpus_chunks` 取全量分块；该列表由 `main()` 的空库检查 `get_all_chunks` 复用，**不再二次读库**。
 3. 在 `content` 与 `parent_content` 中做归一化子串/数值匹配，记录命中的 `doc_id/chunk_id/source/page/parent_key`。
 4. 输出：
@@ -123,17 +128,29 @@ class EvidenceRun:
    - `probe_tokens`：实际用的数值/文本 token；
    - `truncated`：命中超过上限时为 `true`。
 
+**token 归一化**（探针与 `answer_mentions_fact` 共用）：
+
+- 全角数字/符号 → 半角；
+- 去掉数值中的千分位逗号与空白；
+- 统一负号（`−` / `－` → `-`）；
+- 数值键 = `规范化数字 + 单位`；单位缺失时只比数字，并在 `unit_missing` 标记；
+- 文本片段：去掉 `【公司 · 报告期】` 头、压缩空白、转小写后做子串匹配；
+- 匹配不到时写 `null`，不得猜 `false`。
+
 **parent/child 等价**：`parent_key = (doc_id, md5(parent_content))`，与 `_dedup_by_parent` 同口径。`fact_in_candidates` / `fact_in_reranked` / `fact_in_final` 用 `chunk_id OR parent_key` 判交集，避免“同 parent 的另一个 child 在 final”被误判为未命中。
 
 **testset_conflict**：
 
 - `numeric_conflict`：`true` 当参考答案有数值 token、语料中完全找不到、且题集 `numeric_risk=true`；`false` 当找到；`null` 当没有数值 token 或语料不可用。它是“数值存在性”判断，不是“谁对”的语义判断。
-- `unit_missing`：参考答案数值 token 附近没有单位（万元/亿元/%/元等）→ `true`，否则 `false`/`null`。
+- `unit_missing`：数值 token 后 4 个字符内没有单位（元/万元/亿元/%/百分点）→ `true`；有单位 → `false`；无数值 token 或语料不可用 → `null`。
 - `period_conflict`：v1 **恒为 null**；不做期间/季度语义判断（见 Non-Goals）。
 
 ### D6：裁判、评分与行为证据
 
-- 每个指标：`score`、`error`、`reason`；`reason` 只在 measure 正常返回后读取，异常分支不读 `metric.reason`。
+- 每个指标：`score`、`error`、`reason`、`metric_attempted`、`skipped_reason`。
+- `metric_attempted`：该指标是否真的调用了 `measure`。`sample_class=empty` / 跑图失败时，四主分与两项裁判诊断未调用 → `false`；`tool_correctness` 仍按轨迹评分 → `true`。
+- `skipped_reason`：`sample_class=empty` / `failed` / `null`；仅当 `metric_attempted=false` 时有值。
+- `reason` 只在 measure 正常返回后读取，异常分支不读 `metric.reason`。
 - `score_rows` 每题评分结束、下一次 `evidence.reset()` 前，把 `HookEvidence.measures` 拷进当前 `QuestionEvidence.judge`；不重解析日志。
 - 行为轴：从 `behaviour_rows` 记 `metrics` / `reasons`；`failed` 题记 `score=null` / `reason=failed`；用 `link_behavior_traces` 得到 `trace_id` / `link_method`。
 - 不把裁判 raw prompt 或完整 raw output 落盘；只记错误摘要与 reason。
@@ -199,8 +216,9 @@ data/deepeval/evidence/<run_id>/
 - `fact_in_candidates`：gold 的 `chunk_id` 或 `parent_key` 与 dense/lexical/RRF 候选有交集；
 - `fact_in_reranked`：与 rerank 后（dedup 前）有交集；
 - `fact_in_final`：与最终 contexts 有交集（`chunk_id` 或 `parent_key`）；
-- `answer_mentions_fact`：answer 中出现 gold 的数值/文本 token；无 token 时 null；
-- `judge_failed`：score 为 NaN 或 `error` 非空；
+- `answer_mentions_fact`：answer 中出现 gold 的数值/文本 token（同一归一化规则）；无 token 时 null；
+- `metric_attempted` / `skipped_reason`：指标是否真的调用过 measure；空样本/跑图失败为 false；
+- `judge_failed`：`metric_attempted=true` 且（score 为 NaN 或 `error` 非空）；`metric_attempted=false` 时恒为 false；
 - `testset_conflict`：`numeric_conflict` / `unit_missing` 任一为 true；`period_conflict` v1 恒 null；
 - `tool_called` / `call_count`：顶层轨迹。
 
@@ -208,6 +226,7 @@ data/deepeval/evidence/<run_id>/
 
 | 指标 | 规则 |
 |---|---|
+| 任意主分/裁判诊断 | `metric_attempted=false` → `inconclusive`，`evidence` 写 `skipped:<sample_class=empty|failed>`；SHALL NOT 归 `judge_failure` |
 | `faithfulness` | judge_failed → `judge_failure`；`fact_in_final=false` → 事实阶段根因（从 `fact_in_corpus` 起，不用 testset_conflict）；`fact_in_final=true` 且 `answer_mentions_fact=false` → `prompt_or_generation`；否则 `inconclusive` |
 | `answer_relevancy` | judge_failed → `judge_failure`；answer 为空/failed → `prompt_or_generation`；否则 `inconclusive` |
 | `context_precision` | judge_failed → `judge_failure`；gold 不在 candidates → `retrieval_miss`；gold 在 candidates 但不在 final → `rerank_or_topk`；gold 在 final 但分数低 → `rerank_or_topk`（排序/噪声）；否则 `inconclusive` |
@@ -270,11 +289,19 @@ testset_conflict           → testset_error
       "inconclusive": 0
     }
   },
-  "inconclusive_count": 0
+  "scored_metric_count": 12,
+  "skipped_metric_count": 2,
+  "inconclusive_count": 1
 }
 ```
 
-`by_metric` 的分母是该指标被归因的题数；`total` 是各指标 attribution 的条目总数（同一题不同指标分别计数）。
+- `scored_metric_count`：`metric_attempted=true` 且被归因的指标条目数；
+- `skipped_metric_count`：`metric_attempted=false` 的指标条目数（空样本/失败样本）；
+- `inconclusive_count`：`scored_metric_count` 中 `root_cause="inconclusive"` 的条目数；
+- `root_cause_counts` 只统计 `scored_metric_count`，不含 skipped；
+- `by_metric` 的分母是该指标被归因的条目数；`total` 是各指标 attribution 的条目总数（同一题不同指标分别计数）；
+- 没有低分题时仍写 `summary.json`：`evidence_files=[]`、计数全 0，不静默跳过；
+- `low_score_questions` 为 0-based `q_index`；`evidence_files` 为相对目录的文件名。
 
 ### D12：隐私、原子写与保留
 
@@ -298,7 +325,7 @@ testset_conflict           → testset_error
 
 | 问题 | 证据 | root_cause | 置信度 |
 |---|---|---|---|
-| 事实在语料里吗 | `fact_in_corpus` / gold chunks | `parsing_or_chunking` / `testset_error` | 探针 medium；source_chunk_ids high |
+| 事实在语料里吗 | `fact_in_corpus` / gold chunks | `parsing_or_chunking` / `testset_error` | 探针 medium；source_chunk_ids + match_scope=exact 才 high，group/partial medium |
 | 进了召回候选吗 | dense/lexical/RRF | `retrieval_miss` | medium（v6 无 gold ids） |
 | 进了 rerank 后吗 | rerank 前/后 + dedup/top-k | `rerank_or_topk` | medium |
 | 进了最终上下文吗 | final contexts（含 parent_key） | `rerank_or_topk` / `prompt_or_generation` | medium |
