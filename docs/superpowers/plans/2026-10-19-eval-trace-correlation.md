@@ -357,7 +357,7 @@ git commit -m "feat(eval): add run trace and question anchors"
 
 **Interfaces:**
 - Produces:
-  - `HookEvidence.set_run(run_trace_id: str | None) -> None`
+  - `HookEvidence.set_run(run_trace_id: str | None, judge_model: str | None = None) -> None`
   - `HookEvidence.begin_measure(*, measure_id: str, metric: str, attempt: int, trace_id: str | None, q_index: int | None) -> None`
   - `HookEvidence.end_measure(*, reason: str | None, error: str) -> dict`
   - `HookEvidence.has_active_measure -> bool`
@@ -1074,7 +1074,10 @@ def _metric_reason(metric) -> str | None:
     """只在 measure 成功后读取 reason；无属性或非字符串返回 None。"""
     if not hasattr(metric, "reason"):
         return None
-    reason = metric.reason
+    try:
+        reason = metric.reason
+    except Exception:  # noqa: BLE001  # 观测旁路，reason 读取失败不影响评分
+        return None
     if isinstance(reason, str) and reason:
         return reason
     return None
