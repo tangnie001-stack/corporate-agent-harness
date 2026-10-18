@@ -23,7 +23,8 @@
   - **检索链**：dense / lexical / RRF 候选（`chunk_id` + score）、rerank 前后（chunk_id / rank / score）、最终 contexts（chunk_id / source / page / score / order）；
   - **chunk 探针**：在 KB 全量分块中定位参考答案的数值/文本片段，产出 `gold_chunk_ids`、`fact_in_corpus` 与命中位置；
   - **工具链**：工具名、参数、结果数、迭代；`delegate_task` 只记顶层，不展开子代理；
-  - **生成/裁判**：最终 answer、每个指标的 score / error / reason（有 verdict 时一并记录）、行为轴分数与 reason。
+  - **生成/裁判**：最终 answer、每个指标的 score / error / reason（有 verdict 时一并记录）、行为轴分数与 reason；
+  - **trace 关联**：`run_trace_id` / `sut_trace_id` / `judge_calls` / 行为轴 `trace_id` 映射；这些 ID 由 `eval-trace-correlation` 提供，本 change 只消费、不生成。
 - **确定性归因摘要**：
   - 每题按指标输出 `attribution`：`root_cause` / `confidence` / `evidence`；
   - 根因枚举固定：`judge_failure` / `testset_error` / `parsing_or_chunking` / `retrieval_miss` / `rerank_or_topk` / `prompt_or_generation` / `tool_routing` / `agent_orchestration` / `inconclusive`；
@@ -44,7 +45,7 @@
 
 （无）
 
-> 实施前置：本 change 的代码建立在 `tool-correctness-diagnostic` 合并之后（复用 `tool_correctness` / `trajectory` / `expected_tools` 链路）。规格本身独立，不修改 `evaluation-pipeline` 的既有 requirement。
+> 实施前置：`eval-trace-correlation`（提供 `run_trace_id` / `trace_id` / `judge_call_id`）与 `tool-correctness-diagnostic`（提供 `tool_correctness` / `trajectory` / `expected_tools` 链路）。本 change 只消费 trace ID，不重复生成。
 
 ## Impact
 

@@ -15,6 +15,7 @@
 
 - `--evidence` 开启后，为低分/NaN/失败/工具或行为异常的题生成逐题证据 JSON。
 - 证据覆盖：题集出处、gold chunk、query 路径、dense/lexical/RRF 候选、rerank 前后、最终 contexts、工具调用、answer、裁判 score/error/reason、行为分/reason。
+- 证据带 **trace 关联**：`run_trace_id` / `sut_trace_id` / `judge_calls` / 行为轴 `trace_id` 映射；ID 来自 `eval-trace-correlation`，本 change 只消费。
 - 产出**逐指标**的确定性归因：`root_cause` / `confidence` / `evidence`；无法判定写 `inconclusive`。
 - `summary.json` 给出根因分布（按指标与总计），回答“这一轮整体最该修哪一层”。
 - 证据采集/归因失败不影响评测主流程、主分、门禁、CSV、DB、Langfuse。
@@ -28,6 +29,7 @@
 - 不扩测试集、不生成新题、不改出题器；`source_chunk_ids` 可选，缺失时用探针。
 - 不把证据上传 Langfuse、不新增 API。
 - 不展开子代理内部轨迹（顶层工具调用之外不可观测的部分记 null/unknown）。
+- 不生成 trace ID：`run_trace_id` / `trace_id` / `judge_call_id` 由 `eval-trace-correlation` 提供；本 change 只读取并写入证据。
 
 ## Decisions
 
@@ -95,6 +97,16 @@
 - 不解析/持久化 `verbose_logs` 全文；需要时用 `trace_id` 查 Langfuse/日志。
 - 行为轴：从 `behaviour_rows` 记 `metrics` 与 `reasons`；`failed` 题记 `score=null` / `reason=failed`。
 - 不把裁判 raw prompt 或完整 raw output 落盘；只记错误摘要与 reason。
+
+### D6.1：Trace 关联只消费，不生成
+
+- 证据 `trace` 段从 `eval-trace-correlation` 读取：
+  - `run_trace_id`（整轮）；
+  - `sut_trace_id`（该题 `trace_id`）；
+  - `judge_calls`（`judge_call_id` / metric / attempt / model / status / finish_reason / tokens / latency / reason / error）；
+  - 行为轴映射（`trace_id` + `link_method`）。
+- 取不到时写 null；SHALL NOT 在本 change 里重新生成/猜测 trace ID。
+- 证据写入 SHALL NOT 改变 trace ID 的生成/日志行为；trace change 关闭/失败时，证据仍可落盘，trace 字段为 null。
 
 ### D7：低分选择与落盘
 

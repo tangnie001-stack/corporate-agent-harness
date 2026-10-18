@@ -39,6 +39,7 @@
 - `retrieval` SHALL 含 dense / lexical / RRF / rerank before / rerank after / dedup / top-k / final contexts 的快照与各阶段 `count`、`failed`、`truncated`。
 - `tool_calls` SHALL 含工具名、参数、结果数、迭代数；`delegate_task` 只记顶层。
 - `judge` SHALL 含每个指标的 `score`、`error`、`reason`；行为轴 SHALL 含逐题分数与 reason。
+- `trace` SHALL 含 `run_trace_id`、`sut_trace_id`、`judge_calls`（`judge_call_id` / metric / attempt / model / status / finish_reason / tokens / latency / reason / error）与行为轴 `trace_id`/`link_method`；这些 ID 由 `eval-trace-correlation` 提供，SHALL NOT 在本 change 重新生成；缺失时写 null。
 - `facts` SHALL 含 `fact_in_corpus`、`fact_in_candidates`、`fact_in_reranked`、`fact_in_final`、`answer_mentions_fact`、`testset_conflict`、`judge_failed`、`tool_called`；无法判定时写 null。
 - `attribution` SHALL 按指标输出 `root_cause` / `confidence` / `evidence`。
 
@@ -51,6 +52,11 @@
 
 - **WHEN** 评测路径未执行 query rewrite，或指标未暴露 reason
 - **THEN** 对应字段 SHALL 为 `null`，SHALL NOT 用工具 query 冒充改写结果
+
+#### Scenario: Trace ids are absent
+
+- **WHEN** `eval-trace-correlation` 未提供 trace ID（未合并/关闭/失败）
+- **THEN** `trace` 段 SHALL 写 null 字段，证据与归因 SHALL 仍照常生成，SHALL NOT 伪造或重新生成 trace ID
 
 #### Scenario: Delegated retrieval is not fabricated
 
