@@ -169,6 +169,7 @@ class Event(str, Enum):
     TESTSET_SELF_CONTAINED_DROPPED = "testset self-contained dropped"
     METRIC_RETRY = "metric retry"
     JUDGE_CALL = "judge call"
+    JUDGE_HTTP = "judge http"
     KB_LOOKUP = "kb lookup"
     KB_NOT_FOUND = "kb not found"
     SEARCH_START = "search start"
