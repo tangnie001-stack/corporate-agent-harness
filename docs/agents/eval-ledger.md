@@ -52,8 +52,9 @@
 |---|---|---|---|---|---|---|---|
 | #7（v6，22 题） | `deepeval_eval_20261018_041404` | 22 | 22/22 | 1.0000 | 0 | 0 | 0 |
 
-- **数字来源**：用 `deepeval_eval_20261018_041404.csv` 中既有的 **22 条轨迹** + v6 题集 `expected_tools` 标签做**离线重放**（`ToolCorrectnessMetric(model=Fake(), async_mode=False, eval_mode="llm")`），**不是一次新的 agent 运行**；重放输出 `{'n': 22, 'fully_matched': 22, 'mean': 1.0}`。
-- 该轮 CSV 的 `tool_correctness` 列在运行时尚为空（实现晚于本轮运行）；重放证明按当前口径 22 题均完全命中，因此 `scored=22`、`no_label/failed/metric_error=0`。
+- **计数口径（仅 `tool_correctness`）**：`scored` = 有数值工具分的行；`no_label` = 缺 `expected_tools` 的行；`failed` = 跑图失败预检命中（`failed` 标记 / `[ERROR]` / 空回答）；`metric_error` = 工具指标自身抛错 / 返回 `None` / 不可用。四类互斥，优先级 `failed` > `no_label` > `metric_error` > `scored`。这四个计数与运行台账 #7 的两个主指标 `NaN`（Q16 `context_recall`、Q22 `faithfulness` 裁判失败）无关，互不影响。
+- **数字来源**：用 `deepeval_eval_20261018_041404.csv` 中既有的 **22 条轨迹** + v6 题集 `expected_tools` 标签做**离线重放**（`ToolCorrectnessMetric(model=Fake(), async_mode=False, eval_mode="llm")`），**不是一次新的 agent 运行**；重放**直接调用 DeepEval 指标，未经 `_score_tool_correctness` 封装**（故不含失败预检与标签去重）；本批 22 题无失败、无重复标签，结论等价。重放输出 `{'n': 22, 'fully_matched': 22, 'mean': 1.0}`。
+- 该轮 CSV 的 `tool_correctness` 列在运行时尚为空（实现晚于本轮运行）；重放证明该批 22 题均完全命中，因此 `scored=22`、`no_label/failed/metric_error=0`。
 - **均值口径**：`Tool correctness mean (scored)` 覆盖**全部样本**（含 `empty` 样本，其工具选择照常评分），与只统计 `pure_kb` 的主分不可横向比较（报告段已标 `scored`）。
 
 ## 最近一轮逐题异常（#4，`ragas_eval_20261015_084734`）
