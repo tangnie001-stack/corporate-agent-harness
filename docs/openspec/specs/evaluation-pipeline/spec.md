@@ -5,30 +5,37 @@ TBD - created by archiving change mvp-core-features. Update Purpose after archiv
 ## Requirements
 ### Requirement: QA test pair coverage
 
-评测测试集 SHALL 仍然**按知识库**从该库文档生成（而非维护一份固定全局 QA 集），且评测 SHALL 默认载入该知识库**最新版本**的测试集。**但本次 `--generate` 的 CLI 驱动路径 SHALL 显式失败**（原因：出题链依赖 ragas 0.4.x 的 `default_transforms_for_prechunked`，而本次评测侧统一下移到 `0.3.9`），SHALL 给出前迁路径（DeepEval `Synthesizer`）而非裸 `ImportError`。
+评测测试集 SHALL 仍然**按知识库**从该库文档生成（而非维护一份固定全局 QA 集），且评测 SHALL 默认载入该知识库**最新版本**的测试集。**但本次 `--generate` 的 CLI 驱动路径 SHALL 显式失败**（原因：出题已迁移到 DeepEval `Synthesizer`），SHALL 给出前迁路径而非裸 `ImportError`。
 
-**口径（明写，避免与主规格既有条款冲突）**：主规格原条款要求"`--generate --size N` SHALL 写出 N 条"，本 delta 将其**改为"显式失败 + 指引"**；出题**能力**（代码）保留，但**不经 CLI 提供**，待后续 change 迁移到 DeepEval `Synthesizer`（见「Testset generation exercises every query path...」的 v6 接手点）。
+#### Scenario: Evaluation loads a fixed-version testset
 
-#### Scenario: Generate a test set for a knowledge base
-
-- **WHEN** 用户运行 `python -m src.cli.eval_deepeval --kb-id <uuid> --generate --size 20`
-- **THEN** CLI SHALL 以**明确错误信息退出**（说明依赖版本原因与**前迁路径**），SHALL NOT 写出测试集文件、SHALL NOT 抛裸 `ImportError`
-
-#### Scenario: Evaluate against the latest test set
-
-- **WHEN** 用户不带 `--generate` 运行评测
-- **THEN** 系统 SHALL 载入该知识库最新的既有版本测试集（本次为 `testset_<kb>_v5.json`）
+- **WHEN** 运行评测
+- **THEN** 输入 SHALL 为既有 `testset_<kb>_v<N>.json`，且不触发出题生成
 
 ### Requirement: Evaluation report archival
 
-All RAGAS evaluation results SHALL be saved under the configured report directory (`RAGAS_REPORT_DIR`, default `data/ragas/reports/`) as a timestamped CSV file `ragas_eval_<timestamp>.csv` together with a sibling Markdown summary `ragas_eval_<timestamp>.md`.
+All evaluation results SHALL be saved under the configured report directory (`EVAL_REPORT_DIR`, default `data/deepeval/reports/`) as a timestamped CSV file `deepeval_eval_<timestamp>.csv` together with a sibling Markdown summary `deepeval_eval_<timestamp>.md`.
 
 Evaluation SHALL be invoked via `python -m src.cli.eval_deepeval`. The Markdown summary SHALL list the date and configuration, the QA pair count, per-question metric scores, and aggregate metric averages.
+
+When `--deepeval-only` is set, only the Markdown summary SHALL be written (no CSV), and it SHALL NOT contain four-metric rows or main-score lines.
+
+Historical `eval_report.report_path` rows pointing at the retired `data/ragas/` directory SHALL NOT be rewritten; the field has no consumer. The runbook and the evaluation ledger SHALL note that those historical paths are stale.
 
 #### Scenario: Evaluation saves CSV and Markdown
 
 - **WHEN** the user runs `python -m src.cli.eval_deepeval --kb-id <uuid>`
 - **THEN** a CSV file and a Markdown summary SHALL be created under the configured report directory
+
+#### Scenario: Historical report paths are not migrated
+
+- **WHEN** the data directory is renamed to `data/deepeval/`
+- **THEN** historical `eval_report.report_path` values SHALL remain unchanged, and the runbook/ledger SHALL state they are stale and have no consumer
+
+#### Scenario: DeepEval-only writes Markdown only
+
+- **WHEN** the user runs `python -m src.cli.eval_deepeval --kb-id <uuid> --deepeval-only`
+- **THEN** only the Markdown summary SHALL be written; no CSV SHALL be created
 
 ### Requirement: Evaluation passes without crash on empty KB
 The evaluation system SHALL handle the case where the knowledge base has no documents gracefully, logging a clear error message and exiting with a non-zero exit code.
@@ -39,15 +46,17 @@ The evaluation system SHALL handle the case where the knowledge base has no docu
 
 ### Requirement: NLI context uses shared entity rendering
 
-The RAGAS evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as production) for the NLI context, so entity metadata (company / report_period / sec_code / person / currency / report_type) present in chunk metadata SHALL be visible to the faithfulness NLI check.
+The evaluation SHALL use `RAGContext.to_prompt_text()` (the same rendering as production) for the context shown to the native `Faithfulness` judge, so entity metadata (company / report_period / sec_code / person / currency / report_type) present in chunk metadata SHALL be visible to it.
 
 #### Scenario: Faithfulness context includes time anchor
+
 - **WHEN** a table chunk has `entities={company: 东软集团, report_period: 2025年第一季度}` and the statement references "2025年第一季度"
-- **THEN** the NLI context SHALL include the `report_period` entity, giving the statement an anchor to verify against
+- **THEN** the judge's context SHALL include the `report_period` entity, giving the statement an anchor to verify against
 
 #### Scenario: Evaluation output unchanged for empty entities
+
 - **WHEN** evaluation runs against a KB whose chunks have no entity metadata
-- **THEN** the NLI context SHALL match the pre-change format, and the evaluation SHALL still produce a report without crashing
+- **THEN** the context SHALL match the pre-change format, and the evaluation SHALL still produce a report without crashing
 
 ### Requirement: Current date in evaluation context
 
@@ -125,45 +134,29 @@ system prompt SHALL 在**生产路径与评估路径**下都包含当前日期�
 
 ### Requirement: Judge client is constructed with an explicit sampling and timeout policy
 
-裁判 SHALL 以**显式**参数构造，且**模型与端点 SHALL 显式指定**——SHALL NOT 依赖 DeepEval RAGAS 桥的内建默认模型（默认为 `gpt-3.5-turbo`，该模型已停服）。**可核验方式**：审阅每个桥度量构造处的实参，`model=` SHALL 非空。
+裁判 SHALL 以**显式**参数构造，且**模型与端点 SHALL 显式指定**——SHALL NOT 依赖指标库的内建默认模型（DeepEval 默认 `gpt-3.5-turbo` 已停服）。**可核验方式**：审阅每个指标构造处的实参，`model=` SHALL 非空。
 
-裁判采样温度 SHALL 接受由 ragas 按 `n` 分档决定的取值：`n=1` 的三个指标（faithfulness / context_precision / context_recall）为 **0.01**；`answer_relevancy`（`strictness` 默认 3，即 `n=3`）为 **0.3**。该取值**不由本项目控制**（ragas 的 `LangchainLLMWrapper` 会改写底层模型的 temperature 属性），本项目 SHALL NOT 以配置声称"温度为 0"。
+裁判采样温度 SHALL 显式为 **`temperature=0`**（本项目管理、可复现），SHALL NOT 传入 `top_p`。**理由**：换用 DeepEval 原生指标后，不再有 `LangchainLLMWrapper` 按 `n` 改写温度；若不显式设 0，会落到 provider/`LLM_KWARGS` 默认值（生产实测 0.6），使裁判 JSON 判定不可复现。
 
-裁判 SHALL **经项目既有 provider 层构造**（`build_chat("judge", …)`，其 `**overrides` 透传给 `ChatOpenAI`），SHALL NOT 在 `src/` 内直写 `ChatOpenAI` 并硬编码端点 / 密钥。**可核验方式**：审阅裁判构造处，provider 解析（`judge` 角色 → `RAGAS_PROVIDER` / `RAGAS_LLM_MODEL`）SHALL 生效，且无硬编码 base_url / api_key。
+裁判 SHALL **经项目既有 provider 层构造**（`build_chat("judge", …)`，其 `**overrides` 透传给 `ChatOpenAI`），SHALL NOT 在 `src/` 内直写 `ChatOpenAI` 并硬编码端点 / 密钥。**可核验方式**：审阅裁判构造处，provider 解析（`judge` 角色 → `JUDGE_PROVIDER` / `JUDGE_MODEL`）SHALL 生效，且无硬编码 base_url / api_key。
 
-**裁判的 HTTP client SHALL 经 `http_async_client` 传入**（含细粒度超时与请求级 hooks），SHALL NOT 只传 `http_client`——ragas 的裁判调用走**异步**，而 langchain 的 `http_client` **只喂同步 client**（`langchain_openai/chat_models/base.py:806`；异步用 `:1273`）⇒ 只传同步字段会让超时与 hooks 双双失效。**可核验方式**：审阅构造实参含 `http_async_client=`。
+**裁判的 HTTP client SHALL 经 `http_async_client` 传入**（含细粒度超时与请求级 hooks），SHALL NOT 只传 `http_client`——原生指标的 `a_measure` 走**异步**，而 langchain 的 `http_client` **只喂同步 client** ⇒ 只传同步字段会让超时与 hooks 双双失效。**可核验方式**：审阅构造实参含 `http_async_client=`。
 
-**思考开关 SHALL 经 `thinking=` 传入**（由 `thinking_extra_body` 按 provider 归一化，`src/infra/llm/provider/thinking.py:8`），SHALL NOT 硬写 provider 专有键（如 `extra_body={"enable_thinking": …}`）——硬写会在非 dashscope 判官上静默失效或 400。
+**思考开关 SHALL 经 `thinking=` 传入**（由 `thinking_extra_body` 按 provider 归一化），SHALL NOT 硬写 provider 专有键（如 `extra_body={"enable_thinking": …}`）。
 
-裁判构造 SHALL NOT 传入 `temperature`（温度由 ragas 决定，见下）；报告 SHALL NOT 出现"裁判 temperature=0"的表述。
+裁判 SHALL 配置显式请求超时，取值 SHALL 足以覆盖慢速推理模型；并 SHALL 关闭 SDK 自动重试（`max_retries=0`），重试由评测层有界负责（见「Metric failures」）。
 
-本项目 SHALL NOT 依赖 ragas 的 `bypass_temperature` 开关来"拿回温度"。**理由（订正；上一稿"桥走同步路径所以开关无效"是错的）**：检查语句确实在 **`agenerate_text`（异步，`ragas/llms/base.py:269` 起，判断 `:281`）**、同步 `generate_text`（`:217` 起）不检查；但桥的 `measure()` 虽是同步 API，内部 `ragas.evaluate` 经 `asyncio.run(_async_wrapper())`（`evaluation.py:433/456`）提交 **异步** `metric.single_turn_ascore`（`:240`）⇒ **确实走到异步路径**，开关**会被检查**。拿不回温度 0 的真正原因是：`ragas.evaluate` 用 `LangchainLLMWrapper(llm, run_config=…)`（`evaluation.py:151`）重新包装裁判，`bypass_temperature` 默认 `False` 且**桥不暴露该参数**。**可核验方式**：读 `evaluation.py:151/240` 与 `base.py:281`。
-
-温度分档的**事实与不可控性** SHALL 记入报告元数据与评测台账，使跨轮比对者可知该项差异。
-
-裁判 SHALL 配置显式请求超时，取值 SHALL 足以覆盖慢速推理模型。
-
-裁判构造 SHALL NOT 传入 `top_p`（部分模型对 `top_p` 与采样参数组合以 400 拒绝）。**（原条款保留）**
-
-裁判模型选型 SHALL 以「结构化输出可靠性」为判据，即 SHALL 有对候选裁判的**活体抽样验证**（覆盖裁判实际使用的**每个指标**），而非仅以「请求未报错」为准。**（原条款保留：判官输出退化 → `NaN` 正是本 change 的核心痛点，该验证义务不因换入口而消失）**
-
-理由（记明，避免后人误判）：0.01 是有意的工程折中——无限接近确定性，同时避开部分供应商对 `temperature=0` 的特殊逻辑；`answer_relevancy` 取 0.3 是因为该指标需要"生成多个多样化问题再取均值"，压到近 0 会使指标退化。
+裁判模型选型 SHALL 以「结构化输出可靠性」为判据，即 SHALL 有对候选裁判的**活体抽样验证**（覆盖裁判实际使用的**每个指标**），而非仅以「请求未报错」为准。
 
 #### Scenario: Sampling parameters are explicit
 
 - **WHEN** 构造裁判客户端
-- **THEN** 构造 SHALL NOT 传 `temperature`（温度由 ragas 决定，见上）、且 SHALL NOT 传 `top_p`
-  （**订正**：原场景 THEN 为"SHALL 传 `temperature=0`"，与本次口径冲突 ⇒ 场景随口径一并改写，SHALL NOT 静默删除。）
+- **THEN** 构造 SHALL 显式传 `temperature=0`，且 SHALL NOT 传 `top_p`
 
-#### Scenario: Every bridge metric is constructed with an explicit model
+#### Scenario: Every native metric is constructed with an explicit model
 
-- **WHEN** 构造任一桥度量（`RAGAS*Metric`）
-- **THEN** 构造实参 SHALL 显式传入 `model=`，SHALL NOT 走 `gpt-3.5-turbo` 默认值
-
-#### Scenario: Temperature regime is recorded, not claimed as zero
-
-- **WHEN** 产出一次评测报告
-- **THEN** 报告元数据与台账 SHALL 记录"温度由 ragas 分档（0.01 / 0.3）、本项目不可控"，SHALL NOT 出现"裁判 temperature=0"的表述
+- **WHEN** 构造任一四指标度量（`AnswerRelevancyMetric` / `FaithfulnessMetric` / `ContextualPrecisionMetric` / `ContextualRecallMetric`）
+- **THEN** 构造实参 SHALL 显式传入 `model=`（`BridgeDeepEvalLLM`），SHALL NOT 走 `gpt-3.5-turbo` 默认值
 
 #### Scenario: Judge is built through the project provider layer
 
@@ -186,60 +179,70 @@ system prompt SHALL 在**生产路径与评估路径**下都包含当前日期�
 
 评测 SHALL NOT 因单个指标失败而丢弃该样本行；SHALL NOT 以 `NaN` 静默代替失败（须与「正常计算出的值」可区分）。
 
-**桥特有条款（`NaN` 只分「掩码」与「非掩码」；**SHALL NOT 设计可归因的子分类**）**：
+**两类 `NaN`（只分「掩码」与「非掩码」；SHALL NOT 设计可归因的子分类）**：
 
-- **(a) 掩码跳过型**：`empty` 样本的 context 指标被项目主动掩码为 `NaN`（`src/cli/eval_scoring.py:86-89`）。**天然不在纯 KB 分母里**（`empty` 不属于纯 KB 样本）⇒ 无需任何归因即被排除。
-- **(b) 非掩码型（=「指标产出型」：合法缺值 **与** 裁判失败混在一起，出口不可区分）**：一方面 ragas 会**合法**返回 `NaN`（`faithfulness` 在答案无可校验陈述时，`ragas/metrics/_faithfulness.py:186-192/211`；`answer_relevancy` 在"生成问题全空"时，`_answer_relevance.py:118-127`）；另一方面桥调 `ragas.evaluate(...)` 时**未传 `raise_exceptions`**、ragas 该参数**默认 `False`**（`ragas/evaluation.py:68/344`），`ragas/executor.py:64-84` 对**任何** `Exception` 都 `return np.nan` ⇒ **超时 / 429 / 403 / 连接失败 / 输出不可解析**等失败也被吞成 `NaN`，且**桥不向上抛异常**。
+- **(a) 掩码跳过型**：`empty` 样本的四指标与三项诊断被项目主动掩码为 `NaN`/`null`。天然不在纯 KB 分母里。
+- **(b) 非掩码型**：仅表示**裁判异常/解析失败/超时**等失败。DeepEval 4.2.9 的原生指标在"无 verdict / 无可校验陈述"时**不返回 `NaN`**——`Faithfulness` / `AnswerRelevancy` 返回 **1.0**（`score_qag_verdicts(empty_score=1)`），`ContextualPrecision` / `ContextualRecall` / `ContextualRelevancy` 返回 **0**。因此 SHALL NOT 再把"合法缺值"当作 `NaN` 的来源，也 SHALL NOT 依据请求级日志做子分类（该分类不可实现）。
 
-**SHALL NOT 依据请求级日志把 (b) 再切成"合法缺值"与"裁判失败"（前稿方案已否决）**：桥把每个指标压成**一个 `float`**（`deepeval/metrics/ragas.py:92-97` 的 `scores[name][0]`），返回值不可判别；而唯一的旁证——HTTP 200 的 OpenAI envelope——**永远是合法 JSON**，主因失败（截断 / 垃圾内容）与"生成问题全空"在 HTTP 层与正常完成**同形**（2xx + `finish_reason=stop`）⇒ 该分类**不可实现**，做了只会把主因失败误判为"合法缺值"而放过（正是本次整改要根除的错）。
+因此评测 SHALL：① 让 `NaN` 显式可见、且**掩码 / 非掩码在报告中标记不同**（SHALL NOT 静默计入均分）；② **单独统计非掩码 `NaN` 计数**并在报告中呈现；③ **以「非掩码 `NaN`」为判据执行有界重试**（`EVAL_METRIC_MAX_ATTEMPTS`）；**限流类（HTTP 429 / `openai.RateLimitError`）SHALL 与其它失败一样由外层有界重试**，退避 SHALL 为指数 + jitter 并优先采用 `Retry-After`；裁判 SDK 重试 SHALL 固定为 0（`max_retries=0`），避免与外层叠乘；④ 失败留证 SHALL 由**框架内部请求级日志**承载（见「Framework-internal LLM calls…」）；**该日志只做留证，SHALL NOT 被当作分类依据**；⑤ 若该日志完全不可用，报告 SHALL **显式标注"请求级日志不可用"**。
 
-因此评测 SHALL：① 让 `NaN` 显式可见、且**掩码 / 非掩码在报告中标记不同**（SHALL NOT 静默计入均分）；② **单独统计非掩码 `NaN` 计数**并在报告中呈现；③ **以「非掩码 `NaN`」为判据执行有界重试**（`RAGAS_METRIC_MAX_ATTEMPTS` 保留；判据 SHALL NOT 沿用 `except Exception` —— 桥下它永不触发）；**唯一例外：限流类（= HTTP 429 / `openai.RateLimitError`）SHALL NOT 触发外层重试**（ragas 框架层已对该类重试 ≤10 次，见「RAGAS dependency is pinned to the 0.3 line」的复用条款，外层再叠会 10×3 放大；429 可由 hooks 的状态码判定；**403 额度类不属该列**，`openai/_client.py:694/706`，仍由外层重试）；④ 失败留证 SHALL 由**框架内部请求级日志**承载；**当前落地**记录请求状态与响应可解析性（`status` / `body_bytes` / `json_ok` / `finish_reason`），**仅失败时产日志行**；**目标形态**另含响应体摘要（主因失败是 HTTP 200 + 畸形响应体；未落地项见「Framework-internal LLM calls are observable by trace id」条的「落地现状」）；**该日志只做留证，SHALL NOT 被当作分类依据**；⑤ 若该日志完全不可用，报告 SHALL **显式标注"请求级日志不可用"**（NaN 率统计不依赖它，故门禁仍可判，但归因能力下降须可见）。
+**失败预检**：跑图失败或未检索到材料（`sample_class == empty`，回答可能是 `[ERROR] ...` 而非空串）的样本在进入指标评分前 SHALL 直接记 `NaN` 并跳过该题全部指标（含诊断），SHALL NOT 让 `[ERROR]` 文本进入 `NonAdvice`，也 SHALL NOT 触发无意义的多次重试。诊断指标不进主分，失败时 SHALL 直接记 `NaN`/`null`，SHALL NOT 重试。
 
-**接受的代价（明写，勿当 bug）**：合法缺值型 `NaN`（典型为 `faithfulness` 无陈述）会被计入分子、并触发一次有界重试（对该情形是**无收益的浪费**，不是错误）。阈值 10%（76 格允许 7 格）即为吸收该水位而设；**v6 定稿后的首轮全量**跑出真实分布后 SHALL 复核该假设并定稿（v5 分布仅作基线，不用于标定，见 design D8）。
+**错误信息可见**：`score_rows` 的 `error` SHALL 同时写入 Markdown 表格与 `detail_json` 条目；仅写 CSV 不满足"样本行携带失败信息"。
+
+**接受的语义（明写，勿当 bug）**：原生指标对空 verdict 返回 1.0 / 0 而非 `NaN`，主分在空陈述样本上可能偏乐观；本 change 接受该原生语义，不自行改写 verdict 解析。NaN 率只度量失败面；阈值 10%（76 格允许 7 格）为经验初值，**v6 定稿后的首轮全量**跑出真实分布后 SHALL 复核并定稿（v5 分布仅作基线，不用于标定）。
 
 `NaN`（指标出不来值）与样本类别 `empty`（未检索到材料）SHALL 被区分为**两种不同的跳过语义**。
 
 #### Scenario: A failed metric stays visible on its row
 
 - **WHEN** 某样本的某个指标调用失败
-- **THEN** 该样本行 SHALL 仍出现在报告中，且 SHALL 携带该失败的错误信息
+- **THEN** 该样本行 SHALL 仍出现在报告中，且 Markdown 表格与 `detail_json` 条目 SHALL 都携带该失败的错误信息
 
 #### Scenario: No row is silently dropped
 
 - **WHEN** 评测 N 条样本
 - **THEN** 报告 SHALL 含 N 行（不因失败少行）
 
-#### Scenario: A bridge NaN stays visible and is counted
+#### Scenario: A non-masked NaN stays visible and is counted
 
-- **WHEN** 某纯 KB 样本的某个桥度量返回 `NaN`
-- **THEN** 该行 SHALL 携带该失败信息，该非掩码 `NaN` SHALL 被计数，且该值 SHALL NOT 参与主分均值
+- **WHEN** 某纯 KB 样本的某个指标返回 `NaN`
+- **THEN** 该行 SHALL 携带失败信息，该非掩码 `NaN` SHALL 被计数，且 SHALL NOT 参与主分均值
 
 #### Scenario: Masked NaN is excluded by the denominator
 
-- **WHEN** 某 `empty` 样本的 context 指标被掩码为 `NaN`
-- **THEN** 该格 SHALL NOT 计入 NaN 率分子/分母（`empty` 不属于纯 KB），且 SHALL 在报告中以**掩码**语义标记（与非掩码 NaN 不同）
+- **WHEN** 某 `empty` 样本的四指标与诊断指标被掩码为 `NaN`/`null`
+- **THEN** 该格 SHALL NOT 计入 NaN 率分子/分母，且 SHALL 在报告中以**掩码**语义标记
 
 #### Scenario: No sub-classification of non-masked NaN is attempted
 
 - **WHEN** 审阅实现
-- **THEN** SHALL NOT 出现"按请求级日志把 NaN 分为合法缺值与裁判失败"的逻辑（该分类不可实现，见上）；非掩码 `NaN` SHALL 一律计入分子并按③重试（429 除外）
+- **THEN** SHALL NOT 出现"按请求级日志把 NaN 分为合法缺值与裁判失败"的逻辑
 
-#### Scenario: Judge failure and empty sample are distinguishable
+#### Scenario: Empty verdicts follow native semantics
 
-#### Scenario: Judge failure and empty sample are distinguishable
-
-- **WHEN** 一行因指标出不了值（非掩码 `NaN`）、另一行因未检索到材料被掩码
-- **THEN** 两者 SHALL 以不同的标记出现在报告中
+- **WHEN** 某样本的回答抽取不出可校验陈述 / verdict
+- **THEN** `Faithfulness` / `AnswerRelevancy` SHALL 采用原生返回值 1.0，CP/CR 采用 0，SHALL NOT 由项目改写成 `NaN`
 
 #### Scenario: Retry is keyed on the non-masked NaN
 
-- **WHEN** 某题某指标首次返回非掩码 `NaN`（且不是限流类 429）
-- **THEN** 评测 SHALL 按 `RAGAS_METRIC_MAX_ATTEMPTS` 重试该指标（判据为非掩码 `NaN`），SHALL NOT 因"没有异常"而跳过重试
+- **WHEN** 某题某四指标首次返回非掩码 `NaN`
+- **THEN** 评测 SHALL 按 `EVAL_METRIC_MAX_ATTEMPTS` 重试该指标（判据为非掩码 `NaN`）
 
-#### Scenario: Rate-limit failure is not retried by the outer layer
+#### Scenario: Rate-limit failures are retried by the outer layer
 
-- **WHEN** 某格的失败证据是 HTTP 429（∈ `openai.RateLimitError`）
-- **THEN** 外层 SHALL NOT 重试该格（ragas 框架层已重试该类 ≤10 次），SHALL NOT 形成 10×3 放大
+- **WHEN** 某格失败于 HTTP 429
+- **THEN** 外层 SHALL 按 `EVAL_METRIC_MAX_ATTEMPTS` 有界重试，退避为指数 + jitter 并优先采用 `Retry-After`；SDK 重试 SHALL 为 0
+
+#### Scenario: Failed generation skips scoring without retries
+
+- **WHEN** 某题跑图失败或未检索到材料（`sample_class == empty`，回答可能是 `[ERROR] ...`）
+- **THEN** 该题四指标与诊断 SHALL 直接记 `NaN`/`null`，SHALL NOT 触发重试，`[ERROR]` 文本 SHALL NOT 进入 `NonAdvice`
+
+#### Scenario: Diagnostic failures are not retried
+
+- **WHEN** 某诊断指标失败
+- **THEN** 该项 SHALL 直接记 `NaN`/`null`，SHALL NOT 触发 `EVAL_METRIC_MAX_ATTEMPTS` 重试
 
 ### Requirement: Evaluation retrieval mirrors production scope
 
@@ -265,141 +268,82 @@ system prompt SHALL 在**生产路径与评估路径**下都包含当前日期�
 
 `answer_correctness` SHALL 不再参与 `overall_score`，且 `kb_eval` API SHALL NOT 再暴露该指标。
 
-判定「通过」的阈值 SHALL 由**单一常量**提供 —— SHALL NOT 在评测落库与前端各硬编码一份。阈值取值 SHALL 在 **v6 定稿后**重新标定（换尺子后历史阈值作废；v5 分布仅作基线，见 design D8）。
+判定「通过」的阈值 SHALL 由**单一常量**提供 —— SHALL NOT 在评测落库与前端各硬编码一份。阈值取值 SHALL 在 **v6 定稿后**重新标定（换尺子后历史阈值作废；v5 分布仅作基线）。
 
-跨口径分数 SHALL NOT 被直接比较：报告与台账 SHALL 标注「口径版本」，历史（modern-0.4.x）与本次（bridge-0.3.x）的分数不得作为回归判据。
+**Baseline 语义（新口径首轮）**：首次以 `deep-eval-native` 口径跑出的全量 SHALL 以 `run_type="baseline"` 落库；`run_type` SHALL 由 CLI 参数 `--run-type` 写入（默认 `manual`），SHALL NOT 由"是否首轮"自动推断。**v6 阈值标定前，所有新口径全量运行 SHALL 显式传 `--run-type baseline`**；`manual` 仅用于阈值标定后的常规回归。`--run-type baseline` 与 `--gate` SHALL 互斥（启动即报错）。
 
-**行为轴不进主分、不进门禁**：`overall_score` 与门禁判据 SHALL 只由上述**四指标**构成；行为指标为**独立观测**，其失败 SHALL 单独标记、SHALL NOT 影响该题主分。
+`kb_eval` 对 `run_type="baseline"` SHALL 返回 `passed=None`（SHALL NOT 用未标定的阈值判红/绿），该转换 SHALL 落在 API 响应组装层（`_build_eval_payload`），SHALL NOT 依赖把数据库 `passed` 写成 `NULL`（该列非空）。前端 SHALL 以**三态**渲染 **KB 评测徽标**：`passed=null` 显示"未标定"（灰色，SHALL NOT 显示 ✓/✗），`true` 显示通过，`false` 显示不通过；前端 SHALL NOT 用 `overall_score >= 阈值` 自行重算通过态。**分块质量弹窗**（`showEvalModal`）不是 KB 评测消费者，其布尔 `passed` 与 0.70 阈值 SHALL NOT 被本 change 改动。
 
-**阈值标定规则与空窗期**：阈值 SHALL 在 **v6 定稿后**重新标定，且 SHALL 写死规则与空窗期行为——① **空窗期**：首次全量评测 SHALL 以 `--no-gate` 运行，只产出分布、不作通过/不通过判定（SHALL NOT 拿旧尺子的 `EVAL_PASS_THRESHOLD` 判新尺子）；② **标定**：取"纯 KB 且非 NaN 样本分布"的**保守下界**（建议不低于均值 ×0.9 且不低于历史同名阈值 ×0.9，具体在 **v6 分布**出来后定稿；v5 分布不用于标定，见 design D8）；③ 标定后 SHALL 同轮复核落库 `passed` 与 API 下发阈值同源。
+API 返回四项分值与 `overall_score` 时 SHALL 用 `is not None` 判断，SHALL NOT 用真值判断——原生指标合法的 `0.0` 不得被转成 `null`（否则前端会把"真实 0 分"当成"没有评测"而隐藏徽标）。
 
-**`answer_correctness` 退出的消费方**：SHALL 逐项处置——`kb_eval` API 响应字段、`RAGAS_METRIC_COLUMNS` 常量与相关注释、报告/stdout 的均值行与断言、受影响的测试、**契约文档 `docs/agents/api_contract.md`（逐处：`:733` 示例响应、`:744` 口径说明、`:909` `overall_score` 定义、`:912` `detail_json` 说明、`:1353` 综合分、`:1379` 指标列、`:1400` `avg`——CLAUDE.md 要求改响应结构须同步该文档）**、**`docs/agents/ragas-eval-ledger.md` 表头**。**台账改法（避免破坏历史行）**：表头 SHALL **新增「口径版本」列**；`answer_correctness` 列 SHALL **保留**（历史行不动，新行该列留空 / `N/A`）——SHALL NOT 删列（删列会让表头列数与历史行单元格数不等、Markdown 表破损，见 design D9「历史行不改」）。**前端不受影响**（已核：`deploy/nginx/html/index.html` 只读 `faithfulness` / `context_recall` / `overall_score` / `passed` / `pass_threshold`，不读 `answer_correctness`）。
+跨口径分数 SHALL NOT 被直接比较：报告与台账 SHALL 标注「口径版本」（`deep-eval-native`），历史（modern-0.4.x / bridge-0.3.x）的分数不得作为回归判据。
 
-**delta 边界（防归档后自相矛盾）**：主规格中独立存在的「Answer correctness metric」要求（`docs/openspec/specs/evaluation-pipeline/spec.md:106`）SHALL 由本 delta 的 `REMOVED Requirements` 一并移除；SHALL NOT 只移除 `overall_score` 相关条款而留下"评测 SHALL 输出每题答案正确性分数"的悬空要求。
+**行为轴不进主分、不进门禁**：`overall_score` 与门禁判据 SHALL 只由上述**四指标**构成；行为指标与诊断指标为**独立观测**，其失败 SHALL 单独标记、SHALL NOT 影响该题主分。
 
-#### Scenario: Overall score excludes answer_correctness and NaN rows
+#### Scenario: Overall score excludes non-pure-KB and NaN rows
 
 - **WHEN** 一次评测产出一行 `eval_report`
 - **THEN** 其 `overall_score` SHALL 等于该次**纯 KB 且非 NaN** 样本的四项指标均值
 
-#### Scenario: Evaluation API no longer exposes answer_correctness
+#### Scenario: Baseline does not judge pass/fail
 
-- **WHEN** 前端经 `kb_eval` API 取最新评测报告
-- **THEN** 响应 SHALL NOT 含 `answer_correctness`
+- **WHEN** 首轮 `deep-eval-native` 全量以 `run_type="baseline"` 落库
+- **THEN** `kb_eval` SHALL 返回 `passed=None`，且前端 SHALL NOT 渲染通过/不通过
+
+#### Scenario: Frontend renders the unknown pass state as neutral
+
+- **WHEN** `kb_eval` 返回 `passed=None`
+- **THEN** KB 评测徽标 SHALL 显示"未标定"（灰色），且 SHALL NOT 显示 ✓ / ✗，也 SHALL NOT 依据 `overall_score` 重新判定；分块质量弹窗 SHALL NOT 被改动
+
+#### Scenario: Run type comes from the CLI argument
+
+- **WHEN** 用户以 `--run-type baseline` 运行评测
+- **THEN** 新写入的 `eval_report` 行 SHALL 为 `run_type="baseline"`；未传该参数时 SHALL 为 `manual`
+
+#### Scenario: Baseline cannot be gated
+
+- **WHEN** 同时传 `--run-type baseline` 与 `--gate`
+- **THEN** 启动即报错（非零退出），不执行任何评测
+
+#### Scenario: Legitimate zero scores survive the API
+
+- **WHEN** 某指标的真实值为 `0.0`
+- **THEN** `kb_eval` 响应 SHALL 返回 `0.0`（SHALL NOT 变成 `null`）
 
 #### Scenario: Pass threshold is defined once
 
 - **WHEN** 评测落库判定 `passed`、前端渲染通过/不通过
 - **THEN** 两者 SHALL 引用同一阈值常量
 
-#### Scenario: Thresholds are recalibrated, not inherited
+#### Scenario: Thresholds are recalibrated after v6
 
-- **WHEN** **v6 定稿后**的全量分布产出（v5 分布仅作基线记录、**不用于标定**，见 design D8 的 v6 接手点）
+- **WHEN** **v6 定稿后**的全量分布产出（v5 分布仅作基线记录）
 - **THEN** 门禁阈值 SHALL 按该分布重新取值，且报告/台账 SHALL 标注口径版本与标定轮次
-
-### Requirement: Testset generation exercises every query path and yields self-contained questions
-
-本要求描述的出题能力（官方 `default_transforms` 全量链 + 源头锚定 + 出题后自足性门）SHALL **继续作为仓库内既有能力保留**（代码与实现 SHALL NOT 被删除）。
-
-该出题**生成**路径 SHALL NOT 被评测流程调用：评测入口 SHALL NOT 触发测试集生成，测试集 SHALL 以既有版本文件为输入。
-
-**边界（订正：模块内并非全部"不可达"）**：`src/cli/eval_ragas_generate.py` 的**测试集加载器**（`_load_latest_testset`）与 **VertexAI stub**（`_ensure_vertexai_stub`）**仍被评测主流程使用**（`src/cli/eval_deepeval.py:803/806/818-820`）⇒ SHALL NOT 删除该模块，SHALL NOT 声称"整个模块不可达"。只有**出题生成入口**（`run_generate` / CLI `--generate`）不可达。
-
-理由（记明，避免后人误判）：出题链依赖 ragas 0.4.x 的 `default_transforms_for_prechunked`；本次评测侧统一下移到 ragas 0.3.9，出题生成因此**暂不可用**（该符号在 `eval_ragas_generate.py:307` 是**函数级导入**，故仅导入模块不会炸）。保留代码是为了不丢失已验证的能力与经验。
-
-**保留的验证口径（原条款，**SHALL NOT 静默丢弃**；适用于保留代码被显式运行时 / v6 迁移后）**：
-
-- 出题 SHALL 使用官方 `default_transforms` 全量转换链（含 `ThemesExtractor` 与 `CosineSimilarityBuilder`），使 `MultiHopAbstractQuerySynthesizer` 可正常运行，SHALL NOT 因缺件被静默丢弃。
-- 出题 SHALL 通过两条**可核验**机制保证题面自足——明确指出公司名称与报告期，SHALL NOT 使用「本报告期」「该公司」等依赖原文的指代：① **源头锚定**：送入出题 prompt 的每段上下文 SHALL 携带其所属文档的公司名与报告期（**可核验方式**：读样本的 `reference_contexts`，其首行 SHALL 含公司名与报告期）；② **出题后自足性门**：生成的每条题面 SHALL 经自足性校验，不自足者 SHALL 被改写或丢弃（**可核验方式**：统计题面命中 KB 内公司名的比例，SHALL 为 100%）。
-- 这些验证在**出题入口本次不可达**期间不执行，但要求**仍然生效**；恢复可用（v6 或临时 0.4.x 环境）后 SHALL 按原口径核验。
-
-**测试集来源**：本次评测的输入 SHALL 为**固定的既有版本文件**（`testset_<kb>_v5.json`，21 条）；评测与出题 SHALL 保持解耦——固定测试集是跨轮比对的前提。
-
-**前迁路径（登记，不在本次范围）**：出题的**首选前迁目标**是 DeepEval 自带的 `deepeval/synthesizer/`（`generate_goldens_from_docs(...) -> List[Golden]`），因其产出物字段（`input` / `expected_output` / `retrieval_context`）与评测输入**同构**、且与本次评测**同栈**；SHALL NOT 把"回退 ragas 0.4.x"当作首选路径。
-
-**v6 接手点**：出题迁移 SHALL 由**后续独立 change** 承接，入口条件 = ① 本 change 已归档，且 v5 的**新尺子分布**已记录（**不要求阈值已标定**——标定推迟到 v6 之后，见 design D8）；② 台账已记入 `bridge-0.3.9 / v5`；③ v6 与 v5 **并存**。验收 SHALL 分两步且**不可颠倒**：先 `v5 + 新尺子`（基线**与台账行**），再 `v6 + 新尺子`（换卷子对照）**并在该步之后标定阈值**——否则"换尺子"与"换卷子"两个变量无法归因。
-
-#### Scenario: Evaluation does not trigger testset generation
-
-- **WHEN** 运行评测
-- **THEN** SHALL NOT 发生测试集生成调用，输入 SHALL 为既有版本文件
-
-#### Scenario: Generation is blocked with a forward path in the message
-
-- **WHEN** 用户运行 `--generate`
-- **THEN** CLI SHALL 以明确错误信息退出，给出原因与**前迁路径**（DeepEval `Synthesizer`）
-
-#### Scenario: Generation entry is retained but unreachable, loader stays live
-
-- **WHEN** 审阅仓库
-- **THEN** 出题**生成实现** SHALL 仍存在（含其自足性门与锚点逻辑），且 SHALL 在文件头/台账标注"**出题生成**保留未调用"；同时**测试集加载器 SHALL 仍被评测路径使用**（二者 SHALL 在标注中区分，不得写成"整个模块不再被调用"）
-
-#### Scenario: Abstract synthesizer is no longer silently dropped
-
-- **WHEN** 出题生成被显式运行（本次 CLI 不可达，属保留能力 / v6 迁移后）
-- **THEN** SHALL NOT 出现 `Skipping multi_hop_abstract_query_synthesizer … Cannot form clusters`，且生成的测试集 SHALL 含 abstract 出题器产出的题
-
-#### Scenario: Generation context carries the entity anchor
-
-- **WHEN** 分块元数据含公司名与报告期（或多公司语料的任意一块）
-- **THEN** 送入出题 prompt 的上下文 SHALL 携带该公司的名称与报告期
-
-#### Scenario: Generated questions are self-contained
-
-- **WHEN** 知识库含多家公司文档并生成测试集
-- **THEN** 每条题面 SHALL 能唯一指向某公司与其报告期（不含依赖原文的指代）
 
 ### Requirement: Evaluation scoring entry is DeepEval, with RAGAS metrics reached through its bridge
 
-评测打分的入口 SHALL 统一为 DeepEval：RAGAS 指标 SHALL 经 DeepEval 内建的 RAGAS 桥（`deepeval/metrics/ragas.py`）调用，指标集 SHALL 为**经典四项**：`RAGASContextualPrecisionMetric`、`RAGASContextualRecallMetric`、`RAGASAnswerRelevancyMetric`、`RAGASFaithfulnessMetric`。
+评测打分的入口 SHALL 统一为 DeepEval，四指标 SHALL 使用 **DeepEval 原生指标**：`AnswerRelevancyMetric`、`FaithfulnessMetric`、`ContextualPrecisionMetric`、`ContextualRecallMetric`，SHALL NOT 使用 `deepeval.metrics.ragas` 桥。
 
-评测 SHALL NOT 使用聚合指标 `RagasMetric`（其实现与官方文档不一致：源码为五项算术平均、含 `ContextualEntitiesRecall`，而文档写四项），SHALL NOT 使用 `RAGASContextualEntitiesRecall`。
+每个度量 SHALL 以一条单轮样本构造：`input`（问题）/ `actual_output`（回答）/ `expected_output`（参考答案）/ `retrieval_context`（检索材料）。
 
-每个桥度量 SHALL 以一条单轮样本构造：`input`（问题）/ `actual_output`（回答）/ `expected_output`（参考答案）/ `retrieval_context`（检索材料）。
+裁判 SHALL 以 `BridgeDeepEvalLLM` 包装后传入 `model=`；`build_metrics` SHALL NOT 再接收 `embeddings` 参数（原生 `AnswerRelevancy` 不需要 embedding）。
 
-`RAGASAnswerRelevancyMetric` SHALL 传入显式的 langchain `Embeddings`（其为四项中唯一需要 embedding 的指标）。
+**四指标评分 SHALL 在题级串行执行（并发=1）**：同一时刻只评一道题。理由：裁判 client 与证据桶跨题复用，题级串行保证 429 判定与 `trace_id` 归因的确定性；指标内部允许 DeepEval 自身的并发（`a_measure` 内 `gather`）。
 
-**四指标评分 SHALL 串行执行（并发=1）**。理由：桥复用的是 `ragas.metrics` 的**模块级指标实例**，而 `ragas.evaluate` 会在执行期把 `metrics[i].llm` 置为该次裁判、结束时复位为 `None`，`LangchainLLMWrapper` 还会**改写底层 `chat_model.temperature` 属性** ⇒ 并发会互踩，表现为**间歇性错分**（读不到 `llm`、或温度被别的指标改掉）。并发预算 SHALL 留给"跑图"那一侧；若将来确要并发，唯一安全形态是**进程隔离**且 SHALL 单独验证。
-
-#### Scenario: Scoring is serial
+#### Scenario: Scoring is serial at the question level
 
 - **WHEN** 审阅四指标评分实现
-- **THEN** 同一时刻 SHALL 只有一条评分在跑（串行/并发=1），SHALL NOT 对同一套桥度量并发调用
+- **THEN** 同一时刻 SHALL 只有一道题在评分（串行/并发=1）
 
-#### Scenario: Scoring goes through the bridge with four classic metrics
+#### Scenario: Scoring uses the four native metrics
 
 - **WHEN** 对绑定知识库的样本运行评测
-- **THEN** 报告 SHALL 含 `faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` 四项，且四项 SHALL 由桥度量产出
+- **THEN** 报告 SHALL 含 `faithfulness` / `answer_relevancy` / `context_precision` / `context_recall` 四项，且四项 SHALL 由 DeepEval 原生指标产出
 
-#### Scenario: Aggregate bridge metric is not used
-
-- **WHEN** 审阅评测代码
-- **THEN** SHALL NOT 出现对 `RagasMetric` 或 `RAGASContextualEntitiesRecall` 的引用
-
-### Requirement: RAGAS dependency is pinned to the 0.3 line
-
-项目依赖的 `ragas` SHALL 固定为 **`0.3.9`**（精确 pin，与仓库既有 pin 纪律一致）；评测 SHALL NOT 依赖 `ragas.metrics.collections` / `llm_factory` / `embedding_factory` / `@experiment` 等现代栈接口。
-
-`pyproject.toml` SHALL 显式记录为满足该组合所需的 `click` 与 `huggingface_hub` 版本下限，SHALL NOT 让其回落到与 DeepEval 互斥的一侧。
-
-理由（记明，避免后人误判）：**本下移是为"统一单环境"而主动做的**，不是被依赖死锁逼迫。订正说明：原文"`deepeval → click<8.4.0` 与 `ragas 0.4.3 → … → click>=8.4.2` 交集为空"的断言**不成立**——原证据是循环论证（dry-run 时显式 pin 了 `click==8.4.2`），而 wheel METADATA 显示 `datasets 4.0.0` 只要求 `huggingface-hub>=0.24.0`、`huggingface_hub 0.24.0` **不依赖 click** ⇒ **存在满足全部约束的赋值**。真实现象是：**在项目完整 pin 集下 pip 无法在合理时间内解析出该组合**（独立评审实测 90s / 150s 两次 dry-run 超时 `exit 124`）。下移到 `0.3.9` 后可解析（实测落 `click-8.3.3` / `huggingface_hub-1.16.1`）。
-
-**回滚**：依赖下移 SHALL 有明确回滚路径——**恢复 `ragas==0.4.3` + `datasets==4.0.0` 的 pin，并同时放弃 `deepeval` 与行为轴**。触发条件（任一）：① 桥的 NaN 率 >10% 且逃生门不可行；② 行为轴的 `evals_iterator` 取分路径不可用且无替代（**该条已由 2026-10-16 探测否定**，见 design D6）。触发时 SHALL 在台账记录原因与回到的口径版本。SHALL NOT 采用"只回滚 ragas、保留 deepeval"的中间态（那正是本次下移要避免的"装不上"组合）。
-
-#### Scenario: Modern stack symbols are absent from the evaluation path
+#### Scenario: RAGAS bridge is not referenced
 
 - **WHEN** 审阅评测代码
-- **THEN** SHALL NOT 出现 `ragas.metrics.collections` / `llm_factory` / `embedding_factory` / `@experiment` 的引用
-
-#### Scenario: Dependency set resolves
-
-- **WHEN** 按 `pyproject.toml` 重建环境
-- **THEN** 依赖解析 SHALL 成功（`pip check` 相对**既有脏基线**无**新增**冲突），且 `ragas` 版本 SHALL 等于 `0.3.9`
-
-#### Scenario: Rollback path is documented
-
-- **WHEN** 审阅本 change
-- **THEN** SHALL 能找到依赖回滚的步骤与触发条件（见上）
+- **THEN** SHALL NOT 出现对 `deepeval.metrics.ragas` / `RAGAS*Metric` 的引用
 
 ### Requirement: Agent behaviour is evaluated with DeepEval native metrics
 
@@ -456,73 +400,84 @@ system prompt SHALL 在**生产路径与评估路径**下都包含当前日期�
 
 ### Requirement: A bounded escape hatch exists when the bridge is unusable
 
-当桥不可用时，评测 SHALL 具备一条**有界**的替代路径。本轮**只要求预留可替换边界**：
+当原生指标路径不可用时，评测 SHALL 具备一条**有界**的替代路径。本轮**只要求预留可替换边界**：
 
-- 评测 SHALL 把「**采样/用例构造**」与「**评分**」解耦到可替换的边界，桥为默认实现；
-- 替代实现（由 DeepEval 采样 + 项目侧直调 ragas 0.3 线评分）SHALL **在首次启用逃生门时**作为前置工作实现并冒烟；该前置 SHALL 登记在台账与需求池。**本轮不实现**（避免出现"规格要求实现、任务只做边界"的错配）。
+- 评测 SHALL 把「**采样/用例构造**」与「**评分**」解耦到可替换的边界，DeepEval 原生指标为默认实现；
+- 替代实现 SHALL **在首次启用逃生门时**作为前置工作实现并冒烟；该前置 SHALL 登记在台账与需求池。**本轮不实现**。
 
 该路径 SHALL NOT 作为默认路径常驻；每次启用 SHALL 在评测台账记录**原因与生效轮次**。
 
-触发条件 SHALL 至少包含：桥产出 `NaN` 的比例超过设定阈值且重试无效；或桥在当前环境无法稳定运行。
+触发条件 SHALL 至少包含：原生指标产出 `NaN` 的比例超过设定阈值且重试无效；或原生指标在当前环境无法稳定运行。
 
 #### Scenario: Escape hatch activation is recorded
 
-- **WHEN** 因桥不可用而启用替代路径
+- **WHEN** 因原生指标不可用而启用替代路径
 - **THEN** 台账 SHALL 记录启用原因、生效轮次与该轮的口径说明
 
 #### Scenario: Escape hatch is not the default
 
-- **WHEN** 桥可用
+- **WHEN** 原生指标可用
 - **THEN** 评测 SHALL NOT 走替代路径
 
 ### Requirement: 0.4.x-era evaluation artifacts are disposed of explicitly
 
 弃用 0.4.x 时，为现代栈而写的代码与配置 SHALL 被**逐项处置**（复用 / 删除 / 改写），SHALL NOT 留下悬空引用或失义配置。
 
-- **复用**：`RAGAS_JUDGE_MAX_TOKENS` / `RAGAS_JUDGE_THINKING` SHALL 改嫁到 **provider 层 `build_chat("judge", max_tokens=…, thinking=…)`**（`thinking` 经 `thinking_extra_body` 按 provider 归一化），SHALL NOT 硬写 `extra_body={"enable_thinking": …}` 等 provider 专有键；`RAGAS_METRIC_MAX_ATTEMPTS` SHALL 保留（桥无内置重试，判据见「Metric failures」）；`RAGAS_HTTP_TIMEOUT_{CONNECT,READ,WRITE,POOL}` 与 `RAGAS_HTTP_MAX_RETRIES` SHALL 经 **`http_async_client`（`httpx.AsyncClient(timeout=httpx.Timeout(...))`）+ `max_retries=0`** 保留——**SHALL NOT 只传 `http_client`**（ragas 走异步，同步字段不生效，见「Judge client…」条款），SHALL NOT 因换入口而退化为单值超时或重新打开 **SDK** 重试。
-  - **细粒度超时的有效性说明**：超时由该 `AsyncClient` **自带**保证；**SHALL NOT 依赖** ragas 的 `request_timeout` 赋值——它在**构造之后**写 `self.langchain_llm.request_timeout`（`ragas/llms/base.py:337`），而 langchain 的 client 在**构造期**建好（`validate_environment` 是 `@model_validator(mode="after")`，`chat_models/base.py:1140/1154`）⇒ 该赋值对已建 client **无效**。
-  - **⚠️ 重试维度的边界（订正，SHALL 如实记录）**：`max_retries=0` **只关掉 OpenAI SDK 的重试**；**ragas 框架层自带重试**——`ragas/llms/base.py:113` 用 `add_async_retry` 包裹每次生成，`ragas/run_config.py:52` 默认 `max_retries=10`（`:89/:110 stop_after_attempt`），且其重试**只针对 `openai.RateLimitError`（= HTTP 429）**（`ragas/llms/base.py:325-335` 的 `set_run_config` 把 `exception_types` 设为 `RateLimitError`）；**桥不暴露 `RunConfig`**（与 `bypass_temperature` "开关存在却无法置真"**同型**）。⇒ SHALL **登记为接受的偏离**，SHALL NOT 在本规格或设计里声称"重试维度已完整保住"；防倍增效的口径见「Metric failures」③（**429 / `RateLimitError` 不触发外层重试**，其余失败类别仍由外层重试）。
-- **删除**：`build_ragas_judge()` / `build_ragas_embeddings()` SHALL 被删除；`build_native_client()` 在确认无其他消费方后 SHALL 被删除。
-- **改写**：`@experiment()` 编排与 `src/cli/eval_scoring.py` 的现代 `build_metrics()` SHALL 被替换；`judge call` / `metric retry` 日志事件的口径 SHALL 随埋点位置变化而重述。
-- **ADR**：本次推翻既有裁判 client 政策（含 `temperature=0`），SHALL **追加新 ADR** 并在旧 ADR 的 Status 加**反向指针**（ADR 正文不可变），并更新 ADR 索引表。
+- **复用（改嫁到 provider 层）**：`JUDGE_MAX_TOKENS` / `JUDGE_THINKING` SHALL 经 `build_chat("judge", max_tokens=…, thinking=…)` 传入；`EVAL_METRIC_MAX_ATTEMPTS` SHALL 保留（判据见「Metric failures」）；`JUDGE_HTTP_TIMEOUT_*` SHALL 经 **`http_async_client`** 保留。**`JUDGE_HTTP_MAX_RETRIES` SHALL 删除**，裁判 `max_retries` SHALL 硬编码 0（可配置成 >0 会与外层重试叠乘）。
+- **删除**：`build_ragas_judge()` / `build_ragas_embeddings()` / `build_native_client()` SHALL 已删除；`ragas` 依赖 SHALL 已从 `pyproject.toml` 移除；所有 `RAGAS_*` 配置 SHALL 已重命名（`JUDGE_*` / `EVAL_*`）或删除（出题专用 / `RAGAS_HTTP_MAX_RETRIES`）。
+- **旧配置不兼容**：启动期 SHALL 检测残留的 `RAGAS_*` 环境变量并**立即失败**，错误信息 SHALL 列出「旧名 → 新名」映射；SHALL NOT 回退读取旧名。环境模板 SHALL 只写新名（迁移对照表放 runbook）。
+- **旧目录保留**：部署脚本 SHALL 只创建 `data/deepeval/`，SHALL NOT 自动删除旧 `data/ragas/`；runbook SHALL 提示人工确认后清理。
+- **命名收尾**：CLI 模块 SHALL 为 `src/cli/eval_deepeval.py`，测试 SHALL 为 `test_eval_deepeval*` / `test_eval_native_*`，台账 SHALL 为 `docs/agents/eval-ledger.md`，Langfuse `--session-id` 默认值 SHALL 为 `deepeval_eval_session`；报告 `caliber` / 默认 CSV 文件名前缀 / Markdown 标题 / 日志事件 `judge model missing` SHALL 一并切换，SHALL NOT 残留 `bridge-0.3.9` 或 `RAGAS Evaluation Report`。
+- **改写**：`eval_scoring.build_metrics()` SHALL 改为原生四指标；`judge call` / `metric retry` 日志事件口径 SHALL 随之重述；`--generate` 文案 SHALL 指向 DeepEval `Synthesizer`。
+- **ADR**：SHALL 追加新 ADR（0027）**完全取代** ADR-0026 / ADR-0022 / ADR-0023，并在 0027 正文重述仍生效的约束（async hooks / 细粒度超时 / `max_tokens` / `thinking` / `max_retries=0` / 评估检索镜像生产）；三份旧 ADR 的 Status SHALL 加**反向指针**并更新索引。
 
-**判据边界**：自查 SHALL 以「**最终态**（change 完成后）无悬空引用」为准，SHALL NOT 要求每个中间提交都无悬空引用——删除动作 SHALL 与"调用点改写 + 受影响测试"**同一提交**（否则 TDD 小步的提交点会红）。出题路对 0.4.x 的依赖按决策**保留**，SHALL 单独标注，不计入本条的违反。
+**判据边界**：自查 SHALL 以「**最终态**无悬空引用」为准，SHALL NOT 要求每个中间提交都无悬空引用——删除动作 SHALL 与"调用点改写 + 受影响测试"**同一提交**。
 
 #### Scenario: No dangling references on the evaluation path
 
 - **WHEN** 审阅评测路径代码
-- **THEN** SHALL NOT 出现对已删函数（`build_ragas_judge` / `build_ragas_embeddings` / `build_native_client`）的悬空引用
+- **THEN** SHALL NOT 出现对 `build_ragas_judge` / `build_ragas_embeddings` / `build_native_client` / `deepeval.metrics.ragas` 的引用
 
-#### Scenario: Reused settings are re-attached to the bridge judge
+#### Scenario: Reused settings land on the judge
 
 - **WHEN** 审阅裁判构造处
-- **THEN** token 上限与思考开关 SHALL 以 `ChatOpenAI` 参数形式落到桥的裁判上
+- **THEN** token 上限、思考开关、细粒度超时 SHALL 以 `ChatOpenAI` 参数形式落到裁判上
 
-#### Scenario: Superseded ADR gets a reverse pointer
+#### Scenario: SDK retries are fixed at zero
 
-- **WHEN** 审阅 `docs/adr/0024-*.md`
-- **THEN** 其 Status SHALL 含指向新 ADR 的反向指针，且新 ADR SHALL 出现在 ADR 索引中
+- **WHEN** 审阅裁判构造处
+- **THEN** `max_retries` SHALL 为字面量 0，且 SHALL NOT 存在可将其配成 >0 的环境变量
+
+#### Scenario: Legacy environment names fail fast
+
+- **WHEN** 启动时环境中仍存在任一 `RAGAS_*` 变量
+- **THEN** 进程 SHALL 以明确错误退出，错误信息 SHALL 含旧名到新名的映射，SHALL NOT 静默回退到旧名
+
+#### Scenario: The old data directory is not deleted automatically
+
+- **WHEN** 部署脚本创建 `data/deepeval/`
+- **THEN** SHALL NOT 删除 `data/ragas/`，且 runbook SHALL 提示人工确认后清理
+
+#### Scenario: Superseded ADRs get reverse pointers
+
+- **WHEN** 审阅 `docs/adr/0026-*.md` / `0022-*.md` / `0023-*.md`
+- **THEN** 其 Status SHALL 含指向 ADR-0027 的反向指针，且 0027 SHALL 出现在 ADR 索引中
 
 ### Requirement: Results are written back to self-hosted Langfuse v2 through the project's own channel
 
-评测 SHALL NOT 假定 DeepEval 提供 Langfuse 集成（官方 Integrations 清单不含 Langfuse；Langfuse 侧那份配方用的是 v3/v4 API；DeepEval tracing 亦无 OTLP/Langfuse 导出）。回写 SHALL 由**项目自建通道**完成。
+评测 SHALL NOT 假定 DeepEval 提供 Langfuse 集成。回写 SHALL 由**项目自建通道**完成。
 
-回写 SHALL 复用现有实现：客户端取 `langfuse_context.client_instance`（SHALL NOT `new Langfuse()` —— 会绕过 `LANGFUSE_ENABLE` 开关与关停 flush）；逐条 `client.score(trace_id=…, name=…, value=…)`；失败 SHALL 只记 warning、SHALL NOT 阻断评测主流程。
+回写 SHALL 复用现有实现：客户端取 `langfuse_context.client_instance`（SHALL NOT `new Langfuse()`）；逐条 `client.score(trace_id=…, name=…, value=…)`；失败 SHALL 只记 warning、SHALL NOT 阻断评测主流程。
 
 回写 SHALL 覆盖**行为轴指标**，与四项同级并共用同一 `trace_id`。
 
-**通道与算分框架解耦**：该通道的三个部件（`configure_tracing` 开关、`eval_<hex>` 的 trace id、`write_scores` 回写）**均属本项目**，SHALL NOT 依赖任何评测框架（RAGAS 或 DeepEval）提供；换评测框架 SHALL NOT 要求重建通道。
+**边界（明写）**：DeepEval 的轨迹（span 树）SHALL NOT 被期望出现在 Langfuse 上；行为指标的轨迹 SHALL 以**报告 / 台账 / 本地日志**为准。
 
-**边界（明写，避免误期待）**：DeepEval 的轨迹（span 树）SHALL NOT 被期望出现在 Langfuse 上——DeepEval **没有 Langfuse 导出**，其轨迹只在本进程内存或 Confident AI。行为指标的轨迹 SHALL 以**报告 / 台账 / 本地日志**为准。
+`NaN` SHALL **不写入** Langfuse（维持"缺失"语义）；SHALL NOT 以 `0` 代替 NaN。
 
-#### Scenario: DeepEval trajectory is not expected on Langfuse
+评测运行 SHALL 使用 `--session-id` 指定 Langfuse session，默认值 SHALL 为 `deepeval_eval_session`；历史 session 不重命名。
 
-- **WHEN** 审阅行为指标的观测落点
-- **THEN** SHALL 以报告/台账/本地日志为轨迹来源，SHALL NOT 以 Langfuse 为轨迹来源
-
-`NaN` SHALL **不写入** Langfuse（维持"缺失"语义）；SHALL NOT 以 `0` 代替 NaN —— 否则会把"**裁判故障**"与"**真得 0 分**"混同，正是本次整改一路在纠的错。
-
-新口径 score 名 SHALL 带**口径后缀**（如 `faithfulness@bridge-0.3.x`），SHALL NOT 与历史口径同名覆盖（同名覆盖会让同一 trace 上旧值消失、可比性丢失）。
+新口径 score 名 SHALL 带**口径后缀** `@deep-eval-native`，SHALL NOT 与历史口径同名覆盖。
 
 #### Scenario: Scores go back through the project channel
 
@@ -537,21 +492,20 @@ system prompt SHALL 在**生产路径与评估路径**下都包含当前日期�
 #### Scenario: New score names carry the caliber suffix
 
 - **WHEN** 回写新口径分数
-- **THEN** score 名 SHALL 含口径后缀，历史同名 score SHALL NOT 被覆盖
+- **THEN** score 名 SHALL 含 `@deep-eval-native`，历史同名 score SHALL NOT 被覆盖
 
 ### Requirement: NaN rate gates the evaluation and triggers the escape hatch
 
-评测 SHALL 统计 **NaN 率**并在报告中单列。门禁判据 SHALL 为：**NaN 率 ≤ 阈值 视为可接受**（不因 NaN 判失败）；**> 阈值 则门禁失败**。**阈值 SHALL 标为"经验初值 10% / 待 v6 定稿后的全量复核"**：现有依据仅为换尺子**之前**的 21 题中 1 例（≈4.8%，样本量 n=1/21 偏薄），取 10% 是为在单薄证据之上留出余量；**v6 定稿后的首轮全量**跑出真实 NaN 率后 SHALL 复核并定稿（v5 分布仅作基线，不用于标定，见 design D8），若实测明显不同 SHALL 以实测改值。
+评测 SHALL 统计 **NaN 率**并在报告中单列。门禁判据 SHALL 为：**NaN 率 ≤ 阈值 视为可接受**；**> 阈值 则门禁失败**。**阈值 SHALL 标为"经验初值 10% / 待 v6 定稿后的全量复核"**；v6 定稿后的首轮全量跑出真实 NaN 率后 SHALL 复核并定稿（v5 分布仅作基线）。
 
-**分子/分母 SHALL 精确定义（单位是"格"，不是"题"——否则门禁误判）**：
+**分子/分母 SHALL 精确定义（单位是"格"，不是"题"）**：
 
-- **分母** = **纯 KB 样本 × 四项指标**（格数）。实测有效纯 KB = **19** 题 ⇒ 分母 **76 格**；`>10%` 即 **>7.6 格 ⇒ ≥8 格**判失败。（**订正**：更早一稿写"21 题下允许 ≤2 题"，与分母定义**单位不一致**，差约 4 倍，已按格数重述。）
-- **分子** = **纯 KB 格里的全部 `NaN`**。(a) 掩码类**由分母天然排除**（`empty` 不属于纯 KB）；合法缺值型与裁判失败型**一并计入**——二者在桥出口**不可区分**，`SHALL NOT` 依赖请求级日志做子分类（见「Metric failures are explicit, not silently dropped」）。
-- **接受的代价**：合法缺值型 `NaN` 会被计入分子并触发一次无收益的有界重试；阈值 10% 即为吸收该水位而设，**v6 定稿后的首轮全量**跑出真实 NaN 率后 SHALL 复核并定稿（v5 分布仅作基线，不用于标定，见 design D8）。
+- **分母** = **纯 KB 样本 × 四项指标**（格数）。实测有效纯 KB = 19 题 ⇒ 分母 76 格；`>10%` 即 `>7.6 格 ⇒ ≥8 格`判失败。
+- **分子** = **纯 KB 格里的全部非掩码 `NaN`**（掩码类由分母天然排除；原生指标的空 verdict 返回 1.0/0、不产生 NaN，故不计入）。
 
 NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提示；**是否启用由人决定**，启用 SHALL 在台账记录原因与生效轮次。
 
-理由（记明，避免后人"修回"）：阈值过严会让门禁常态失败、过松则失去意义；此条补上风险 R1 里"NaN 进发布门禁无法判定"那个洞。**但依据单薄这一点必须写进规格**，避免后人把"10%"当作经实测标定的数字。**且 `NaN` 的来源不止一种**（掩码 / 合法缺值 / 裁判失败）⇒ 口径按上述"格"定义执行；掩码与非掩码 SHALL 在报告中可区分，**重试 SHALL 对全部非掩码 `NaN` 触发**（429 类除外，见「Metric failures are explicit」）。
+理由（记明，避免后人"修回"）：阈值过严会让门禁常态失败、过松则失去意义；依据单薄这一点必须写进规格，避免后人把"10%"当作经实测标定的数字。
 
 #### Scenario: NaN rate within threshold does not fail the gate
 
@@ -579,19 +533,29 @@ NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提�
 
 ### Requirement: The testset generation path is guarded against accidental invocation
 
-出题实现 SHALL 保留，但评测流程 SHALL NOT 调用它。CLI 的 `--generate` 路径 SHALL **显式失败**并给出指引（说明该路径依赖 ragas 0.4.x 的 `default_transforms_for_prechunked`，而当前依赖线为 0.3.9），SHALL NOT 让用户撞到裸 `ImportError`。
+出题入口 SHALL 为独立命令 `python -m src.cli.testset_synth`，评测入口 SHALL NOT 触发测试集生成。
 
-#### Scenario: Generating a test set fails with guidance
+- `python -m src.cli.eval_deepeval` SHALL NOT 调用任何出题代码，测试集输入 SHALL 为既有版本文件。
+- CLI `--generate` SHALL 显式失败并指向 `python -m src.cli.testset_synth`，SHALL NOT 让用户撞到裸 `ImportError`。
+- `POST /api/ragas/generate` SHALL 保持路由挂载并返回 410，响应文案 SHALL 给出同一 CLI 指引。
+- 出题是分钟级长任务，本 change SHALL NOT 新增同步出题 API。
 
-- **WHEN** 用户运行 `--generate`
-- **THEN** CLI SHALL 以明确错误信息退出，并说明原因与前置条件
+#### Scenario: Evaluation does not trigger generation
+
+- **WHEN** 用户运行 `python -m src.cli.eval_deepeval`
+- **THEN** SHALL NOT 发生任何出题调用，测试集 SHALL 从既有版本文件加载
+
+#### Scenario: Legacy generation flags fail with the new command
+
+- **WHEN** 用户运行 `eval_deepeval --generate` 或调用 `POST /api/ragas/generate`
+- **THEN** 系统 SHALL 以明确错误退出或返回 410，并给出 `python -m src.cli.testset_synth` 指引
 
 ### Requirement: Deviations from DeepEval's recommended practices are recorded
 
-本次对官方推荐路径的两处**有意偏离** SHALL 被记录（见 design D12）：
+本次对官方推荐路径的**有意偏离** SHALL 被记录：
 
 1. **门禁**：保留自建 `--gate` + 单一阈值常量，而非官方的 `assert_test()` + `pytest` + `deepeval test run`；
-2. **并发**：四指标评分**串行（并发=1）**，而非官方的 `a_measure()` + `gather` / `async_config.max_concurrent`。理由**不只是**"桥的 `a_measure` 是伪异步"（`return self.measure(...)`），更是**并发本身不安全**——桥复用 `ragas.metrics` 的模块级指标实例、`evaluate` 会复位 `metric.llm`、`LangchainLLMWrapper` 会改写 `chat_model.temperature` ⇒ **间歇性错分**（见 design D7）。
+2. **并发**：四指标评分**题级串行（并发=1）**，而非官方的 `a_measure()` + `gather` / `async_config.max_concurrent`。理由：裁判 client 与证据桶跨题复用，题级串行保证 429 判定与 `trace_id` 归因确定；指标内部仍允许 DeepEval 自身并发。
 
 每条偏离 SHALL 写明「官方路径 / 我们的做法 / 理由 / 接受的代价」。
 
@@ -602,73 +566,52 @@ NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提�
 
 ### Requirement: Framework-internal LLM calls are observable by trace id
 
-评测 SHALL 使**框架内部的 LLM 调用**（ragas 桥内部的重试、`answer_relevancy` 的多次生成）在日志中可按该题的 `trace_id` 追溯。
+评测 SHALL 使**框架内部的 LLM 调用**（原生指标 `a_measure` 内部的多次裁判调用）在日志中可按该题的 `trace_id` 追溯。
 
-**行为轴判官调用的归因边界（明写，避免误期待；design R9）**：DeepEval 行为指标在
-`evals_iterator` **耗尽之后**才评分（异步路径），届时循环上下文已结束 ⇒ 其判官调用
-**不**经 `http_async_client` 的 hooks 做逐题 `trace_id` 归因（该层 `trace_id` 记为空）；
-行为轴的逐题失败证据 SHALL 由其 `test_run_*.json` 的 `testCases[].metricsData[].reason`
-承载，并在报告「Agent 行为轴」段呈现。本条对行为轴**只**要求"证据可从 JSON 获得"，
-SHALL NOT 读成"行为轴判官调用也须带逐题 trace_id"。
+**行为轴判官调用的归因边界（明写，避免误期待）**：DeepEval 行为指标在 `evals_iterator` **耗尽之后**才评分，届时循环上下文已结束 ⇒ 其判官调用**不**经 `http_async_client` 的 hooks 做逐题 `trace_id` 归因（该层 `trace_id` 记为空）；行为轴的逐题失败证据 SHALL 由其 `test_run_*.json` 的 `testCases[].metricsData[].reason` 承载，并在报告「Agent 行为轴」段呈现。
 
-实现手段 SHALL 为：在裁判的 **`http_async_client`**（`httpx.AsyncClient`）上挂**请求级日志**（httpx event hooks）。**当前落地记录** `url` / `status` / `body_bytes` / `json_ok` / `finish_reason`（响应体不可解析时另有 `body_exc`），**仅失败时产日志行**；**目标形态**另含模型 / 耗时 / 请求体摘要 / 响应体摘要（见本条「落地现状」）。**SHALL 挂在 `http_async_client` 而非 `http_client`**——ragas 的裁判调用走**异步**，而 langchain 的 `http_client` **只喂同步 client**（`langchain_openai/chat_models/base.py:806`；异步用 `:1273` 的 `http_async_client`）⇒ 挂错字段 hooks **一条都不会响**。该 client 本已因细粒度超时而传入（见 D11 与「0.4.x-era evaluation artifacts」的复用条款），故 SHALL 复用它、SHALL NOT 为此另建客户端。
+实现手段 SHALL 为：在裁判的 **`http_async_client`**（`httpx.AsyncClient`）上挂**请求级日志**（httpx event hooks）。**当前落地记录** `url` / `status` / `body_bytes` / `json_ok` / `finish_reason`（响应体不可解析时另有 `body_exc`），**仅失败时产日志行**；**目标形态**另含模型 / 耗时 / 请求体摘要 / 响应体摘要。**SHALL 挂在 `http_async_client` 而非 `http_client`**。
 
-**hook SHALL 为 `async def` 且以 `await response.aread()` 读体**：异步 client 调用 hook 的形式是 `await hook(response)`（`httpx/_client.py:1697`；同步 client 才是 `hook(response)`，`:982`），传同步 hook 会抛 `TypeError`；同步 `read()` 在异步流上抛 `RuntimeError`（`httpx/_models.py:944`）。
+**hook SHALL 为 `async def` 且以 `await response.aread()` 读体**。
 
-**响应体必须记**：主因失败是 HTTP 200 + 畸形响应体，只记请求与状态码会**看不到它**（原 `_judge_failure_note` 正是靠 `finish_reason` / 输出片段区分"空结构"与"截断"）（目标形态；当前落地范围见下）。
+**落地现状（避免归档后留下未满足的 SHALL）**：当前 hooks 只记录上述字段，且仅在失败时产日志行；模型与耗时分别由 `eval model init` 与四指标路径的 `judge call` 承载。**请求体摘要 / 响应体摘要 / 成功路径日志尚未落地**。因此「A malformed 200 response is diagnosable from the logs」**当前不成立**。
 
-**落地现状（2026-10-17，避免归档后留下未满足的 SHALL）**：当前 hooks 只记录
-`url` / `status` / `body_bytes` / `json_ok` / `finish_reason`（响应体不可解析时另有 `body_exc`），
-且**仅在失败时产日志行**；模型与耗时分别由 `eval model init` 与四指标路径的 `judge call` 承载。
-**请求体摘要 / 响应体摘要 / 成功路径日志尚未落地**（见 design D13「落地现状」与 ADR-0026 决策 6、
-复查触发条件 ④）。⚠️ 因此「A malformed 200 response is diagnosable from the logs」**当前不成立**：
-可解析但内容畸形的 200 响应不产任何日志行（`json_ok=True`、无 warning），其证据只在
-`HookEvidence` 内存桶（不落盘）⇒ 该场景的诊断能力随请求体/响应体摘要一并属**未落地项**。
+**该日志只做留证**：SHALL NOT 被当作 `NaN` 子分类的依据。
 
-**该日志只做留证**：SHALL NOT 被当作 `NaN` 子分类的依据（该分类不可实现，见「Metric failures are explicit, not silently dropped」）。若该日志不可用，报告 SHALL 显式标注。
+`trace_id` SHALL 经**显式闭包**绑定进 event hook，SHALL NOT 依赖 contextvar 传递；裁判 client 跨样本复用 ⇒ 闭包 SHALL 绑到**可变证据桶**（题级串行，安全）。
 
-`trace_id` SHALL 经**显式闭包**绑定进 event hook（`async def` 内闭包照常成立），SHALL NOT 依赖 contextvar 传递。**理由**：即便 `asyncio.to_thread` 会复制 contextvar，**ragas `evaluate` 内部还会用自己的 `Executor`（线程池）**分发，其 worker 线程**不保证**携带我们的 contextvar ⇒ 深处 hooks 可能读到 `trace_id=None`。**且**裁判 client 是每轮构造一次、跨样本复用 ⇒ 闭包 SHALL 绑到**可变证据桶**而非固定 `trace_id`（评分已串行，并发=1，形态安全）。
-
-评测 SHALL NOT 以"框架内部调用不可见"为可接受状态——本次整改的根因（退化输出、超时、NaN）正发生在该层。
-
-**验收范围（明写）**：本条只覆盖**经我们提供的 `http_async_client` 发出的 LLM 请求**；SHALL NOT 声称覆盖框架内更深、不经该 client 的调用。行为指标的 **DeepEval span 树**仍不进日志（见 design D9 边界①）。
+**验收范围（明写）**：本条只覆盖**经我们提供的 `http_async_client` 发出的 LLM 请求**；行为指标的 **DeepEval span 树**仍不进日志。
 
 #### Scenario: Internal calls carry the question's trace id
 
-- **WHEN** 某题的裁判调用在框架内部发生（含重试与多次生成）
+- **WHEN** 某题的裁判调用在指标内部发生（含重试与多次调用）
 - **THEN** 对应日志行 SHALL 携带该题的 `trace_id`
 
 #### Scenario: The logging hook rides on the async client used for the timeout
 
 - **WHEN** 审阅裁判客户端构造处
-- **THEN** 请求级日志 SHALL 挂在用于细粒度超时的**同一个 `http_async_client`**（`httpx.AsyncClient`）上，且 hook SHALL 为 `async def`；SHALL NOT 只挂在 `http_client`（同步路径，ragas 走异步、hooks 不会触发）
+- **THEN** 请求级日志 SHALL 挂在用于细粒度超时的**同一个 `http_async_client`** 上，且 hook SHALL 为 `async def`
 
-#### Scenario: Hook wiring is proven by a smoke assertion (both directions)
+#### Scenario: Hook wiring is proven by a smoke assertion
 
-- **WHEN** 实施期跑 1 题真调裁判的桥度量（`RAGASFaithfulnessMetric` 等）
-- **THEN** SHALL 断言 ① 响应 hook 触发 **> 0** 次、且 hook 内 `await response.aread()` + `json.loads` 成功并能取到 `finish_reason`；**且** SHALL 有一条**负向**断言——只传 `http_client`（同步字段）时响应 hook 触发 **== 0**，把"挂错字段就零触发"钉成回归防线。**实测基线（2026-10-16，真 judge）**：A 臂（`http_async_client`）**4** 事件（2 请求 + 2 响应，均 `200` / `json_ok` / `finish_reason=['stop']`），B 臂（仅 `http_client`）**0** 事件，两臂指标分均 1.0 —— 即错误接线**不报错、只是静默失去全部可观测性与细粒度超时**。证据见 `docs/tmp/deepeval-poc/RESULTS.md`「Hook 冒烟」节。
-
-#### Scenario: A malformed 200 response is diagnosable from the logs（目标形态；当前未满足，见「落地现状」）
-
-- **WHEN** 裁判返回 HTTP 200 但响应体畸形（空结构 / 截断）
-- **THEN** 请求级日志 SHALL 含**响应体摘要与 `finish_reason`**，使该失败模式可从日志定位（SHALL NOT 只记请求体 / 状态码）；**该日志仅用于定位**，SHALL NOT 被用来把该 `NaN` 归成"合法缺值"
+- **WHEN** 实施期跑 1 题真调裁判
+- **THEN** SHALL 断言响应 hook 触发 **> 0** 次，且能取到状态码与 `finish_reason`
 
 ### Requirement: Evaluation can run with DeepEval metrics only
 
-评测入口 SHALL 支持只跑 DeepEval 原生指标（Agent 行为轴）而跳过 RAGAS 四指标的模式，用于在 RAGAS 主分口径未定期间快速迭代验收 DeepEval 功能。
+评测入口 SHALL 支持只跑 DeepEval 原生指标（Agent 行为轴）而跳过四指标的模式。
 
-- 开关 SHALL 为 CLI 参数 `--deepeval-only`，默认关闭；关闭时行为与现状**完全一致**。
+- 开关 SHALL 为 CLI 参数 `--deepeval-only`（别名 `--behaviour-only`），默认关闭；关闭时行为与现状**完全一致**。
 - 开启时 SHALL NOT 构造四指标度量、SHALL NOT 调用四指标评分。
-- 开启时报告 SHALL 显式标注 `RAGAS: 未跑（--deepeval-only）`，SHALL NOT 输出四指标数值行，SHALL NOT 把缺失写成 `0`。
-- 开启时 SHALL NOT 写入 `eval_report` 表（其四指标列与 `overall_score` 非 nullable、默认 `0.0`，写入会把"未评"显示成"0 分且未通过"）。
-- 开启时 SHALL NOT 执行质量门禁，且与 `--gate` 同时出现 SHALL 在启动时报错。
-- 行为轴段、Markdown 报告落盘、`--limit` 冒烟 SHALL 仍可用；CSV SHALL NOT 写入（其列结构绑定四指标）。
+- 开启时报告 SHALL 显式标注 `主分: 未跑（--deepeval-only）`，SHALL NOT 输出四指标数值行，SHALL NOT 把缺失写成 `0`。
+- 开启时 SHALL NOT 写入 `eval_report` 表；SHALL NOT 写 CSV；SHALL NOT 执行质量门禁；与 `--gate` 同时出现 SHALL 在启动时报错。
+- 行为轴段、Markdown 报告落盘、`--limit` 冒烟 SHALL 仍可用。
 - 报告头 SHALL 明写"行为轴仅作诊断观测、无门禁语义"。
 
-#### Scenario: DeepEval-only run skips RAGAS scoring
+#### Scenario: DeepEval-only run skips four-metric scoring
 
-- **WHEN** 以 `--deepeval-only` 运行评测
-- **THEN** 退出码 0；报告含「Agent 行为轴」段与 `RAGAS: 未跑（--deepeval-only）` 标注；`eval_report` 表无新行；不生成 CSV
+- **WHEN** 以 `--deepeval-only`（或 `--behaviour-only`）运行评测
+- **THEN** 退出码 0；报告含「Agent 行为轴」段与 `主分: 未跑` 标注；`eval_report` 表无新行；不生成 CSV
 
 #### Scenario: Default run is unchanged
 
@@ -679,3 +622,81 @@ SHALL NOT 读成"行为轴判官调用也须带逐题 trace_id"。
 
 - **WHEN** 同时传 `--deepeval-only` 与 `--gate`
 - **THEN** 启动即报错（非零退出），不执行任何评测
+
+### Requirement: Diagnostic metrics do not affect the main score
+
+评测 SHALL 提供三项**诊断指标**，仅作观测，SHALL NOT 进入主分、门禁或 `eval_report` 的四指标列：
+
+- `ContextualRelevancyMetric(model=judge)`：不需要 `expected_output`；评分层 SHALL 只对**前 8 条** `retrieval_context` 判定（常量 `EVAL_RELEVANCY_MAX_CONTEXTS`），SHALL NOT 原地修改共享 test case；报告 SHALL 标注"仅判前 8 条（并集顺序，非最相关 8 条）"。
+- `NonAdviceMetric(advice_types=["financial"], model=judge)`：财务合规口径。
+- 每个诊断指标 SHALL 显式传 `model=judge`，SHALL NOT 使用 DeepEval 的默认模型（`gpt-3.5-turbo` 已停服）。
+- `ToolCorrectnessMetric`：本 change SHALL NOT 构造（现有题集无 `expected_tools`）；待 `deepeval-synthesizer-testset` 产出该标注后启用，在此之前其值 SHALL 记 `N/A`。
+
+诊断指标的 `NaN` SHALL 与四指标的 `NaN` 分开计数，SHALL NOT 影响 NaN 率门禁。诊断指标失败 SHALL 直接记 `NaN`/`null`，SHALL NOT 重试。`sample_class == empty` 或跑图失败的样本，三项诊断 SHALL 一并写 `NaN`/`null`，SHALL NOT 让 `[ERROR]` 文本进入 `non_advice`、也 SHALL NOT 让空 context 的 `0.0` 进入诊断均值。
+
+诊断指标的逐题值 SHALL 写入 `eval_report.detail_json`，键名使用**裸指标名**（`contextual_relevancy` / `non_advice` / `tool_correctness`），与四指标同级；`tool_correctness` 在本 change SHALL 写 `null`（键存在、值为空）。`kb_eval` API SHALL NOT 返回这三个键（只存不读）。"不进主分"SHALL 由 `EVAL_METRIC_COLUMNS` 白名单保证，SHALL NOT 依赖键名前缀。
+
+#### Scenario: Diagnostic metrics are not part of the main score
+
+- **WHEN** 审阅主分聚合与门禁
+- **THEN** `contextual_relevancy` / `non_advice` / `tool_correctness` SHALL NOT 出现在 `EVAL_METRIC_COLUMNS` 或门禁判据中
+
+#### Scenario: Diagnostics use the project judge
+
+- **WHEN** 构造任一诊断指标
+- **THEN** 构造实参 SHALL 显式传入 `model=judge`（`BridgeDeepEvalLLM`），SHALL NOT 走 `gpt-3.5-turbo` 默认值
+
+#### Scenario: Empty samples are masked out of diagnostics
+
+- **WHEN** 某样本 `sample_class == empty` 或跑图失败
+- **THEN** 三项诊断 SHALL 写 `NaN`/`null`，且 `non_advice` SHALL NOT 对 `[ERROR] ...` 文本评分
+
+#### Scenario: Diagnostic failures are not retried
+
+- **WHEN** 某诊断指标调用失败
+- **THEN** 该项 SHALL 直接记 `NaN`/`null`，SHALL NOT 触发有界重试
+
+#### Scenario: Diagnostics are stored for drill-down but not exposed
+
+- **WHEN** 一次评测落库
+- **THEN** `detail_json` 的逐题条目 SHALL 含三个裸键名，`tool_correctness` SHALL 为 `null`，且 `kb_eval` 响应 SHALL NOT 含这些键
+
+#### Scenario: Relevancy is truncated and labeled
+
+- **WHEN** 生成评测报告
+- **THEN** `contextual_relevancy` 的分数 SHALL 基于前 8 条 context，且报告 SHALL 含截断说明
+
+#### Scenario: ToolCorrectness is N/A without labels
+
+- **WHEN** 对无 `expected_tools` 的题集运行评测
+- **THEN** `tool_correctness` SHALL 记 `N/A`，SHALL NOT 触发 fail-loud
+
+### Requirement: Evaluation consumes v6 testsets without changing the scoring contract
+
+评测 SHALL 通过 `testset_io.load_testset_samples` 读取 `testset_<kb>_v<N>.json`，v6 新增字段 SHALL NOT 改变现有评分口径。
+
+- 四指标与诊断指标 SHALL 只消费 `user_input` / `reference`；检索上下文 SHALL 来自本次运行的**实际检索结果**，SHALL NOT 使用题集里的 `reference_contexts`（后者只供出题阶段的自足门）。
+- `expected_tools` / `hop_type` / `hop_basis` / `evolutions` / `source_file` / `numeric_risk` / `synth_quality` SHALL NOT 进入任何指标计算。
+- `tool_correctness` SHALL 继续为 `null`，直到 `tool-correctness-diagnostic` 接入。
+- 加载器 SHALL 同时兼容 v5（无新增字段）与 v6（有新增字段）。
+- 报告元数据 SHALL 记录 `testset_version`（实际加载到的版本号，含未显式传 `--testset-version` 时）；该字段 SHALL 在**正常与 `--deepeval-only` 两个报告分支**都存在；Markdown 报告头 SHALL 渲染该字段；DB `detail_json` 的逐题条目 SHALL 带 `testset_version`（CSV 不加列，避免破坏现有消费方）。
+
+#### Scenario: v6 fields are inert for scoring
+
+- **WHEN** 用 v6 题集运行评测
+- **THEN** 四指标与诊断指标的输入 SHALL 与同题面在 v5 结构下完全一致，`tool_correctness` SHALL 为 `null`
+
+#### Scenario: Testset contexts are not fed to metrics
+
+- **WHEN** 某题的 `reference_contexts` 与本次实际检索结果不同
+- **THEN** 评分 SHALL 使用实际检索结果，SHALL NOT 使用 `reference_contexts`
+
+#### Scenario: Report states which testset it used
+
+- **WHEN** 用默认版本（最新）运行评测
+- **THEN** 报告元数据与 Markdown 报告头 SHALL 含 `testset_version`，且数值 SHALL 等于实际加载的文件版本；DB `detail_json` 的条目 SHALL 同样带该字段
+
+#### Scenario: v5 remains readable
+
+- **WHEN** 用户指定 `--testset-version 5`
+- **THEN** 加载 SHALL 成功，且 SHALL NOT 因缺少 v6 字段而报错
