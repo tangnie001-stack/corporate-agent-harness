@@ -15,7 +15,7 @@
 
 - `--evidence` 开启后，为低分/NaN/失败/工具或行为异常的题生成逐题证据 JSON。
 - 证据覆盖：题集出处、gold chunk、query 路径、dense/lexical/RRF 候选、rerank 前后、最终 contexts、工具调用、answer、裁判 score/error/reason、行为分/reason。
-- 证据带 **trace 关联**：`run_trace_id` / `sut_trace_id` / `judge_calls` / 行为轴 `trace_id` 映射；ID 来自 `eval-trace-correlation`，本 change 只消费。
+- 证据带 **trace 关联**：`run_trace_id` / `sut_trace_id` / `judge_measures` / `judge_calls` / 行为轴 `trace_id` 映射；ID 来自 `eval-trace-correlation`，本 change 只消费。
 - 产出**逐指标**的确定性归因：`root_cause` / `confidence` / `evidence`；无法判定写 `inconclusive`。
 - `summary.json` 给出根因分布（按指标与总计），回答“这一轮整体最该修哪一层”。
 - 证据采集/归因失败不影响评测主流程、主分、门禁、CSV、DB、Langfuse。
@@ -94,18 +94,22 @@
 ### D6：裁判与行为证据只记现有可观测值
 
 - 每个指标：`score`、`error`、`reason`；DeepEval 指标实例暴露 `reason` 就记，没有就 null。
+- `reason` 只在 measure 正常返回后读取；异常分支不得读 `metric.reason`（指标实例跨题复用，可能是上一题残留）。
 - 不解析/持久化 `verbose_logs` 全文；需要时用 `trace_id` 查 Langfuse/日志。
 - 行为轴：从 `behaviour_rows` 记 `metrics` 与 `reasons`；`failed` 题记 `score=null` / `reason=failed`。
 - 不把裁判 raw prompt 或完整 raw output 落盘；只记错误摘要与 reason。
 
 ### D6.1：Trace 关联只消费，不生成
 
-- 证据 `trace` 段从 `eval-trace-correlation` 读取：
+- 证据 `trace` 段从 `eval-trace-correlation` 读取，分两级：
   - `run_trace_id`（整轮）；
   - `sut_trace_id`（该题 `trace_id`）；
-  - `judge_calls`（`judge_call_id` / metric / attempt / model / status / finish_reason / tokens / latency / reason / error）；
+  - `judge_measures[]`：`judge_measure_id` / metric / attempt / model / latency_ms / request_count / response_count / statuses / tokens_in / tokens_out / reason / error；
+  - `judge_calls[]`：`judge_call_id` / `call_index` / status / finish_reason / tokens_in / tokens_out / latency_ms / json_ok；SHALL 通过 `judge_measure_id` 归到对应 measure；
   - 行为轴映射（`trace_id` + `link_method`）。
+- `JUDGE_CALL` 日志只记 `reason_len` / `reason_hash`；证据文件 MAY 记录完整 `reason`（仅本地 gitignored），由 measure 结果回填。
 - 取不到时写 null；SHALL NOT 在本 change 里重新生成/猜测 trace ID。
+- 行为轴 judge 的内部调用不在 v1 范围：证据只记行为分与 `trace_id` 映射，不伪造缺失的 judge call。
 - 证据写入 SHALL NOT 改变 trace ID 的生成/日志行为；trace change 关闭/失败时，证据仍可落盘，trace 字段为 null。
 
 ### D7：低分选择与落盘

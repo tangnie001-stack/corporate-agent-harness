@@ -24,7 +24,7 @@
   - **chunk 探针**：在 KB 全量分块中定位参考答案的数值/文本片段，产出 `gold_chunk_ids`、`fact_in_corpus` 与命中位置；
   - **工具链**：工具名、参数、结果数、迭代；`delegate_task` 只记顶层，不展开子代理；
   - **生成/裁判**：最终 answer、每个指标的 score / error / reason（有 verdict 时一并记录）、行为轴分数与 reason；
-  - **trace 关联**：`run_trace_id` / `sut_trace_id` / `judge_calls` / 行为轴 `trace_id` 映射；这些 ID 由 `eval-trace-correlation` 提供，本 change 只消费、不生成。
+  - **trace 关联**：`run_trace_id` / `sut_trace_id` / `judge_measures[]`（measure 级汇总）/ `judge_calls[]`（每次 HTTP 调用）/ 行为轴 `trace_id` 映射；这些 ID 由 `eval-trace-correlation` 提供，本 change 只消费、不生成。行为轴 judge 的内部调用不在 v1 范围内，证据只记行为分与 `trace_id` 映射。
 - **确定性归因摘要**：
   - 每题按指标输出 `attribution`：`root_cause` / `confidence` / `evidence`；
   - 根因枚举固定：`judge_failure` / `testset_error` / `parsing_or_chunking` / `retrieval_miss` / `rerank_or_topk` / `prompt_or_generation` / `tool_routing` / `agent_orchestration` / `inconclusive`；
