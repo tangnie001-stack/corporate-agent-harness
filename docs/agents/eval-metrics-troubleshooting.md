@@ -213,6 +213,20 @@ PGPASSWORD="$POSTGRES_PASSWORD" psql -h localhost -U corporate_rag -d corporate_
 | 行为轴 | `data/deepeval/reports/behaviour_<timestamp>/test_run_*.json` | `testCases[].metricsData[]` 的逐题行为分 |
 | 日志 / Langfuse | 按 `trace_id` | 裁判调用、检索、工具、错误证据，见 `docs/agents/troubleshooting.md` |
 
+### 8.4 裁判 / 被测者 trace 怎么看
+
+- **被测者（SUT）**：每题一个 `trace_id`（CSV 同名），也是 Langfuse trace id；其 trace
+  metadata 带 `component=sut`，有 run 上下文时另带 `run_trace_id`，可据后者聚一轮全部题。
+- **裁判**：不进被测者的 Langfuse trace，走日志两层——`judge call` 是 measure 汇总
+  （attempt / 耗时 / `error` / reason 摘要），`judge http` 是每次 HTTP 明细
+  （status / finish_reasons / tokens / `json_ok`）。
+- **串链路**：`evaluation run` 拿 `run_trace_id` → 每题 `question answer start/done` 拿
+  `trace_id` → `judge call` 拿 `judge_measure_id` → `judge http` 拿 `judge_call_id`；
+  命令见 `docs/agents/troubleshooting.md`「评测 trace 链」。
+- **`judge http` 的 `status=null` + `error=no_response` 是传输失败**（连接失败 / 超时），
+  **不是裁判判错**；拿到了 2xx 但 `json_ok=false` 才是响应内容不可用。行为轴 judge 没有
+  active measure，故在 `judge http` 中缺席（v1 已知边界）。
+
 ## 9. 排查顺序
 
 1. **看 `error` 与 NaN**：先排除裁判失败/超时/额度，不要把它当质量回归。

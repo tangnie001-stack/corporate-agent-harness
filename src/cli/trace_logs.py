@@ -1,21 +1,22 @@
-"""trace_logs — 按 trace_id 拉取该次请求的完整日志（含裁判调用事件与失败时的请求级证据）。
+"""trace_logs — 按 trace_id 拉取该次请求的完整日志（含裁判调用事件与请求级明细）。
 
 用法：
     python -m src.cli.trace_logs eval_19128e15c446          # 报告里那列 trace_id
     python -m src.cli.trace_logs trace_eeed43a3 --grep "judge call"
+    python -m src.cli.trace_logs trace_eeed43a3 --grep "judge http"
 
 为什么需要它：报告只给出每题的 trace_id；要定位"为什么这题失败"，需要把该 trace 下
 **所有**日志串起来看。按本仓现有分工，判官相关观测分两层：
   - `judge call` / `metric retry` 事件：**外层**对桥度量 `measure` 的调用（尝试次数 /
-    耗时 / 是否拿到分 / 异常链摘要 `note`），由 `src/cli/eval_deepeval.py` 埋点；
-  - `HookEvidence` 证据桶：**框架内部**（ragas 桥）的 HTTP 请求级证据（请求 URL、响应
-    状态码 / 响应体字节数 / `finish_reason`），由裁判 `http_async_client` 的 event hooks
-    收集（`src/infra/llm/provider/http_observability.py`，design D13）。hooks **只在失败
-    时**落日志（非 2xx 状态、或响应体无法解析，各一条 warning）；**成功调用不产生日志行**，
-    证据只留在内存桶里，用于 429 / 异常响应检测。
-> 说明：`note` 失败时为异常链摘要（`_exc_chain_summary`，形如
+    耗时 / 是否拿到分 / 异常链摘要 `error`），由 `src/cli/eval_deepeval.py` 埋点；
+  - `judge http` 事件：**框架内部**（ragas 桥）的每次 HTTP 调用明细（`judge_call_id`、
+    状态码 / `finish_reasons` / tokens / `json_ok` / `error`），由裁判
+    `http_async_client` 的 event hooks 收集（`src/infra/llm/provider/http_observability.py`，
+    design D13）。**成功与失败都落日志**；无 response 的调用在 measure 结束时补齐为
+    `status=null` + `error=no_response`。
+> 说明：`judge call` 的 `error` 失败时为异常链摘要（`_exc_chain_summary`，形如
 > `RuntimeError<-TimeoutError: msg`），成功时为空串；**不含** `finish_reason` /
-> 输出 token 数 / 原始输出片段——请求级证据见上面的 `HookEvidence` 桶。
+> 输出 token 数 / 原始输出片段——请求级明细见 `judge http`。
 
 实现：段位无关（不依赖 `|` 分段），在 `logs/app_*.log` 与 `logs/error_*.log` 里按
 trace_id **子串**过滤（与 `replay_trace` 同一套约定；trace 可跨天）。
@@ -55,7 +56,7 @@ def iter_trace_lines(trace_id: str, log_dir: str = DEFAULT_LOG_DIR) -> list[str]
 def main() -> None:
     """按 trace_id 打印日志；`--grep` 可再按子串收窄。"""
     parser = argparse.ArgumentParser(
-        description="按 trace_id 拉取日志（含 judge call 的原始模型响应）"
+        description="按 trace_id 拉取日志（可用 --grep 收窄到 judge call / judge http）"
     )
     parser.add_argument("trace_id", help="报告里的 trace_id，如 eval_19128e15c446")
     parser.add_argument(

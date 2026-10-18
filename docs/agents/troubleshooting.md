@@ -133,7 +133,16 @@ docker exec corporate-rag-app grep "<trace_id>" /data/logs/app_YYYY-MM-DD.log
 | 不知道是哪个渠道来的 | 日志第 5 段 `channel` | 本文件 §4 |
 | 企微不回 / 被顶号 | 渠道侧日志 + SDK 实测事实 | `docs/agents/wecom-sdk-facts.md` |
 | 部署/端口/发布异常 | 部署槽位日志与运行形态 | `docs/agents/deploy-runbook.md` |
-| 评测指标出现 `error` / 评测总耗时异常 | 该题 trace_id 下的 judge call（异常路径为异常链摘要（NaN 无异常时为空））与 provider hooks 请求级证据（仅失败时产日志） | 本文件 §10 + **ADR-0026** |
+| 评测指标出现 `error` / 评测总耗时异常 | 该题 trace_id 下的 `judge call`（measure 汇总；`error` 为异常链摘要，NaN 无异常时为空）与 `judge http`（每次 HTTP 明细，含传输失败） | 本文件 §10 + **ADR-0026** |
+
+### 评测 trace 链
+
+1. `evaluation run` 拿 `run_trace_id`（testset 加载前就有；报告头同名 `Run trace`）。
+2. `trace_logs <run_trace_id>` 拿每题 `question answer start/done` 的 `trace_id`。
+3. `trace_logs <trace_id> --grep "judge call"` 拿 `judge_measure_id`。
+4. `trace_logs <trace_id> --grep "judge http"` 拿每次 HTTP 的 `judge_call_id` / status / tokens。
+
+行为轴 judge 没有 active measure：它会在 `judge http` 中缺席，这是 v1 的已知边界。
 
 ## 9. "查不到 → 加日志"落点清单
 

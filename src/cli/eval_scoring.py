@@ -339,12 +339,14 @@ def read_behaviour_scores(results_folder: str) -> list[dict]:
         results_folder: `DisplayConfig(results_folder=…)` 指定的目录。
 
     Returns:
-        按题序的 `[{"q_index", "input", "metrics": {name: score},
-        "reasons": {name: reason}}, …]`。`reasons` 是行为轴的逐题失败证据承载点
+        按题序（`testCase.order` 升序）的 `[{"q_index", "order", "input",
+        "metrics": {name: score}, "reasons": {name: reason}}, …]`。`q_index`
+        即权威题号 `order`。`reasons` 是行为轴的逐题失败证据承载点
         （design R9：行为轴判官调用不经 hooks 逐题归因，失败证据取此处）。
 
     Raises:
-        RuntimeError: 目录下没有 `test_run_*.json`（生成器未耗尽 ⇒ 行为分不可信）。
+        RuntimeError: 目录下没有 `test_run_*.json`（生成器未耗尽 ⇒ 行为分不可信）；
+            或 `testCase.order` 缺失 / 非整数 / 越界 / 重复（题号不可信）。
     """
     import glob
     import json
@@ -356,8 +358,27 @@ def read_behaviour_scores(results_folder: str) -> list[dict]:
             "evals_iterator 未耗尽（或循环提前结束），行为分不可信"
         )
     raw = json.loads(Path(files[-1]).read_text(encoding="utf-8"))
+    cases = raw.get("testCases") or []
+    if not cases:
+        return []
+
+    seen: set[int] = set()
+    for idx, tc in enumerate(cases):
+        order = tc.get("order")
+        if not isinstance(order, int) or isinstance(order, bool):
+            raise RuntimeError(  # noqa: TRY004  # 题号不可信与缺文件同属数据契约破坏
+                f"test_run testCases[{idx}] 缺少合法 order：{order!r}"
+            )
+        if order < 0 or order >= len(cases):
+            raise RuntimeError(
+                f"test_run testCases[{idx}] order={order} 越界（n={len(cases)}）"
+            )
+        if order in seen:
+            raise RuntimeError(f"test_run testCases[{idx}] order={order} 重复")
+        seen.add(order)
+
     rows: list[dict] = []
-    for idx, tc in enumerate(raw.get("testCases") or []):
+    for idx, tc in sorted(enumerate(cases), key=lambda pair: pair[1]["order"]):
         metrics = {
             md.get("name"): md.get("score") for md in (tc.get("metricsData") or [])
         }
@@ -366,13 +387,44 @@ def read_behaviour_scores(results_folder: str) -> list[dict]:
         }
         rows.append(
             {
-                "q_index": idx,
+                "q_index": tc["order"],
+                "order": tc["order"],
                 "input": tc.get("input", ""),
                 "metrics": metrics,
                 "reasons": reasons,
             }
         )
     return rows
+
+
+def link_behavior_traces(
+    behaviour_rows: list[dict], trace_ids: list[str]
+) -> list[dict]:
+    """把行为行按 q_index 映射到 trace_id。
+
+    Args:
+        behaviour_rows: `read_behaviour_scores` 产物（q_index 已是权威题号）
+        trace_ids: 每题 trace_id，顺序与 q_index 一致
+
+    Returns:
+        行副本，追加 `trace_id` 与 `link_method`（`order` / `unmapped`）
+    """
+    out: list[dict] = []
+    for row in behaviour_rows:
+        item = dict(row)
+        q_index = item.get("q_index")
+        if (
+            isinstance(q_index, int)
+            and not isinstance(q_index, bool)
+            and 0 <= q_index < len(trace_ids)
+        ):
+            item["trace_id"] = trace_ids[q_index]
+            item["link_method"] = "order"
+        else:
+            item["trace_id"] = None
+            item["link_method"] = "unmapped"
+        out.append(item)
+    return out
 
 
 def is_failed_run(answer: object, trajectory: dict | None) -> bool:
@@ -400,6 +452,9 @@ def fill_missing_behaviour_rows(
     rows: list[dict], questions: list[str], trajectories: list[dict]
 ) -> list[dict]:
     """按 q_index 补齐行为分行；只允许 `failed=True` 的题缺行。
+
+    `q_index` 由 `read_behaviour_scores` 从 `testCase.order` 归一化，列表顺序
+    与 q_index 一致；补齐后 Langfuse 逐位回写与报告取 trajectories[i] 均按同一题号。
 
     补齐后用空 metrics/reasons 表示“该题行为分 N/A”，使后续断言、
     Langfuse 回写与报告都能按 q_index 稳定对齐。
