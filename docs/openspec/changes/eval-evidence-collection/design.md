@@ -125,15 +125,23 @@ class EvidenceRun:
 
 **探针**：
 
-1. 取 `reference` 中的数值 token（含负号、千分位、百分号、万元/亿元等单位）与归一化文本片段（优先“数字 + 稀有词”窗口，不只用前 40 字）。
+1. 取 `reference` 的 token（各自去重保序）：
+   - 数值 token：键为 `数字+单位`（含负号、千分位、百分号、万元/亿元等）；负号前不得是数字或百分号，故 `2023-2024` / `30%-50%` 抽出 `2023` / `2024`、`30%` / `50%`，不产生 `-2024` / `-50%`。
+   - 文本 token：先经 `normalize_text`（NFKC、去 `【...】` 头、压缩空白、小写），删除数值 token 后按 `，。；、：:,.!?！？（）()[]【】|/` 与空白切分；保留含 2–12 个汉字的片段或 4–30 个 ASCII 字符的片段；丢弃纯数字/标点片段、停用词（`公司`/`报告期`/`年度`/`本期`/`上年同期`/`同比`/`增长`/`下降`/`的`/`了`/`和`/`与`/`及`/`为`/`是`/`在`/`有`/`元`/`万元`/`亿元`/`%`/`百分点`）以及完全由停用词组成的片段；文本 token 上限 20。
+   - `probe_tokens` = 数值 token + 文本 token；`numeric_tokens` 单独返回数值子集，`numeric_conflict` / `unit_missing` 只看数值子集。
 2. 从 `EvidenceRun.corpus_chunks` 取全量分块；该列表由 `main()` 的空库检查 `get_all_chunks` 复用，**不再二次读库**。
-3. 在 `content` 与 `parent_content` 中做归一化子串/数值匹配，记录命中的 `doc_id/chunk_id/source/page/parent_key`。
+3. 在 `content` 与 `parent_content` 中做归一化匹配，记录命中的 `doc_id/chunk_id/source/page/parent_key`：
+   - 文本 token 直接子串匹配；
+   - 数值 token 先匹配完整 `数字+单位`；未命中且 token 带单位时，退化为“数值核心出现在同一 chunk 且该单位也出现在同一 chunk”（表格单位常写在表头或另一单元格）。
 4. 输出：
-   - `gold_chunk_ids`：命中 chunk（上限 20）；
-   - `gold_parent_keys`：命中 parent 键（上限 20）；
+   - `gold_chunk_ids`：命中 chunk（去重，上限 20）；题集与探针都没有时 SHALL 为 `null`（不是 `[]`）；
+   - `gold_parent_keys`：命中 parent 键（去重，上限 20）；无 gold 时为 `null`；
+   - `probe_tokens` / `numeric_tokens`：本次实际使用的全部 token / 数值 token 子集；
    - `fact_in_corpus`：`true` / `false` / `null`；
-   - `probe_tokens`：实际用的数值/文本 token；
+   - `fact_coverage.corpus`：命中 token 数 / `len(probe_tokens)`；无 token 或语料不可用时为 `null`；
    - `truncated`：命中超过上限时为 `true`。
+
+题集命中时也返回全部探针字段（`fact_in_corpus` / `probe_tokens` / `numeric_tokens` / `missing_fact_tokens` / `token_hits` / `token_parent_keys`），但 `gold_chunk_ids` / `gold_parent_keys` / `gold_chunk_confidence` 以题集为准，SHALL NOT 被探针命中覆盖。
 
 **token 归一化**（探针与 `answer_mentions_fact` 共用）：
 
@@ -141,15 +149,15 @@ class EvidenceRun:
 - 去掉数值中的千分位逗号与空白；
 - 统一负号（`−` / `－` → `-`）；
 - 数值键 = `规范化数字 + 单位`；单位缺失时只比数字，并在 `unit_missing` 标记；
-- 文本片段：去掉 `【公司 · 报告期】` 头、压缩空白、转小写后做子串匹配；
+- 文本片段：去掉 `【公司 · 报告期】` 头、压缩空白、转小写后做子串匹配；切片与过滤口径见上（2–12 汉字 / 4–30 ASCII、丢弃纯数字标点与停用词、上限 20）；
 - 匹配不到时写 `null`，不得猜 `false`。
 
 - `parent_key`：`parent_content` 非空时为 `(doc_id, md5(parent_content))`，为空/None 时为 `(doc_id, chunk_id)`（与 `_dedup_by_parent` 的 passthrough 口径一致）。`fact_in_candidates` / `fact_in_reranked` / `fact_in_final` 用 `chunk_id OR parent_key` 判交集，避免“同 parent 的另一个 child 在 final”被误判为未命中。
 
 **testset_conflict**：
 
-- `numeric_conflict`：`true` 当参考答案有数值 token、语料中完全找不到、且题集 `numeric_risk=true`；`false` 当找到；`null` 当没有数值 token 或语料不可用。它是“数值存在性”判断，不是“谁对”的语义判断。
-- `unit_missing`：数值 token 后 4 个字符内没有单位（元/万元/亿元/%/百分点）→ `true`；有单位 → `false`；无数值 token 或语料不可用 → `null`。**`unit_missing` 只做信号，不触发 `testset_error`**：表格单位常在表头，参考答案省略单位是正常表述；只有 `numeric_conflict` 进入 `testset_conflict`。
+- `numeric_conflict`：`true` 当参考答案有数值 token、语料中完全找不到、且题集 `numeric_risk=true`；`false` 当找到；`null` 当没有数值 token 或语料不可用。只看数值 token 的命中，文本片段命中不算“数值存在”。它是“数值存在性”判断，不是“谁对”的语义判断。
+- `unit_missing`：数值 token 后 4 个字符内没有单位（元/万元/亿元/%/百分点）→ `true`；有单位 → `false`；无数值 token 或语料不可用 → `null`。只检查数值 token，文本 token 不参与。**`unit_missing` 只做信号，不触发 `testset_error`**：表格单位常在表头，参考答案省略单位是正常表述；只有 `numeric_conflict` 进入 `testset_conflict`。
 - `period_conflict`：v1 **恒为 null**；不做期间/季度语义判断（见 Non-Goals）。
 
 ### D6：裁判、评分与行为证据
