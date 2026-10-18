@@ -28,6 +28,8 @@ class ChunkResult:
     """该结果在 dense 路的排名（0 起）；未出现在 dense 路时为 None。"""
     sparse_rank: int | None = None
     """该结果在词法路的排名（0 起）；未出现在词法路时为 None。"""
+    rrf_score: float | None = None
+    """RRF 融合得分；仅 RRF 输出有值，dense/lexical 单路为 None。"""
 
 
 @dataclass(slots=True)

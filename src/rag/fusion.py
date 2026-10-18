@@ -73,7 +73,12 @@ def rrf_fusion(
         merged[doc.id] = _merge_path_ranks(merged.get(doc.id), doc, sparse_rank=rank)
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    return [merged[doc_id] for doc_id, _ in ranked[:top_n]]
+    result: list[ChunkResult] = []
+    for doc_id, score in ranked[:top_n]:
+        item = merged[doc_id]
+        item.rrf_score = score
+        result.append(item)
+    return result
 
 
 def rrf_fusion_multi(
@@ -102,4 +107,9 @@ def rrf_fusion_multi(
             scores[doc.id] = scores.get(doc.id, 0) + 1.0 / (k + rank + 1)
             merged[doc.id] = _merge_path_ranks(merged.get(doc.id), doc, dense_rank=rank)
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    return [merged[doc_id] for doc_id, _ in ranked[:top_n]]
+    result: list[ChunkResult] = []
+    for doc_id, score in ranked[:top_n]:
+        item = merged[doc_id]
+        item.rrf_score = score
+        result.append(item)
+    return result
