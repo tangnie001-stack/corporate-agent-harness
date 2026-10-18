@@ -37,6 +37,7 @@ Python 3.11+ / FastAPI / LangChain 1.x + LangGraph / PostgreSQL 15 + pgvector / 
 | docs/agents/selection-baseline.md | 选型对齐基线唯一归属：原则（生产验证 > 领域契合 > 可迁移深度）/ 本域基线四家 / **对齐状态表**（对齐·偏离·未做）/ 怎么用与维护 | **做技术选型、或要偏离既有做法前**；评审方案时判断"这是不是成熟做法" |
 | docs/agents/best-practices.md | 最佳实践基线唯一归属：各能力域「业界做法 ↔ 我们的现状」对照表（RAG 全链路 / 评估 / 文档解析 / 表格提取 / 分块 / Agent / Prompt / 可靠性 / 知识图谱 / 记忆）+ 条目模板 + 维护规则 | **设计或评审某能力前**（先查本域有无成熟做法）；判断"我们差在哪、差距登记在哪"时 |
 | docs/agents/eval-ledger.md | 评测台账（追加式，唯一归属）：公共配置 / 当前口径版本 / 运行台账 / 改动记录 / 已知口径与坑 | 对比跨轮评测结果、登记新一轮全量运行前 |
+| docs/agents/eval-metrics-troubleshooting.md | 评测指标异常排查唯一归属：三层指标边界 / 0 vs NaN vs N/A / 指标→根因→先查什么 / v6 基线 / `eval_report` 查询 | 评测报告出现低分、NaN、N/A，或要解释某指标异常时 |
 | docs/agents/chunking-issues.md | 分块问题排查与修复记录 | 遇到分块问题优先查阅 |
 | docs/agents/defensive-patterns.md | 防御性模式：并发 / SSE / 精排 / 实体 / prompt / DB / 部署的防复发规则 | 写相关领域代码前 |
 | docs/agents/ui-design-flow.md | UI 设计流程与产物路径：全局基线 `docs/design/MASTER.md` / 页面规格 `docs/design/pages/<name>.md` / 效果预览 `docs/design/<name>-mockup.html` | **改 UI / 新增组件前必读**；产出按此流程落 `docs/design/`，改完用 playwright-cli 验证 |

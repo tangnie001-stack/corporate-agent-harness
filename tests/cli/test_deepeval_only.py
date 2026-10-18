@@ -79,6 +79,7 @@ def test_markdown_report_without_ragas_has_no_metric_rows(tmp_path):
     assert "Main scores (pure-KB)" not in text
     assert "faithfulness=" not in text
     assert "Agent 行为轴" in text
+    assert "工具选择：未跑（--deepeval-only）" in text
 
 
 def test_deepeval_only_skips_all_ragas_side_effects(monkeypatch, tmp_path):
@@ -106,7 +107,7 @@ def test_deepeval_only_skips_all_ragas_side_effects(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "src.cli.testset_io._load_latest_testset",
-        lambda kb_id, version=None: (["q"], ["a"]),
+        lambda kb_id, version=None: (["q"], ["a"], [["retrieve_kb"]]),
     )
     monkeypatch.setattr(
         "src.agents.graph.workflow.build_graph", lambda *a, **k: object()

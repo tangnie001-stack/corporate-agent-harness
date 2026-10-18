@@ -40,6 +40,9 @@ from src.cli.eval_scoring import (
     build_diagnostic_metrics,
     build_metrics,
     classify_sample,
+    dedupe_tool_names,
+    fill_missing_behaviour_rows,
+    is_failed_run,
     main_score_means,
     nan_cell_stats,
     read_behaviour_scores,
@@ -76,31 +79,36 @@ GATE_THRESHOLDS: dict[str, float] = {
 
 
 def _limit_testset(
-    questions: list[str], ground_truth: list[str], limit: int | None
-) -> tuple[list[str], list[str]]:
+    questions: list[str],
+    ground_truth: list[str],
+    expected_tools: list[list[str] | None],
+    limit: int | None,
+) -> tuple[list[str], list[str], list[list[str] | None]]:
     """按冒烟轮次截取前 `limit` 题；`None` 表示不截断。
-
-    仅用于逐级活体（1 → 5 → 21）。`limit` 超过题数时原样返回，便于同一命令
-    在不同规模的题集上复用；`limit <= 0` 是调用错误，直接失败。
 
     Args:
         questions: 题面列表
         ground_truth: 参考答案列表（与 questions 等长同序）
-        limit: 保留的题数；None 表示全量
+        expected_tools: 每题的标签（与 questions 等长同序）
+        limit: 保留的题数；None 表示不截断
 
     Returns:
-        (questions, ground_truth) 的截断副本或原对象
+        (questions, ground_truth, expected_tools) 的截断副本或原对象
 
     Raises:
         ValueError: `limit` 非正
     """
     if limit is None:
-        return questions, ground_truth
+        return questions, ground_truth, expected_tools
     if limit <= 0:
         raise ValueError(f"--limit 必须为正整数，得到 {limit}")
     if limit >= len(questions):
-        return questions, ground_truth
-    return questions[:limit], ground_truth[:limit]
+        return questions, ground_truth, expected_tools
+    return (
+        questions[:limit],
+        ground_truth[:limit],
+        expected_tools[:limit],
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -272,7 +280,11 @@ async def _collect_one_question(
         index: 该问题在整批中的 1-based 序号（仅用于日志）
 
     Returns:
-        (回答文本, 渲染后的上下文列表, 结构化检索明细, 样本类别, 轨迹摘要)
+        (回答文本, 渲染后的上下文列表, 结构化检索明细, 样本类别, 轨迹摘要)。
+        异常分支的回答为 `[ERROR]` 占位，轨迹摘要额外带 `failed: True`。
+        成功分支的轨迹摘要由 `summarize_trajectory` 产出，仅当 `is_failed_run`
+        判定为失败（空回答/纯空白，如迭代触顶）时补 `failed: True`，使该题与
+        异常题走同样的 N/A 路径（不得把失败误记成 0 分）。
     """
     core_logging.log_event(Event.QA_ANSWER_START, index=index, query=query)
     # F-32：镜像 turn_runner，seed 请求上下文，使 retrieve_kb 等工具收集的
@@ -293,6 +305,10 @@ async def _collect_one_question(
         )
         sample_class = classify_sample(req_ctx.tool_contexts)
         trajectory = summarize_trajectory(messages)
+        # 空回答/纯空白（迭代触顶的已知生产故障）与异常同属跑图失败：
+        # 打上 failed 让下游断言豁免、报告记 N/A（failed），而不是 0 分。
+        if is_failed_run(answer, trajectory):
+            trajectory["failed"] = True
         core_logging.log_event(
             Event.QA_ANSWER_DONE,
             index=index,
@@ -315,7 +331,7 @@ async def _collect_one_question(
             [],
             [],
             SAMPLE_CLASS_EMPTY,
-            {"tool_calls": [], "iterations": 0},
+            {"tool_calls": [], "iterations": 0, "failed": True},
         )
     finally:
         current_request_ctx.reset(ctx_token)
@@ -668,6 +684,64 @@ def _score_metric_with_retry(
     return float("nan"), f"{metric_name}:{last_note}"
 
 
+def _score_tool_correctness(row: dict, metric) -> tuple[float | None, str]:
+    """按顶层轨迹计算一题的工具选择分数。
+
+    Args:
+        row: 含 question / answer / expected_tools / trajectory / q_index
+        metric: `ToolCorrectnessMetric`；None 表示构造失败
+
+    Returns:
+        (score, reason)：score 为 0.0–1.0 或 None；reason 单行、无 "|"
+    """
+    from deepeval.test_case import LLMTestCase, ToolCall
+
+    trajectory = row.get("trajectory") or {}
+    if is_failed_run(row.get("answer"), trajectory):
+        return None, "failed"
+    expected = row.get("expected_tools")
+    if expected is None:
+        return None, ""
+    if metric is None:
+        return None, "metric_unavailable"
+
+    q_index = int(row.get("q_index", 0))
+    expected_names = dedupe_tool_names(expected, q_index)
+    calls = trajectory.get("tool_calls") or []
+    actual_names = [str(call.get("name", "")) for call in calls]
+
+    try:
+        test_case = LLMTestCase(
+            input=row.get("question", ""),
+            tools_called=[
+                ToolCall(name=name, input_parameters=(call.get("args") or {}))
+                for call, name in zip(calls, actual_names, strict=True)
+            ],
+            expected_tools=[
+                ToolCall(name=name, input_parameters=None) for name in expected_names
+            ],
+        )
+        value = metric.measure(test_case)
+    except Exception as exc:  # noqa: BLE001  # 诊断失败记 null，不重试
+        return None, f"tool_correctness:{type(exc).__name__}"
+    if value is None:
+        return None, "tool_correctness:returned_none"
+
+    score = float(value)
+    missing = [name for name in expected_names if name not in actual_names]
+    if score >= 1.0:
+        reason = ""
+    elif not expected_names:
+        reason = "expected no tools but called " + ",".join(sorted(set(actual_names)))
+    elif missing:
+        reason = "missing " + ",".join(missing)
+    else:
+        reason = "partial match"
+    if "delegate_task" in actual_names and missing:
+        reason += "; delegate_task present but expected tools not called at top level"
+    return score, " ".join(reason.replace("|", "/").split())
+
+
 def score_rows(
     rows: list[dict], metrics: dict, *, diagnostic_metrics=None, evidence=None
 ) -> list[dict]:
@@ -678,17 +752,20 @@ def score_rows(
     表现为间歇性错分（design D7）。并发预算留给"跑图"那一侧。
 
     `ContextualRelevancy` 单独构造截断后的 test_case，共享 test_case 保持全量
-    contexts；`empty` 样本不调用任何指标。
+    contexts；`empty` 样本与跑图失败样本（`is_failed_run`）不调用四项主分指标
+    与两项裁判诊断，`tool_correctness` 照常按轨迹评分（失败样本由
+    `_score_tool_correctness` 记 None/"failed"）。
 
     Args:
         rows: 每题一行（含 q_index / trace_id / question / answer /
-            ground_truth / contexts / sample_class）
+            ground_truth / contexts / sample_class / expected_tools / trajectory）
         metrics: `build_metrics` 产物（顺序即评分顺序）
         diagnostic_metrics: `build_diagnostic_metrics` 产物；不进主分
         evidence: 可选证据桶（本题评分前 `mark(trace_id)`）
 
     Returns:
-        与输入同序的行副本，追加四指标、诊断值、`tool_correctness` 与 `error`
+        与输入同序的行副本，追加四指标、诊断值、`tool_correctness`、
+        `tool_correctness_reason` 与 `error`
     """
     from src.config.const import EVAL_RELEVANCY_MAX_CONTEXTS
 
@@ -700,14 +777,27 @@ def score_rows(
         scored: dict = {"q_index": row["q_index"], "error": ""}
         errors: list[str] = []
 
-        if row.get("sample_class") == SAMPLE_CLASS_EMPTY:
+        tool_metric = None
+        if diagnostic_metrics is not None:
+            tool_metric = diagnostic_metrics.get("tool_correctness")
+        tool_value, tool_reason = _score_tool_correctness(row, tool_metric)
+        scored["tool_correctness"] = tool_value
+        scored["tool_correctness_reason"] = tool_reason
+
+        if row.get("sample_class") == SAMPLE_CLASS_EMPTY or is_failed_run(
+            row.get("answer"), row.get("trajectory")
+        ):
             for name in metrics:
                 scored[name] = float("nan")
             if diagnostic_metrics is not None:
                 for name in diagnostic_metrics:
+                    if name == "tool_correctness":
+                        continue
                     scored[name] = float("nan")
-            scored["tool_correctness"] = None
-            scored["error"] = "sample_class=empty"
+            if row.get("sample_class") == SAMPLE_CLASS_EMPTY:
+                scored["error"] = "sample_class=empty"
+            else:
+                scored["error"] = "failed"
             out.append(scored)
             continue
 
@@ -751,7 +841,6 @@ def score_rows(
                 if err:
                     errors.append(err)
 
-        scored["tool_correctness"] = None
         scored["error"] = ";".join(errors)
         out.append(scored)
     return out
@@ -767,14 +856,18 @@ def run_evaluation(
     metrics,
     trace_ids,
     *,
+    expected_tools,
+    trajectories,
     evidence=None,
     diagnostic_metrics=None,
     sample_classes=None,
 ) -> _EvalResult:
     """逐题打分并返回带 `.to_pandas()` 的结果（行序与输入一致）。
 
-    本函数是评测**评分后端边界**（逃生门接入点，design D10）：`metrics` 由调用方注入，
-    替代实现只需提供同签名的 `metrics`（及用例构造）即可替换，无需改这里的编排。
+    本函数是评测**评分后端边界**（逃生门接入点，design D10）：`metrics` 由调用方
+    注入，替代实现需同时提供同签名的 `metrics`、`expected_tools`、
+    `trajectories`（均为必填）以及配套的用例构造，才能在不改这里编排的前提下
+    替换评分后端。
 
     Args:
         questions: 题面列表
@@ -783,6 +876,8 @@ def run_evaluation(
         contexts: 每题检索上下文列表
         metrics: 主分指标（`build_metrics` 产物）
         trace_ids: 每题 trace_id
+        expected_tools: 每题的期望工具名（三元状态：None 无标签 / [] 明确不调工具）
+        trajectories: 每题轨迹摘要（顶层 `tool_calls` 是工具分的数据源）
         evidence: 可选证据桶（退避时读取 429 的 `Retry-After`）
         diagnostic_metrics: 诊断指标（`build_diagnostic_metrics` 产物）；不进主分
         sample_classes: 每题样本类别；None 表示不分类
@@ -790,6 +885,14 @@ def run_evaluation(
     Returns:
         带 `.to_pandas()` 的结果对象（行序与输入一致）
     """
+    if len(expected_tools) != len(questions):
+        raise ValueError(
+            f"expected_tools ({len(expected_tools)}) != questions ({len(questions)})"
+        )
+    if len(trajectories) != len(questions):
+        raise ValueError(
+            f"trajectories ({len(trajectories)}) != questions ({len(questions)})"
+        )
     rows = []
     for i, (q, a, g, c, t) in enumerate(
         zip(questions, answers, ground_truth, contexts, trace_ids, strict=True)
@@ -806,6 +909,8 @@ def run_evaluation(
                 "ground_truth": g,
                 "contexts": c,
                 "sample_class": sample_class,
+                "expected_tools": expected_tools[i],
+                "trajectory": trajectories[i],
             }
         )
     core_logging.log_event(Event.EVALUATION_START, samples=len(rows))
@@ -852,6 +957,10 @@ def save_results_csv(
     df = result.to_pandas()
 
     df = apply_sample_masks(df, sample_classes)
+
+    # reason 只进 detail/Markdown，不进 CSV，避免无意改变消费方 schema
+    if "tool_correctness_reason" in df.columns:
+        df = df.drop(columns=["tool_correctness_reason"])
 
     # 添加元信息列
     df.insert(0, "question", questions)
@@ -981,7 +1090,66 @@ def _build_diagnostic_section(df: pd.DataFrame) -> list[str]:
     return lines
 
 
-def _build_behaviour_section(behaviour_rows: list[dict]) -> list[str]:
+def _build_tool_correctness_section(df: pd.DataFrame) -> list[str]:
+    """渲染「工具选择」诊断段：逐题分数、原因、均值与计数。"""
+    lines = ["## 工具选择（期望工具调用命中，诊断）", ""]
+    lines.append(
+        "> 只比较工具名与类型（类型固定 FUNCTION）；不比较参数、顺序、调用次数。"
+    )
+    lines.append("")
+    if "tool_correctness" not in df.columns:
+        lines.append("工具选择：N/A（无标签或未产出）")
+        return lines
+
+    # 显式标注以消除 pandas 存根把列/标量推断为 Series 的误判
+    scores: Any = df["tool_correctness"]
+    reasons = (
+        df["tool_correctness_reason"]
+        if "tool_correctness_reason" in df.columns
+        else pd.Series([""] * len(df), index=df.index)
+    )
+    reason_text = reasons.fillna("").astype(str)
+    total = len(df)
+    scored = int(scores.notna().sum())
+    failed = int((reason_text == "failed").sum())
+    metric_error = int(
+        reason_text.str.startswith(("tool_correctness:", "metric_unavailable")).sum()
+    )
+    # 四类互斥由 `_score_tool_correctness` 的返回分支保证（failed / 空 reason /
+    # metric_unavailable 或 tool_correctness:* / 有分数），no_label 是残差。
+    no_label = total - scored - failed - metric_error
+
+    lines.append("| Question | tool_correctness | reason |")
+    lines.append("|---|---|---|")
+    for i in range(total):
+        raw = scores.iloc[i]
+        value = "N/A" if pd.isna(raw) else f"{float(raw):.4f}"
+        reason = " ".join(str(reason_text.iloc[i]).split()).replace("|", "/")
+        lines.append(f"| Q{i + 1} | {value} | {reason} |")
+
+    mean_text = "N/A" if scored == 0 else f"{float(scores.mean()):.4f}"
+    fully = int((scores == 1.0).sum())
+    lines.append("")
+    lines.append(f"**Tool correctness mean (scored):** {mean_text}")
+    lines.append(f"**Fully matched:** {fully}/{scored}")
+    lines.append(
+        "**Counts:** "
+        f"qa_count={total}, no_label={no_label}, failed={failed}, "
+        f"metric_error={metric_error}, scored={scored}"
+    )
+    violations = [
+        f"Q{i + 1} ({reason_text.iloc[i]})"
+        for i in range(total)
+        if not pd.isna(scores.iloc[i]) and float(scores.iloc[i]) < 1.0
+    ]
+    if violations:
+        lines.append("**Violations:** " + "; ".join(violations))
+    return lines
+
+
+def _build_behaviour_section(
+    behaviour_rows: list[dict], trajectories: list[dict] | None = None
+) -> list[str]:
     """渲染「Agent 行为轴」段：逐题 input + 各行为指标分。
 
     行为轴仅作诊断观测、**不进主分/门禁**；指标列按首次出现顺序收集
@@ -989,10 +1157,12 @@ def _build_behaviour_section(behaviour_rows: list[dict]) -> list[str]:
     返回空列表（不写段）。
 
     指标缺分时以 test_run JSON 的 `reason` 摘要标注（design R9：行为轴不走 hooks
-    逐题归因，失败证据由 JSON 承载）。
+    逐题归因，失败证据由 JSON 承载）。跑图失败（`trajectory.failed=True`）的题
+    整行记 `N/A（failed）`——失败不是「零分」，不能被误读成行为差。
 
     Args:
         behaviour_rows: 逐题行为分（见 eval_scoring.read_behaviour_scores 返回形状）
+        trajectories: 逐题轨迹摘要（与 behaviour_rows 同序），用于识别 failed 题
 
     Returns:
         Markdown 行列表（含段标题与表格）
@@ -1013,6 +1183,15 @@ def _build_behaviour_section(behaviour_rows: list[dict]) -> list[str]:
     lines.append("|" + "|".join("---" for _ in header) + "|")
     for i, row in enumerate(behaviour_rows):
         vals = [str(row.get("input") or f"Q{i + 1}")]
+        failed = bool(
+            trajectories
+            and i < len(trajectories)
+            and (trajectories[i] or {}).get("failed")
+        )
+        if failed:
+            vals.extend(["N/A（failed）"] * len(metric_names))
+            lines.append("| " + " | ".join(vals) + " |")
+            continue
         reasons = row.get("reasons") or {}
         for name in metric_names:
             value = (row.get("metrics") or {}).get(name)
@@ -1129,9 +1308,21 @@ def save_markdown_report(
         lines.append("")
         lines.extend(_build_diagnostic_section(df))
         lines.append("")
+        lines.extend(_build_tool_correctness_section(df))
+        lines.append("")
+
+    if result is None:
+        lines.extend(
+            [
+                "## 工具选择（诊断）",
+                "",
+                "工具选择：未跑（--deepeval-only）",
+                "",
+            ]
+        )
 
     if behaviour_rows is not None:
-        lines.extend(_build_behaviour_section(behaviour_rows))
+        lines.extend(_build_behaviour_section(behaviour_rows, trajectories))
         lines.append("")
 
     os.makedirs(os.path.dirname(md_path) or ".", exist_ok=True)
@@ -1297,14 +1488,16 @@ def main() -> None:
 
         try:
             resolved_version = resolve_testset_version(kb_id, args.testset_version)
-            questions, ground_truth = _load_latest_testset(
+            questions, ground_truth, expected_tools = _load_latest_testset(
                 kb_id, version=resolved_version
             )
         except FileNotFoundError as e:
             print(f"error: {e}")
             sys.exit(1)
 
-        questions, ground_truth = _limit_testset(questions, ground_truth, args.limit)
+        questions, ground_truth, expected_tools = _limit_testset(
+            questions, ground_truth, expected_tools, args.limit
+        )
 
         core_logging.log_event(Event.TESTSET_LOADED, count=len(questions))
         core_logging.log_event(Event.EVALUATION_RUN, kb_id=kb_id)
@@ -1402,7 +1595,9 @@ def main() -> None:
         # 行为分事后回读 + fail-loud（题数/分数对齐、轨迹非空、hooks 确实触发）。
         # hooks 断言必须在 run_evaluation 之前：score_rows 会逐题 reset 证据桶，
         # 晚查会因 events 被清空而误判「未触发」。
-        behaviour_rows = read_behaviour_scores(behaviour_out)
+        behaviour_rows = fill_missing_behaviour_rows(
+            read_behaviour_scores(behaviour_out), questions, trajectories
+        )
         assert_behaviour_scores_complete(questions, behaviour_rows, trajectories)
         if not any(e.get("phase") == "response" for e in judge_evidence.events):
             raise RuntimeError(
@@ -1421,6 +1616,8 @@ def main() -> None:
                 contexts,
                 metrics,
                 trace_ids,
+                expected_tools=expected_tools,
+                trajectories=trajectories,
                 evidence=judge_evidence,
                 diagnostic_metrics=diagnostic_metrics,
                 sample_classes=sample_classes,
@@ -1599,8 +1796,8 @@ def _build_eval_detail(
         testset_version: 实际加载到的题集版本，逐题条目透传
 
     Returns:
-        (detail, avg)：detail 为逐题条目列表（含诊断键与恒 None 的
-        tool_correctness），avg 为指标名 -> 均值
+        (detail, avg)：detail 为逐题条目列表（含诊断键、tool_correctness 及其
+        原因；N/A 无标签题记 None），avg 为指标名 -> 均值
     """
     from src.config.const import DIAGNOSTIC_METRIC_COLUMNS
 
@@ -1623,7 +1820,20 @@ def _build_eval_detail(
                 entry[col] = float("nan")
             else:
                 entry[col] = float(v)
-        entry["tool_correctness"] = None
+        if "tool_correctness" in df.columns:
+            tool_value: Any = df["tool_correctness"].iloc[i]
+            if pd.isna(tool_value):
+                entry["tool_correctness"] = None
+            else:
+                entry["tool_correctness"] = float(tool_value)
+        else:
+            entry["tool_correctness"] = None
+        if "tool_correctness_reason" in df.columns:
+            entry["tool_correctness_reason"] = str(
+                df["tool_correctness_reason"].iloc[i]
+            )
+        else:
+            entry["tool_correctness_reason"] = ""
         if "error" in df.columns:
             entry["error"] = str(df["error"].iloc[i])
         if retrieval_details is not None and i < len(retrieval_details):

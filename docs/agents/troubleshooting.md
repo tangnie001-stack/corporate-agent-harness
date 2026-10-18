@@ -5,6 +5,9 @@
 > 本文件只给**流程与路由**；"查什么用什么事件"的清单与字段口径以 `docs/agents/logging-rules.md`
 > 为唯一归属，此处一律指针引用，不复制其正文。
 
+> **指标分数异常**（低分 / NaN / N/A / 0）不按 trace-first 查：先看
+> `docs/agents/eval-metrics-troubleshooting.md`，拿到 `trace_id` 后再回到本文件查日志/Langfuse。
+
 ## 1. 原则：trace-first
 
 一次问答的全过程由**同一个** `trace_id` 串起来，它同时出现在四处（取值与白名单口径见

@@ -12,26 +12,69 @@ from src.config.const import (
 )
 
 
-def test_detail_includes_diagnostics_error_and_null_tool_correctness():
-    """detail_json 逐题条目含两项诊断分、恒 None 的 tool_correctness 与 error。"""
+def test_detail_includes_tool_correctness_score_reason_and_null_na():
     df = pd.DataFrame(
         {
-            "faithfulness": [0.8],
-            "answer_relevancy": [0.7],
-            "context_precision": [0.6],
-            "context_recall": [0.5],
-            "contextual_relevancy": [0.4],
-            "non_advice": [1.0],
-            "error": ["faithfulness:timeout"],
+            "faithfulness": [0.8, 0.7],
+            "answer_relevancy": [0.7, 0.6],
+            "context_precision": [0.6, 0.5],
+            "context_recall": [0.5, 0.4],
+            "contextual_relevancy": [0.4, float("nan")],
+            "non_advice": [1.0, 1.0],
+            "tool_correctness": [1.0, float("nan")],
+            "tool_correctness_reason": ["", "failed"],
+            "error": ["", "sample_class=empty"],
         }
     )
 
-    detail, _ = _build_eval_detail(df, 1, None)
+    detail, _ = _build_eval_detail(df, 2, None)
 
-    assert detail[0]["contextual_relevancy"] == 0.4
-    assert detail[0]["non_advice"] == 1.0
-    assert detail[0]["tool_correctness"] is None
-    assert detail[0]["error"] == "faithfulness:timeout"
+    assert detail[0]["tool_correctness"] == 1.0
+    assert detail[0]["tool_correctness_reason"] == ""
+    assert detail[1]["tool_correctness"] is None
+    assert detail[1]["tool_correctness_reason"] == "failed"
+
+
+def test_report_tool_section_counts_and_fully_matched(tmp_path):
+    from unittest.mock import MagicMock
+
+    from src.cli.eval_deepeval import save_markdown_report
+
+    df = pd.DataFrame(
+        {
+            "faithfulness": [0.9, 0.8, 0.7],
+            "answer_relevancy": [0.9, 0.8, 0.7],
+            "context_precision": [0.9, 0.8, 0.7],
+            "context_recall": [0.9, 0.8, 0.7],
+            "contextual_relevancy": [0.5, 0.5, 0.5],
+            "non_advice": [1.0, 1.0, 1.0],
+            "tool_correctness": [1.0, 0.0, float("nan")],
+            "tool_correctness_reason": ["", "missing search_web", ""],
+        }
+    )
+    mock_result = MagicMock()
+    mock_result.to_pandas.return_value = df
+    csv_path = str(tmp_path / "report.csv")
+
+    save_markdown_report(
+        mock_result,
+        ["Q1", "Q2", "Q3"],
+        csv_path,
+        sample_classes=["pure_kb", "pure_kb", "pure_kb"],
+    )
+
+    content = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "工具选择" in content
+    assert "Fully matched:** 1/2" in content
+    assert "no_label=1" in content
+    assert "failed=0" in content
+    assert "metric_error=0" in content
+    assert "scored=2" in content
+    assert "missing search_web" in content
+    main_line = next(
+        line for line in content.splitlines() if line.startswith("**Main scores")
+    )
+    assert "tool_correctness" not in main_line
 
 
 def test_report_diagnostic_section_uses_const_and_counts_nan(tmp_path):

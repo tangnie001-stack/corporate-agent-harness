@@ -246,6 +246,33 @@ class TestGenerateAnswers:
             {"source": "kweichow.pdf", "score": 0.87, "kind": "kb"},
         ]
 
+    def test_generate_marks_empty_answer_as_failed(self) -> None:
+        """空回答（迭代触顶的已知故障）与异常同样标 failed，走 N/A 路径。"""
+        from src.cli.eval_deepeval import generate_answers_and_contexts
+
+        mock_graph = MagicMock()
+
+        async def mock_ainvoke(state: dict) -> dict:
+            return {"answer": "   "}
+
+        mock_graph.ainvoke = AsyncMock(side_effect=mock_ainvoke)
+
+        (
+            answers,
+            _contexts,
+            _trace_ids,
+            _details,
+            _classes,
+            trajectories,
+        ) = asyncio.run(generate_answers_and_contexts(mock_graph, "kb", "sess", ["Q0"]))
+
+        assert answers[0].strip() == ""
+        assert trajectories[0] == {
+            "tool_calls": [],
+            "iterations": 0,
+            "failed": True,
+        }
+
     def test_generate_partial_failure(self) -> None:
         """部分问题失败时应返回错误标记，不中断整体流程。"""
         from src.cli.eval_deepeval import generate_answers_and_contexts
@@ -295,11 +322,15 @@ class TestGenerateAnswers:
         assert len(sample_classes) == 3
         assert "[ERROR]" in answers[1]
         assert contexts[1] == []
-        # 失败的问题也要有 trace_id，便于回溯；检索明细与轨迹摘要异常分支为空
+        # 失败的问题也要有 trace_id，便于回溯；检索明细为空，轨迹摘要带 failed 标记
         assert trace_ids[1].startswith("eval_")
         assert retrieval_details[0] == [{"source": "s.pdf", "score": 0.5, "kind": "kb"}]
         assert retrieval_details[1] == []
-        assert trajectories[1] == {"tool_calls": [], "iterations": 0}
+        assert trajectories[1] == {
+            "tool_calls": [],
+            "iterations": 0,
+            "failed": True,
+        }
 
     def test_generate_collects_trajectory_from_messages(self) -> None:
         """图 state 含工具调用消息时，轨迹应含工具名/入参/迭代数。
@@ -405,6 +436,11 @@ class TestRunEvaluation:
             [["ctx1"], ["ctx2"]],
             _fake_metrics(),
             ["trace_1", "trace_2"],
+            expected_tools=[None, None],
+            trajectories=[
+                {"tool_calls": [], "iterations": 2},
+                {"tool_calls": [], "iterations": 2},
+            ],
         )
 
         df = result.to_pandas()
@@ -430,6 +466,8 @@ class TestRunEvaluation:
             [[]],
             _fake_metrics(),
             ["trace_1"],
+            expected_tools=[None],
+            trajectories=[{"tool_calls": [], "iterations": 2}],
         )
         df = result.to_pandas()
         assert len(df) == 1
@@ -452,6 +490,8 @@ class TestSaveResults:
                 "answer_relevancy": [0.88, 0.86],
                 "context_recall": [0.92, 0.88],
                 "context_precision": [0.85, 0.83],
+                "tool_correctness": [1.0, 0.0],
+                "tool_correctness_reason": ["", "missing search_web"],
             }
         )
         mock_result = MagicMock()
@@ -485,6 +525,8 @@ class TestSaveResults:
             assert "skipped" in content
             assert "trajectory" in content
             assert "retrieve_kb" in content
+            assert "tool_correctness" in content
+            assert "tool_correctness_reason" not in content
 
         finally:
             os.unlink(tmp_path)
