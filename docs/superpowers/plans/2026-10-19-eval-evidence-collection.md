@@ -179,11 +179,14 @@ class QuestionEvidence:
 
     q_index: int
     trace_id: str | None = None
+    answer: str = ""
     testset: dict = field(default_factory=dict)
     query: dict = field(default_factory=dict)
     retrieval: dict = field(default_factory=dict)
     tool_calls: list[dict] = field(default_factory=list)
+    trajectory: dict = field(default_factory=dict)
     judge: dict = field(default_factory=dict)
+    trace: dict = field(default_factory=dict)
     behavior: dict = field(default_factory=dict)
     facts: dict = field(default_factory=dict)
     attribution: dict = field(default_factory=dict)
@@ -314,6 +317,16 @@ In `main()` after `_limit_testset`:
                     "chunking_version": sample.get("chunking_version"),
                     "numeric_risk": sample.get("numeric_risk"),
                 }
+            for i, question in enumerate(questions):
+                collector = evidence_run.new_question(i)
+                collector.query = {
+                    "original": question,
+                    "tool_queries": [],
+                    "rewritten": None,
+                    "sub_queries": None,
+                    "intent_route": None,
+                    "history_len": None,
+                }
 ```
 
 In `_ensure_store_and_generate` after `chunks = await vector_store.get_all_chunks(kb_id)`:
@@ -357,7 +370,12 @@ Wrap `_collect_one_question` call:
             (
                 answer, ctx_list, details, sample_class, trajectory
             ) = await _collect_one_question(...)
+        if collector is not None:
+            collector.answer = answer
+            collector.trajectory = trajectory
 ```
+
+`answer` 是 spec `answer_mentions_fact` 的唯一来源；`trajectory` 供补齐非 `retrieve_kb` 的顶层工具调用。两者必须写入 collector，不能只留在局部变量。
 
 Import `evidence_scope` at the top of `eval_deepeval.py`.
 
@@ -758,6 +776,34 @@ In `rag_tools.py` `except TimeoutError` after `contexts` is built and deduped:
 
 Capture `contexts_before_dedup = list(contexts)` before `_dedup_by_parent`.
 
+同时写 `collector.retrieval["rerank_after"]`（否则事实链读 `rerank_after` 会缺段）：
+
+```python
+                collector.retrieval["rerank_after"] = {
+                    "items": [
+                        _evidence_candidate(
+                            chunk,
+                            rank=i,
+                            score=chunk.score,
+                            score_kind="fallback",
+                        )
+                        for i, chunk in enumerate(
+                            contexts_before_dedup[:EVIDENCE_CANDIDATE_CAP]
+                        )
+                    ],
+                    "count": min(
+                        len(contexts_before_dedup), EVIDENCE_CANDIDATE_CAP
+                    ),
+                    "total_count": len(contexts_before_dedup),
+                    "truncated": len(contexts_before_dedup)
+                    > EVIDENCE_CANDIDATE_CAP,
+                    "failed": True,
+                    "reason": "timeout",
+                }
+```
+
+`_evidence_candidate` 接收的是 `ChunkResult`；超时分支若只有 `RAGContext`，就地构造同构 dict（`chunk_id` / `parent_key` / `doc_id` / `source` / `page` / `score` / `score_kind` / `rank` / `distance=None`），不要为凑类型重新检索。
+
 - [ ] **Step 6: Run tests**
 
 Run: `POSTGRES_HOST=localhost .venv/bin/python -m pytest tests/rag/test_rrf_score.py tests/rag/test_retrieval_evidence.py tests/rag -q`
@@ -843,13 +889,7 @@ Expected: `KeyError: 'tool_queries'` / `IndexError`.
 
 - [ ] **Step 3: Implement evidence capture**
 
-At top of `rag_tools.py`:
-
-```python
-from src.core.eval_evidence import current_evidence
-```
-
-At top of `rag_tools.py`:
+At top of `rag_tools.py`（只此一行，勿重复 import 同一模块）:
 
 ```python
 from src.core.eval_evidence import current_evidence, parent_key
@@ -1019,6 +1059,8 @@ import re
 import unicodedata
 from typing import Any
 
+from loguru import logger
+
 from src.core.eval_evidence import EVIDENCE_GOLD_CAP, parent_key
 from src.infra.db.vector_store.types import ChunkResult
 
@@ -1052,6 +1094,22 @@ def extract_fact_tokens(reference: str) -> list[str]:
         if token and token not in out:
             out.append(token)
     return out
+
+
+def answer_mentions_fact(answer: str, tokens: list[str]) -> bool | None:
+    """回答是否包含 gold 的任一数值 token；无 token 时返回 None。
+
+    Args:
+        answer: 被测系统回答原文
+        tokens: `extract_fact_tokens` 产物
+
+    Returns:
+        True/False；tokens 为空时为 None（无法判定）
+    """
+    if not tokens:
+        return None
+    text = normalize_text(answer)
+    return any(token in text for token in tokens)
 
 
 def _chunk_text(chunk: ChunkResult) -> str:
@@ -1131,7 +1189,21 @@ def resolve_gold(
     source_ids = sample.get("source_chunk_ids") or []
     scope = sample.get("match_scope")
     by_id = {c.id: c for c in chunks}
-    valid = [by_id[cid] for cid in source_ids if cid in by_id]
+    valid: list[ChunkResult] = []
+    for cid in source_ids:
+        chunk = by_id.get(cid)
+        if chunk is None:
+            logger.warning("[cli] evidence source_chunk_id missing id={}", cid)
+            continue
+        expected_doc = str((chunk.metadata or {}).get("doc_id") or "")
+        if str(cid).split(":", 1)[0] != expected_doc:
+            logger.warning(
+                "[cli] evidence source_chunk_id doc mismatch id={} doc={}",
+                cid,
+                expected_doc,
+            )
+            continue
+        valid.append(chunk)
     if source_ids and len(valid) == len(source_ids):
         confidence = "high" if scope == "exact" else "medium"
         return {
@@ -1513,7 +1585,16 @@ git commit -m "feat(eval): add deterministic evidence attribution"
 
 **Interfaces:**
 - Consumes: `EvidenceRun`（Task 1）、probe（Task 5）、attribution（Task 6）、`link_behavior_traces`（trace change）。
-- Produces: `should_write_evidence(...)`、`write_evidence_run(...)`.
+- Produces: `should_write_evidence(...)`、`write_evidence_run(...)`。
+
+**Preflight rulings（binding，优先于下方代码块）:**
+
+- `build_facts` 追加参数 `tool_correctness_reason: str`、`answer: str`、`tool_calls: list[dict]`；输出必须含 `tool_correctness_reason`、`tool_called`（工具名列表，顶层）、`call_count`、`answer_mentions_fact`（调 `eval_evidence_probe.answer_mentions_fact(answer, tokens)`）。
+- `sample_class=web` 短路：`collector.retrieval["status"]="not_applicable"`，`fact_in_corpus/candidates/reranked/final=null`，`fact_coverage` 四阶段 null，不跑探针、不做阶段交集。
+- `tokens=[]` 时 `fact_in_candidates/reranked/final` 写 `null`（不是 `False`），`fact_coverage` 对应 null。
+- `sample_failed` 由 `row.get("error") == "failed"` 判定（`sample_class` 只有 `pure_kb`/`web`/`empty`）；failed 时 `metric_attempted=false`、`skipped_reason="failed"`；`should_write_evidence` 对 `row.get("error") == "failed"` 也返回 True。
+- `_snapshot_judge` 同时深拷 `evidence.measures` 到 `collector.trace["judge_measures"]`；`write_evidence_run` 的 `trace` 段输出 `run_trace_id` / `sut_trace_id` / `judge_measures`（每条把 `calls` 改名为 `judge_calls`）/ `behavior: {"trace_id": ..., "link_method": ...}`。
+- `QuestionEvidence` 增加 `trajectory: dict = field(default_factory=dict)`；Task 1 生成循环写入 `collector.trajectory = trajectory`。`write_evidence_run` 在写盘前把 trajectory 中非 `retrieve_kb` 的顶层工具调用补进 `collector.tool_calls`（`name` / `args` 来自轨迹，`result_count` / `latency_ms` / `iteration` 取不到写 null，`call_index` 按出现顺序续号）；`retrieve_kb` 已由 Task 4 记录，不得重复。
 
 - [ ] **Step 1: Write failing test**
 
@@ -1600,6 +1681,7 @@ from loguru import logger
 
 from src.cli.eval_evidence_attribution import attribute_question, summarize_attribution
 from src.cli.eval_evidence_probe import (
+    answer_mentions_fact,
     compute_testset_conflict,
     probe_reference_chunks,
     resolve_gold,
@@ -1627,6 +1709,8 @@ def should_write_evidence(
     if all_questions:
         return True
     if sample_class in (SAMPLE_CLASS_EMPTY, "failed"):
+        return True
+    if str(row.get("error") or "") == "failed":
         return True
     behavior = {r.get("q_index"): r for r in behaviour_rows}.get(
         int(row.get("q_index", 0)), {}
@@ -1679,51 +1763,107 @@ def build_facts(
     *,
     sample_class: str,
     numeric_risk: bool,
+    sample_failed: bool,
+    tool_correctness_reason: str,
 ) -> dict:
     """把探针/gold 与各阶段候选合并成事实标记与覆盖率。"""
     tokens = probe.get("probe_tokens") or []
+    tool_names = [str(call.get("name") or "") for call in collector.tool_calls]
+    common = {
+        "testset_conflict": {
+            "numeric_conflict": None,
+            "unit_missing": None,
+            "period_conflict": None,
+            "missing_fact_tokens": [],
+        },
+        "judge_failed": False,
+        "metric_attempted": not sample_failed and sample_class != "empty",
+        "skipped_reason": (
+            "sample_class=empty"
+            if sample_class == "empty"
+            else "failed"
+            if sample_failed
+            else None
+        ),
+        "tool_called": tool_names,
+        "call_count": len(tool_names),
+        "tool_correctness_reason": tool_correctness_reason,
+    }
+    if sample_class == "web":
+        collector.retrieval["status"] = "not_applicable"
+        return {
+            **probe,
+            **gold,
+            **common,
+            "fact_tokens": tokens,
+            "fact_hit_tokens": {
+                "corpus": [],
+                "candidates": [],
+                "reranked": [],
+                "final": [],
+            },
+            "fact_coverage": {
+                "corpus": None,
+                "candidates": None,
+                "reranked": None,
+                "final": None,
+            },
+            "fact_in_corpus": None,
+            "fact_in_candidates": None,
+            "fact_in_reranked": None,
+            "fact_in_final": None,
+            "missing_fact_tokens": [],
+            "answer_mentions_fact": answer_mentions_fact(
+                collector.answer, tokens
+            ),
+        }
     token_hits = probe.get("token_hits") or {}
     token_keys = probe.get("token_parent_keys") or {}
     facts: dict = {
+        **common,
         "fact_tokens": tokens,
-        "fact_hit_tokens": {"corpus": (probe.get("fact_hit_tokens") or {}).get("corpus", [])},
-        "fact_coverage": {"corpus": (probe.get("fact_coverage") or {}).get("corpus")},
+        "fact_hit_tokens": {
+            "corpus": (probe.get("fact_hit_tokens") or {}).get("corpus", []),
+            "candidates": [],
+            "reranked": [],
+            "final": [],
+        },
+        "fact_coverage": {
+            "corpus": (probe.get("fact_coverage") or {}).get("corpus"),
+            "candidates": None,
+            "reranked": None,
+            "final": None,
+        },
         "fact_in_corpus": probe.get("fact_in_corpus"),
+        "fact_in_candidates": None,
+        "fact_in_reranked": None,
+        "fact_in_final": None,
         "testset_conflict": compute_testset_conflict(
             str((collector.testset or {}).get("reference") or ""),
             probe,
             numeric_risk=numeric_risk,
         ),
-        "judge_failed": False,
-        "metric_attempted": (
-            sample_class not in ("empty", "failed") and bool(collector.judge)
-        ),
-        "skipped_reason": (
-            "sample_class=empty" if sample_class == "empty"
-            else "failed" if sample_class == "failed"
-            else None
-        ),
+        "answer_mentions_fact": answer_mentions_fact(collector.answer, tokens),
     }
     if gold.get("gold_chunk_source") == "testset":
         facts["fact_in_corpus"] = True
         facts["fact_coverage"]["corpus"] = 1.0
-    for stage, fact_key in (
-        ("candidates", "fact_in_candidates"),
-        ("reranked", "fact_in_reranked"),
-        ("final", "fact_in_final"),
-    ):
-        ids, keys = _stage_sets(collector, stage)
-        hit = [
-            token
-            for token in tokens
-            if any(cid in ids for cid in token_hits.get(token, []))
-            or any(key in keys for key in token_keys.get(token, []))
-        ]
-        facts["fact_hit_tokens"][stage] = hit
-        facts["fact_coverage"][stage] = (
-            len(hit) / len(tokens) if tokens else None
-        )
-        facts[fact_key] = bool(hit)
+    if tokens:
+        for stage, fact_key in (
+            ("candidates", "fact_in_candidates"),
+            ("reranked", "fact_in_reranked"),
+            ("final", "fact_in_final"),
+        ):
+            ids, keys = _stage_sets(collector, stage)
+            hit = [
+                token
+                for token in tokens
+                if any(cid in ids for cid in token_hits.get(token, []))
+                or any(key in keys for key in token_keys.get(token, []))
+            ]
+            facts["fact_hit_tokens"][stage] = hit
+            facts["fact_coverage"][stage] = len(hit) / len(tokens)
+            facts[fact_key] = bool(hit)
     facts["missing_fact_tokens"] = [
         token for token in tokens if token not in facts["fact_hit_tokens"]["final"]
     ]
@@ -1813,8 +1953,13 @@ def write_evidence_run(
             collector.behavior = _behavior_for(collector, behaviour_rows, trace_ids)
             chunk_list = run.corpus_chunks or []
             reference = str((collector.testset or {}).get("reference") or "")
-            gold = resolve_gold(collector.testset or {}, chunk_list, reference)
-            probe = probe_reference_chunks(reference, chunk_list)
+            sample_failed = str(row.get("error") or "") == "failed"
+            if sample_class == SAMPLE_CLASS_WEB:
+                gold: dict = {}
+                probe: dict = {}
+            else:
+                gold = resolve_gold(collector.testset or {}, chunk_list, reference)
+                probe = probe_reference_chunks(reference, chunk_list)
             collector.facts = build_facts(
                 collector,
                 probe,
@@ -1823,11 +1968,15 @@ def write_evidence_run(
                 numeric_risk=bool(
                     (collector.testset or {}).get("numeric_risk")
                 ),
+                sample_failed=sample_failed,
+                tool_correctness_reason=str(
+                    row.get("tool_correctness_reason") or ""
+                ),
             )
             collector.attribution = attribute_question(
                 collector,
                 sample_class=sample_class,
-                sample_failed=sample_class == "failed",
+                sample_failed=sample_failed,
             )
             payload = {
                 "schema_version": 1,
@@ -1835,6 +1984,17 @@ def write_evidence_run(
                 "trace": {
                     "run_trace_id": run_trace_id,
                     "sut_trace_id": collector.trace_id,
+                    "judge_measures": [
+                        {
+                            **{k: v for k, v in measure.items() if k != "calls"},
+                            "judge_calls": measure.get("calls") or [],
+                        }
+                        for measure in (collector.trace.get("judge_measures") or [])
+                    ],
+                    "behavior": {
+                        "trace_id": (collector.behavior or {}).get("trace_id"),
+                        "link_method": (collector.behavior or {}).get("link_method"),
+                    },
                 },
                 "testset": collector.testset,
                 "query": collector.query,
@@ -1882,8 +2042,7 @@ def _snapshot_judge(scored: dict, evidence) -> dict:
     measures = {
         str(item.get("metric")): item
         for item in (evidence.measures if evidence is not None else [])
-    }
-    names = [
+    }    names = [
         name for name in (
             "faithfulness", "answer_relevancy", "context_precision",
             "context_recall", "contextual_relevancy", "non_advice",
@@ -1915,7 +2074,13 @@ In `score_rows`, just before **both** `out.append(scored)` calls (empty/failed b
                 collector = evidence_run.collector(row["q_index"])
                 if collector is not None:
                     collector.judge = _snapshot_judge(scored, evidence)
+                    if evidence is not None:
+                        collector.trace["judge_measures"] = copy.deepcopy(
+                            evidence.measures
+                        )
 ```
+
+`copy` 为 `import copy`（模块顶部）。该深拷必须发生在本题评分结束、下一题 `evidence.reset()` 之前。
 
 `collector.judge` now carries `metric_attempted` / `skipped_reason` per metric, which `build_facts` reads.
 
