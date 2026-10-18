@@ -1057,7 +1057,7 @@ def save_markdown_report(
         trajectories: 每个问题的轨迹诊断摘要（与 questions 一一对应），
             传入后新增 trajectory 列（JSON 字符串）
         report_meta: 报告元数据（见 build_report_meta），传入后在报告头写入
-            口径版本 / 裁判 / 运行器版本 / NaN 计数
+            口径版本 / 裁判 / 运行器版本 / NaN 计数 / 题集版本
         behaviour_rows: 逐题行为分（见 eval_scoring.read_behaviour_scores），
             传入后在报告末尾追加「Agent 行为轴」段；该轴仅作诊断观测，
             **不进主分/门禁**
@@ -1079,6 +1079,12 @@ def save_markdown_report(
     )
     lines.append(f"**QA Pairs:** {len(questions)}")
     if report_meta is not None:
+        version_value = report_meta.get("testset_version")
+        if version_value is None:
+            version_text = "N/A"
+        else:
+            version_text = str(version_value)
+        lines.append(f"**Testset version:** {version_text}")
         versions = report_meta["runner_versions"]
         if report_meta.get("ragas_skipped"):
             lines.append(
@@ -1202,8 +1208,9 @@ def build_report_meta(
     nan_stats: dict | None,
     runner_versions: dict,
     ragas_enabled: bool = True,
+    testset_version: int | None = None,
 ) -> dict:
-    """报告/台账元数据（口径版本、NaN 计数、模型显式性）。
+    """报告/台账元数据（口径版本、NaN 计数、模型显式性、题集版本）。
 
     `ragas_enabled=False`（--deepeval-only）时四指标未跑，不产出 NaN 字段，
     报告头显式标注「主分未跑」。
@@ -1213,6 +1220,7 @@ def build_report_meta(
         nan_stats: `nan_cell_stats` 的结果；`ragas_enabled=True` 时不得为 None
         runner_versions: 版本字典，形如 `{"deepeval": "4.2.9", "metrics": "native"}`
         ragas_enabled: 是否跑四指标（False 即 --deepeval-only）
+        testset_version: 实际加载到的题集版本
 
     Returns:
         报告元数据字典
@@ -1223,6 +1231,7 @@ def build_report_meta(
             "judge_model": judge_model,
             "model_arg_explicit": True,
             "ragas_skipped": True,
+            "testset_version": testset_version,
             "runner_versions": dict(runner_versions),
         }
     if nan_stats is None:
@@ -1231,6 +1240,7 @@ def build_report_meta(
         "caliber": "deep-eval-native",
         "judge_model": judge_model,
         "model_arg_explicit": True,
+        "testset_version": testset_version,
         "nan_cells": nan_stats["nan_cells"],
         "nan_denominator_cells": nan_stats["denominator_cells"],
         "nan_rate": round(nan_stats["nan_rate"], 4),
@@ -1280,11 +1290,15 @@ def main() -> None:
         )
 
         # 从 JSON 加载测试集
-        from src.cli.testset_io import _load_latest_testset
+        from src.cli.testset_io import (
+            _load_latest_testset,
+            resolve_testset_version,
+        )
 
         try:
+            resolved_version = resolve_testset_version(kb_id, args.testset_version)
             questions, ground_truth = _load_latest_testset(
-                kb_id, version=args.testset_version
+                kb_id, version=resolved_version
             )
         except FileNotFoundError as e:
             print(f"error: {e}")
@@ -1435,6 +1449,7 @@ def main() -> None:
                 "metrics": "native",
             },
             ragas_enabled=ragas_enabled,
+            testset_version=resolved_version,
         )
 
         if ragas_enabled:
@@ -1483,6 +1498,7 @@ def main() -> None:
                 retrieval_details,
                 sample_classes,
                 run_type=args.run_type,
+                testset_version=resolved_version,
             )
 
             # 观测旁路回写：排在落库之后、门禁之前（失败只记 warning，见 write_scores）
@@ -1567,6 +1583,7 @@ def _build_eval_detail(
     df: pd.DataFrame,
     qa_count: int,
     retrieval_details: list[list[dict]] | None,
+    testset_version: int | None = None,
 ) -> tuple[list[dict], dict[str, float]]:
     """构建逐题明细与各指标均值（跳过值 NaN 安全；列取指标白名单）。
 
@@ -1579,6 +1596,7 @@ def _build_eval_detail(
         qa_count: QA 对数
         retrieval_details: 每 query 的检索明细（与 detail 按 q_index 对齐），
             传入后并入对应明细条目，供低分 query 下钻检索环节
+        testset_version: 实际加载到的题集版本，逐题条目透传
 
     Returns:
         (detail, avg)：detail 为逐题条目列表（含诊断键与恒 None 的
@@ -1591,7 +1609,7 @@ def _build_eval_detail(
 
     detail: list[dict] = []
     for i in range(qa_count):
-        entry = {"q_index": i, "question": ""}
+        entry = {"q_index": i, "question": "", "testset_version": testset_version}
         for col in metric_cols:
             # pandas 存根把 .iloc[i] 推断为 Series/Unknown，显式标注标量
             v: Any = df[col].iloc[i]
@@ -1639,6 +1657,7 @@ def _save_eval_report(
     retrieval_details: list[list[dict]] | None = None,
     sample_classes: list[str] | None = None,
     run_type: str = "manual",
+    testset_version: int | None = None,
 ) -> None:
     """把评估结果持久化到 eval_report 表。
 
@@ -1658,6 +1677,8 @@ def _save_eval_report(
         sample_classes: 每题的样本类别；传入后先掩码再算主分与明细
         run_type: 运行类型（manual=常规回归，baseline=新口径首轮）；
             下游据此决定是否展示门禁结论
+        testset_version: 实际加载到的题集版本；`None` 时仍落库，仅记
+            `EVAL_TESTSET_VERSION_MISSING` 告警事件
     """
     try:
         from src.cli import eval_scoring
@@ -1666,7 +1687,11 @@ def _save_eval_report(
         svc, eval_report_entity = _eval_report_deps()
         if sample_classes is not None:
             df = eval_scoring.apply_sample_masks(df, sample_classes)
-        detail, _avg = _build_eval_detail(df, qa_count, retrieval_details)
+        detail, _avg = _build_eval_detail(
+            df, qa_count, retrieval_details, testset_version=testset_version
+        )
+        if testset_version is None:
+            core_logging.log_event(Event.EVAL_TESTSET_VERSION_MISSING, kb_id=kb_id)
 
         means = eval_scoring.main_score_means(df)
         present = [v for v in means.values() if pd.notna(v)]

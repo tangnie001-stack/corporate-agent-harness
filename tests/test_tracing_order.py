@@ -78,6 +78,10 @@ def test_cli_main_configures_before_flushing(monkeypatch):
 
     monkeypatch.setattr(cli, "configure_tracing", _record_configure)
     monkeypatch.setattr(cli, "flush_tracing", _record_flush)
+    # 假 kb 无题集文件：先让 resolver 返回固定版本，把中断点留给 loader
+    monkeypatch.setattr(
+        "src.cli.testset_io.resolve_testset_version", lambda kb_id, version: 5
+    )
     monkeypatch.setattr(testset_io, "_load_latest_testset", _raise_file_not_found)
     monkeypatch.setattr(
         cli,

@@ -102,6 +102,9 @@ def test_deepeval_only_skips_all_ragas_side_effects(monkeypatch, tmp_path):
 
     # main() 函数体内的 import 必须打在源模块上
     monkeypatch.setattr(
+        "src.cli.testset_io.resolve_testset_version", lambda kb_id, version: 5
+    )
+    monkeypatch.setattr(
         "src.cli.testset_io._load_latest_testset",
         lambda kb_id, version=None: (["q"], ["a"]),
     )

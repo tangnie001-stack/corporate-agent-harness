@@ -86,6 +86,27 @@ def test_report_diagnostic_section_uses_const_and_counts_nan(tmp_path):
     assert "non_advice" not in main_line
 
 
+def test_detail_entries_carry_testset_version():
+    import pandas as pd
+
+    from src.cli.eval_deepeval import _build_eval_detail
+
+    df = pd.DataFrame(
+        [
+            {
+                "faithfulness": 1.0,
+                "answer_relevancy": 1.0,
+                "context_precision": 1.0,
+                "context_recall": 1.0,
+                "contextual_relevancy": 1.0,
+                "non_advice": 1.0,
+            }
+        ]
+    )
+    detail, _ = _build_eval_detail(df, 1, None, testset_version=6)
+    assert detail[0]["testset_version"] == 6
+
+
 def test_markdown_table_escapes_pipe_in_error_cell():
     """error 文本含 "|" / 换行时归一化为 "/" 与单空格，避免破坏 Markdown 列。"""
     df = pd.DataFrame(
