@@ -18,6 +18,7 @@
 
 import argparse
 import asyncio
+import copy
 import hashlib
 import json
 import math
@@ -59,6 +60,7 @@ from src.config.const import (
     EVAL_PASS_THRESHOLD,
     EVAL_RELEVANCY_MAX_CONTEXTS,
     EVAL_RETRIEVAL_COVERAGE_MIN,
+    GATE_THRESHOLDS,
     LANGFUSE_SCORE_SUFFIX,
     SAMPLE_CLASS_EMPTY,
     SAMPLE_CLASS_PURE_KB,
@@ -76,14 +78,6 @@ from src.infra.llm.trace_context import (
 from src.infra.llm.tracing import configure_tracing, flush_tracing
 
 setup_logging(configure_trace_id=True)
-
-# Quality gate thresholds
-GATE_THRESHOLDS: dict[str, float] = {
-    "faithfulness": 0.85,
-    "context_precision": 0.80,
-    "context_recall": 0.70,
-    "answer_relevancy": 0.85,
-}
 
 
 def _limit_testset(
@@ -872,8 +866,83 @@ def _score_tool_correctness(row: dict, metric) -> tuple[float | None, str]:
     return score, " ".join(reason.replace("|", "/").split())
 
 
+def _snapshot_judge(scored: dict, evidence) -> dict:
+    """把一行评分结果与 measure 记录转成 `evidence.judge`。
+
+    Args:
+        scored: 本题评分行（含各指标分数与 error）
+        evidence: 可选证据桶；None 表示没有 HTTP 侧 measure
+
+    Returns:
+        以指标名为键、含 `score` / `error` / `reason` / `metric_attempted` /
+        `skipped_reason` 的字典
+    """
+    measures = {
+        str(item.get("metric")): item
+        for item in (evidence.measures if evidence is not None else [])
+    }
+    names = [
+        name
+        for name in (
+            "faithfulness",
+            "answer_relevancy",
+            "context_precision",
+            "context_recall",
+            "contextual_relevancy",
+            "non_advice",
+            "tool_correctness",
+        )
+        if name in scored
+    ]
+    skipped = scored.get("error") in ("sample_class=empty", "failed")
+    out: dict[str, dict] = {}
+    for name in names:
+        measure = measures.get(name) or {}
+        attempted = not skipped
+        # empty 样本仍会执行 tool_correctness，逐指标标记不能被题目级跳过覆盖
+        if name == "tool_correctness" and skipped:
+            attempted = scored.get("error") == "sample_class=empty"
+        skipped_reason = None
+        if skipped:
+            skipped_reason = scored.get("error")
+        out[name] = {
+            "score": scored.get(name),
+            "error": scored.get("error", ""),
+            "reason": measure.get("reason"),
+            "metric_attempted": attempted,
+            "skipped_reason": skipped_reason,
+        }
+    return out
+
+
+def _capture_evidence(scored: dict, evidence_run, evidence) -> None:
+    """把本题评分快照写进 evidence_run 的 collector。
+
+    深拷 measure 必须发生在本题评分结束、下一题 `evidence.reset()` 之前，
+    否则逐题 measure 会被清空。
+
+    Args:
+        scored: 本题评分行
+        evidence_run: 本轮证据容器；None 表示未开启
+        evidence: HTTP 证据桶；None 表示无 measure 来源
+    """
+    if evidence_run is None:
+        return
+    collector = evidence_run.collector(int(scored["q_index"]))
+    if collector is None:
+        return
+    collector.judge = _snapshot_judge(scored, evidence)
+    if evidence is not None:
+        collector.trace["judge_measures"] = copy.deepcopy(evidence.measures)
+
+
 def score_rows(
-    rows: list[dict], metrics: dict, *, diagnostic_metrics=None, evidence=None
+    rows: list[dict],
+    metrics: dict,
+    *,
+    diagnostic_metrics=None,
+    evidence=None,
+    evidence_run=None,
 ) -> list[dict]:
     """**串行**逐题逐指标打分（并发=1），诊断指标走独立通道。
 
@@ -892,6 +961,7 @@ def score_rows(
         metrics: `build_metrics` 产物（顺序即评分顺序）
         diagnostic_metrics: `build_diagnostic_metrics` 产物；不进主分
         evidence: 可选证据桶（本题评分前 `mark(trace_id)`）
+        evidence_run: 可选证据容器；非 None 时逐题快照评分与 measure
 
     Returns:
         与输入同序的行副本，追加四指标、诊断值、`tool_correctness`、
@@ -933,6 +1003,7 @@ def score_rows(
                     scored["error"] = "sample_class=empty"
                 else:
                     scored["error"] = "failed"
+                _capture_evidence(scored, evidence_run, evidence)
                 out.append(scored)
                 continue
 
@@ -977,6 +1048,7 @@ def score_rows(
                         errors.append(err)
 
             scored["error"] = ";".join(errors)
+            _capture_evidence(scored, evidence_run, evidence)
             out.append(scored)
     return out
 
@@ -996,6 +1068,7 @@ def run_evaluation(
     evidence=None,
     diagnostic_metrics=None,
     sample_classes=None,
+    evidence_run=None,
 ) -> _EvalResult:
     """逐题打分并返回带 `.to_pandas()` 的结果（行序与输入一致）。
 
@@ -1016,6 +1089,7 @@ def run_evaluation(
         evidence: 可选证据桶（退避时读取 429 的 `Retry-After`）
         diagnostic_metrics: 诊断指标（`build_diagnostic_metrics` 产物）；不进主分
         sample_classes: 每题样本类别；None 表示不分类
+        evidence_run: 可选证据容器；非 None 时逐题快照评分与 measure
 
     Returns:
         带 `.to_pandas()` 的结果对象（行序与输入一致）
@@ -1058,6 +1132,7 @@ def run_evaluation(
         metrics,
         diagnostic_metrics=diagnostic_metrics,
         evidence=evidence,
+        evidence_run=evidence_run,
     )
     core_logging.log_event(Event.EVALUATION_DONE)
     df = pd.DataFrame(scored).sort_values("q_index").reset_index(drop=True)
@@ -1842,6 +1917,7 @@ def main() -> None:
                 evidence=judge_evidence,
                 diagnostic_metrics=diagnostic_metrics,
                 sample_classes=sample_classes,
+                evidence_run=evidence_run,
             )
 
             # 统一「主分」口径：报告 / stdout / 门禁都读同一张已掩码表（纯 KB 样本）。
@@ -1922,6 +1998,27 @@ def main() -> None:
 
             # 观测旁路回写：排在落库之后、门禁之前（失败只记 warning，见 write_scores）
             _write_langfuse_scores(masked_df, trace_ids, behaviour_rows)
+
+        # 证据落盘：排在报告与 Langfuse 回写之后、门禁之前——`--gate` 不达标会
+        # `sys.exit`，晚写等于丢证据。整段异常已在 write_evidence_run 内吞掉。
+        if evidence_run is not None:
+            from src.cli.eval_evidence_report import write_evidence_run
+
+            if result is not None:
+                scored_df = result.to_pandas()
+            else:
+                scored_df = None
+            write_evidence_run(
+                evidence_run,
+                questions=questions,
+                scored_df=scored_df,
+                sample_classes=sample_classes,
+                behaviour_rows=behaviour_rows,
+                trace_ids=trace_ids,
+                run_id=run_id,
+                run_trace_id=run_trace_id,
+                all_questions=args.evidence_all,
+            )
 
         if args.gate:
             # --deepeval-only 与 --gate 在 parse_args 层互斥，故 masked_df 必非 None

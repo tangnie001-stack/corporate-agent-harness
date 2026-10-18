@@ -57,3 +57,6 @@ Thumbs.db
 
 # DeepEval 运行时产物（每次评测在 CWD 落 .latest_run_full.json / .latest_test_run.json）
 .deepeval/
+
+# 评测证据产物（--evidence / --evidence-all 写出的逐题 JSON 与 summary）
+data/deepeval/evidence/
