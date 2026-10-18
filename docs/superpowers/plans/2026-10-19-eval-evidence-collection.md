@@ -1427,6 +1427,16 @@ def attribute_question(
                 "inconclusive",
             )
             continue
+        if (
+            metric == "context_precision"
+            and facts.get("fact_in_final") is True
+            and item.get("score") is not None
+            and float(item["score"]) < 1.0
+        ):
+            out[metric] = _result(
+                "rerank_or_topk", "gold in final but precision<1", "medium"
+            )
+            continue
         stage = _fact_stage(facts)
         if stage is not None:
             root, evidence = stage
