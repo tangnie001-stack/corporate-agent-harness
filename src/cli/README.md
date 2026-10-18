@@ -194,6 +194,9 @@ MD 摘要末尾会给出整体平均值，例如：
 | faithfulness 低 | 生成环节幻觉：检查 prompt 约束、换模型 |
 | answer_relevancy 低 | 生成环节相关性：检查 prompt 与模型 |
 
+> 完整的三层指标（主分/诊断/行为轴）、`0` / `NaN` / `N/A` 语义与逐指标排查顺序见
+> `docs/agents/eval-metrics-troubleshooting.md`。
+
 ## 第三步：质量门禁（怎么判定达标）
 
 ```bash
