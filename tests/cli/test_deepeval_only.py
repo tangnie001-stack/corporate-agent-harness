@@ -106,7 +106,7 @@ def test_deepeval_only_skips_all_ragas_side_effects(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "src.cli.testset_io._load_latest_testset",
-        lambda kb_id, version=None: (["q"], ["a"]),
+        lambda kb_id, version=None: (["q"], ["a"], [["retrieve_kb"]]),
     )
     monkeypatch.setattr(
         "src.agents.graph.workflow.build_graph", lambda *a, **k: object()

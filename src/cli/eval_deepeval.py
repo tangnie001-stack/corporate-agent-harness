@@ -76,31 +76,36 @@ GATE_THRESHOLDS: dict[str, float] = {
 
 
 def _limit_testset(
-    questions: list[str], ground_truth: list[str], limit: int | None
-) -> tuple[list[str], list[str]]:
+    questions: list[str],
+    ground_truth: list[str],
+    expected_tools: list[list[str] | None],
+    limit: int | None,
+) -> tuple[list[str], list[str], list[list[str] | None]]:
     """按冒烟轮次截取前 `limit` 题；`None` 表示不截断。
-
-    仅用于逐级活体（1 → 5 → 21）。`limit` 超过题数时原样返回，便于同一命令
-    在不同规模的题集上复用；`limit <= 0` 是调用错误，直接失败。
 
     Args:
         questions: 题面列表
         ground_truth: 参考答案列表（与 questions 等长同序）
-        limit: 保留的题数；None 表示全量
+        expected_tools: 每题的标签（与 questions 等长同序）
+        limit: 保留的题数；None 表示不截断
 
     Returns:
-        (questions, ground_truth) 的截断副本或原对象
+        (questions, ground_truth, expected_tools) 的截断副本或原对象
 
     Raises:
         ValueError: `limit` 非正
     """
     if limit is None:
-        return questions, ground_truth
+        return questions, ground_truth, expected_tools
     if limit <= 0:
         raise ValueError(f"--limit 必须为正整数，得到 {limit}")
     if limit >= len(questions):
-        return questions, ground_truth
-    return questions[:limit], ground_truth[:limit]
+        return questions, ground_truth, expected_tools
+    return (
+        questions[:limit],
+        ground_truth[:limit],
+        expected_tools[:limit],
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -1297,14 +1302,16 @@ def main() -> None:
 
         try:
             resolved_version = resolve_testset_version(kb_id, args.testset_version)
-            questions, ground_truth = _load_latest_testset(
+            questions, ground_truth, expected_tools = _load_latest_testset(
                 kb_id, version=resolved_version
             )
         except FileNotFoundError as e:
             print(f"error: {e}")
             sys.exit(1)
 
-        questions, ground_truth = _limit_testset(questions, ground_truth, args.limit)
+        questions, ground_truth, expected_tools = _limit_testset(
+            questions, ground_truth, expected_tools, args.limit
+        )
 
         core_logging.log_event(Event.TESTSET_LOADED, count=len(questions))
         core_logging.log_event(Event.EVALUATION_RUN, kb_id=kb_id)

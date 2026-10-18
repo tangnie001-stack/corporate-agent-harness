@@ -107,19 +107,53 @@ def load_testset_samples(kb_id: str, version: int | None = None) -> list[dict]:
     return list(data["samples"])
 
 
+def _normalize_expected_tools(raw: object, q_index: int) -> list[str] | None:
+    """校验题集标签；None 表示无标签，[] 表示显式期望不调用工具。
+
+    Args:
+        raw: 原始 expected_tools 值
+        q_index: 0-based 题号（仅用于报错）
+
+    Returns:
+        None 或字符串列表（保留空列表，不去重）
+
+    Raises:
+        ValueError: 值不是 None/list[str]，或含空/非字符串元素
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        # 契约要求统一用 ValueError（调用方只捕 ValueError），故不按 TRY004 改 TypeError
+        raise ValueError(  # noqa: TRY004
+            f"第 {q_index} 题 expected_tools 必须是 list[str] 或 None，"
+            f"得到 {type(raw).__name__}"
+        )
+    normalized: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"第 {q_index} 题 expected_tools 含非法元素: {item!r}")
+        normalized.append(item)
+    return normalized
+
+
 def _load_latest_testset(
     kb_id: str, version: int | None = None
-) -> tuple[list[str], list[str]]:
-    """加载测试集并适配评分的 (questions, ground_truth) 形状。
+) -> tuple[list[str], list[str], list[list[str] | None]]:
+    """加载测试集并适配评分的 (questions, ground_truth, expected_tools) 形状。
 
     Args:
         kb_id: 知识库 UUID
         version: 指定版本号；None 表示自动取最新版本
 
     Returns:
-        (questions, ground_truth) 元组
+        (questions, ground_truth, expected_tools) 三元组；expected_tools 每项
+        为 None（字段缺失）、[]（显式不调工具）或非空字符串列表
     """
     samples = load_testset_samples(kb_id, version)
     questions = [s["user_input"] for s in samples]
     ground_truth = [s["reference"] for s in samples]
-    return questions, ground_truth
+    expected_tools = [
+        _normalize_expected_tools(s.get("expected_tools"), i)
+        for i, s in enumerate(samples)
+    ]
+    return questions, ground_truth, expected_tools
