@@ -7,6 +7,7 @@ import pytest
 from src.agents.skills.delegate_run import DelegateRun
 from src.agents.skills.executor import SkillExecutor
 from src.agents.skills.models import SkillContext, SkillRecord
+from src.core.eval_evidence import EvidenceRun, current_evidence
 from src.infra.llm.request_context import RequestContext, current_request_ctx
 from src.rag.context import RAGContext
 
@@ -93,3 +94,44 @@ async def test_context_var_restored_after_fork(monkeypatch):
         assert current_request_ctx.get() is parent
     finally:
         current_request_ctx.reset(token)
+
+
+class _EvidenceProbeSubAgent(_FakeSubAgent):
+    """替身子代理：额外记录执行期看到的当前题证据。"""
+
+    def __init__(self):
+        super().__init__()
+        self.seen_evidence = "unset"
+
+    async def astream_events(self, inputs, config=None, version="v2"):
+        self.seen_evidence = current_evidence.get()
+        async for event in super().astream_events(inputs, config, version):
+            yield event
+
+
+@pytest.mark.asyncio
+async def test_fork_clears_and_restores_current_evidence(monkeypatch):
+    """fork 执行期间证据置空（子代理证据不混入当前题），结束后恢复。"""
+    parent = RequestContext(session_id="s1", kb_id="k1", kb_bound=True)
+    token_ctx = current_request_ctx.set(parent)
+    run = EvidenceRun(run_id="r1", run_trace_id=None, enabled=True)
+    collector = run.new_question(0)
+    token_ev = current_evidence.set(collector)
+    fake = _EvidenceProbeSubAgent()
+    executor = SkillExecutor(main_llm=object())
+    monkeypatch.setattr(executor, "_build_sub_agent", lambda *a, **k: fake)
+    monkeypatch.setattr(executor, "_fork_tools", lambda *a, **k: [])
+    record = SkillRecord(
+        name="x", description="d", context=SkillContext.FORK, fork_body="b"
+    )
+    try:
+        await executor.execute(
+            record,
+            "t",
+            DelegateRun(delegate_id="d1", skill_name="x", ctx=parent.child()),
+        )
+        assert fake.seen_evidence is None
+        assert current_evidence.get() is collector
+    finally:
+        current_evidence.reset(token_ev)
+        current_request_ctx.reset(token_ctx)

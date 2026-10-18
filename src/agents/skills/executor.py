@@ -64,6 +64,7 @@ from src.config.prompts import (
     FORK_EXECUTION_CONTRACT,
     FORK_TASK_APPEND_TMPL,
 )
+from src.core.eval_evidence import current_evidence
 from src.infra.llm.provider.factory import _registry
 from src.infra.llm.provider.spec import resolve_role
 from src.infra.llm.provider.thinking import thinking_extra_body
@@ -233,6 +234,9 @@ class SkillExecutor:
         # 切到子 ctx：工具经 ContextVar 读 ctx，检索与引用编号落子池，
         # 主 agent 引用池不受影响（design D7/R3）
         token_ctx = current_request_ctx.set(child_ctx)
+        # 证据隔离：子代理的工具/检索证据不得混入当前题（题目证据只记主链路）；
+        # finally 恢复，外层证据采集不受影响
+        token_evidence = current_evidence.set(None)
         try:
             try:
                 text = await asyncio.wait_for(
@@ -271,6 +275,7 @@ class SkillExecutor:
                 run.stop_reason = run.ctx.fork_stop_reason
             # 委派父 span 必须关：取消/异常路径不关会留下悬空 span
             trace_collector.close()
+            current_evidence.reset(token_evidence)
             current_request_ctx.reset(token_ctx)
             var_child_runnable_config.reset(token)
 

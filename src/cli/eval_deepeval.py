@@ -64,6 +64,7 @@ from src.config.const import (
     SAMPLE_CLASS_PURE_KB,
 )
 from src.core import logging as core_logging
+from src.core.eval_evidence import evidence_scope
 from src.core.log_events import Event
 from src.core.logging import setup_logging
 from src.infra.llm.request_context import RequestContext, current_request_ctx
@@ -176,6 +177,16 @@ def parse_args() -> argparse.Namespace:
         help="运行类型：baseline=新口径首轮（不判门禁），manual=常规回归",
     )
     parser.add_argument(
+        "--evidence",
+        action="store_true",
+        help="采集低分/异常题的证据到 data/deepeval/evidence/<run_id>/",
+    )
+    parser.add_argument(
+        "--evidence-all",
+        action="store_true",
+        help="采集全部题证据（隐含 --evidence）",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -194,6 +205,8 @@ def parse_args() -> argparse.Namespace:
         help="生成测试集用的 LLM 模型名（出题已下线，保留参数、当前无效果）",
     )
     args = parser.parse_args()
+    if args.evidence_all:
+        args.evidence = True
     if args.deepeval_only and args.gate:
         parser.error("--deepeval-only 与 --gate 不能同用：该模式没有主分可判")
     if args.run_type == "baseline" and args.gate:
@@ -460,6 +473,7 @@ async def generate_answers_and_contexts_with_behaviour(
     ground_truth: list[str],
     behaviour_metrics: list,
     results_folder: str,
+    evidence_run: Any | None = None,
 ) -> tuple:
     """跑图循环由 `evals_iterator` 驱动（design D6 定案的唯一可用形态）。
 
@@ -467,6 +481,10 @@ async def generate_answers_and_contexts_with_behaviour(
     `test_run_*.json` 回读（eval loop 用副本，`metric.score` 恒 None）。
     **每题新建独立 `CallbackHandler`**（复用会串 trace）；**循环不得 break**
     （generator 只有耗尽才落盘 JSON）。
+
+    Args:
+        evidence_run: 本轮证据容器；None（默认）表示不采集。非 None 时每题在
+            `evidence_scope` 内跑图，并把回答与轨迹摘要回写该题 collector
     """
     from deepeval.evaluate.configs import DisplayConfig
     from deepeval.integrations.langchain import CallbackHandler
@@ -493,24 +511,35 @@ async def generate_answers_and_contexts_with_behaviour(
         handler = CallbackHandler()  # 每题独立实例
         handlers.append(handler)
         trace_token = current_trace_id.set(trace_id)
+        # 复用主流程已建好的该题 collector（测试集/query 已登记）；未开证据为 None
+        if evidence_run is not None:
+            collector = evidence_run.new_question(i, trace_id)
+        else:
+            collector = None
         try:
-            (
-                answer,
-                ctx_list,
-                details,
-                sample_class,
-                trajectory,
-            ) = await _collect_one_question(
-                graph,
-                kb_id,
-                session_id,
-                questions[i],
-                trace_id,
-                i + 1,
-                callbacks=[handler],
-            )
+            with evidence_scope(collector):
+                (
+                    answer,
+                    ctx_list,
+                    details,
+                    sample_class,
+                    trajectory,
+                ) = await _collect_one_question(
+                    graph,
+                    kb_id,
+                    session_id,
+                    questions[i],
+                    trace_id,
+                    i + 1,
+                    callbacks=[handler],
+                )
         finally:
             current_trace_id.reset(trace_token)
+        # answer 是 spec `answer_mentions_fact` 的唯一来源；trajectory 供补齐
+        # 非 retrieve_kb 的顶层工具调用。两者必须写入 collector，不能只留局部变量。
+        if collector is not None:
+            collector.answer = answer
+            collector.trajectory = trajectory
         answers.append(answer)
         contexts.append(ctx_list)
         retrieval_details.append(details)
@@ -1641,6 +1670,46 @@ def main() -> None:
             questions, ground_truth, expected_tools, args.limit
         )
 
+        # 证据采集容器（纯旁路）：未开 --evidence 时为 None，生成/检索路径只
+        # 多付一次 `is None` 判断。测试集样本逐题登记，供后续 fact/归因使用。
+        evidence_run = None
+        evidence_samples: list[dict] = []
+        if args.evidence:
+            from src.cli.testset_io import load_testset_samples
+            from src.core.eval_evidence import EvidenceRun
+
+            evidence_run = EvidenceRun(
+                run_id=run_id, run_trace_id=run_trace_id, enabled=True
+            )
+            try:
+                evidence_samples = load_testset_samples(
+                    kb_id, version=resolved_version
+                )[: len(questions)]
+            except Exception as exc:  # noqa: BLE001  # 观测旁路
+                logger.warning("[cli] evidence samples load failed err={}", exc)
+            for i, sample in enumerate(evidence_samples):
+                collector = evidence_run.new_question(i)
+                collector.testset = {
+                    "reference": sample.get("reference"),
+                    "reference_contexts": sample.get("reference_contexts"),
+                    "source_file": sample.get("source_file"),
+                    "expected_tools": sample.get("expected_tools"),
+                    "source_chunk_ids": sample.get("source_chunk_ids"),
+                    "match_scope": sample.get("match_scope"),
+                    "chunking_version": sample.get("chunking_version"),
+                    "numeric_risk": sample.get("numeric_risk"),
+                }
+            for i, question in enumerate(questions):
+                collector = evidence_run.new_question(i)
+                collector.query = {
+                    "original": question,
+                    "tool_queries": [],
+                    "rewritten": None,
+                    "sub_queries": None,
+                    "intent_route": None,
+                    "history_len": None,
+                }
+
         core_logging.log_event(Event.TESTSET_LOADED, count=len(questions))
 
         # ---- 初始化 RAG 组件 ----
@@ -1708,6 +1777,9 @@ def main() -> None:
             chunks = await vector_store.get_all_chunks(kb_id)
             if not chunks:
                 return None
+            # 证据旁路：全量分块供后续按 gold chunk 反查父块/去重口径
+            if evidence_run is not None:
+                evidence_run.corpus_chunks = chunks
             return await generate_answers_and_contexts_with_behaviour(
                 graph,
                 kb_id,
@@ -1716,6 +1788,7 @@ def main() -> None:
                 ground_truth,
                 behaviour_metrics,
                 behaviour_out,
+                evidence_run=evidence_run,
             )
 
         core_logging.log_event(Event.VECTOR_STORE_CHECK, kb_id=kb_id)
