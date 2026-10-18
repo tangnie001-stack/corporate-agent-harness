@@ -27,12 +27,13 @@
 
 ## Worktree 准备
 
-`.env` 与 `data/` 都是 gitignored，worktree 不会继承；开工前先链接，否则 DB 与报告目录不可用。
+`.env`、`data/`、`.venv` 都是 gitignored，worktree 不会继承；开工前先链接，否则 DB/报告目录不可用、pre-commit 会报 `.venv/bin/python not found`。
 
 ```bash
 cd /root/code/corporate_rag-synth-v6
 test -e .env || ln -s /root/code/corporate_rag/.env .env
 test -e data || ln -s /root/code/corporate_rag/data data
+test -e .venv || ln -s /root/code/corporate_rag/.venv .venv
 ```
 
 ---
