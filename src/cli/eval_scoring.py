@@ -63,10 +63,13 @@ def build_metrics(judge: Any) -> dict:
 
 
 def build_diagnostic_metrics(judge: Any) -> dict:
-    """构造两项诊断指标（不进主分/门禁）。
+    """构造三项诊断指标（不进主分/门禁）。
 
     `ContextualRelevancy` 不需要 reference；`NonAdvice` 只判 input/actual_output。
     两者都必须显式传 `model=judge`，否则会初始化 DeepEval 默认的 gpt-3.5-turbo。
+
+    `ToolCorrectness` 是确定性指标，不调裁判；仍需显式 model 与
+    `async_mode=False`（默认异步分支的 measure 返回 None）、`eval_mode="llm"`。
 
     Args:
         judge: `BridgeDeepEvalLLM` 包装后的裁判实例
@@ -76,13 +79,45 @@ def build_diagnostic_metrics(judge: Any) -> dict:
     """
     # isort: off
     import src.config.settings  # noqa: F401
-    from deepeval.metrics import ContextualRelevancyMetric, NonAdviceMetric
+    from deepeval.metrics import (
+        ContextualRelevancyMetric,
+        NonAdviceMetric,
+        ToolCorrectnessMetric,
+    )
     # isort: on
 
     return {
         "contextual_relevancy": ContextualRelevancyMetric(model=judge),
         "non_advice": NonAdviceMetric(advice_types=["financial"], model=judge),
+        "tool_correctness": ToolCorrectnessMetric(
+            model=judge, async_mode=False, eval_mode="llm"
+        ),
     }
+
+
+def dedupe_tool_names(names: list[str], q_index: int) -> list[str]:
+    """按首次出现去重期望工具名；重复项记 warning。
+
+    DeepEval 会把重复项当成多次独立期望，导致一次调用只得 0.5。
+
+    Args:
+        names: 测试集里该题的期望工具名（可能含重复）
+        q_index: 题号，仅用于 warning 定位
+
+    Returns:
+        保序去重后的工具名列表
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        if name in seen:
+            logger.warning(
+                "[cli] duplicate expected tool q_index={} tool={}", q_index, name
+            )
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
 
 
 def classify_sample(contexts: list[RAGContext]) -> str:

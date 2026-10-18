@@ -40,6 +40,7 @@ from src.cli.eval_scoring import (
     build_diagnostic_metrics,
     build_metrics,
     classify_sample,
+    dedupe_tool_names,
     fill_missing_behaviour_rows,
     is_failed_run,
     main_score_means,
@@ -683,6 +684,64 @@ def _score_metric_with_retry(
     return float("nan"), f"{metric_name}:{last_note}"
 
 
+def _score_tool_correctness(row: dict, metric) -> tuple[float | None, str]:
+    """按顶层轨迹计算一题的工具选择分数。
+
+    Args:
+        row: 含 question / answer / expected_tools / trajectory / q_index
+        metric: `ToolCorrectnessMetric`；None 表示构造失败
+
+    Returns:
+        (score, reason)：score 为 0.0–1.0 或 None；reason 单行、无 "|"
+    """
+    from deepeval.test_case import LLMTestCase, ToolCall
+
+    trajectory = row.get("trajectory") or {}
+    if is_failed_run(row.get("answer"), trajectory):
+        return None, "failed"
+    expected = row.get("expected_tools")
+    if expected is None:
+        return None, ""
+    if metric is None:
+        return None, "metric_unavailable"
+
+    q_index = int(row.get("q_index", 0))
+    expected_names = dedupe_tool_names(expected, q_index)
+    calls = trajectory.get("tool_calls") or []
+    actual_names = [str(call.get("name", "")) for call in calls]
+
+    test_case = LLMTestCase(
+        input=row.get("question", ""),
+        tools_called=[
+            ToolCall(name=name, input_parameters=(call.get("args") or {}))
+            for call, name in zip(calls, actual_names, strict=True)
+        ],
+        expected_tools=[
+            ToolCall(name=name, input_parameters=None) for name in expected_names
+        ],
+    )
+    try:
+        value = metric.measure(test_case)
+    except Exception as exc:  # noqa: BLE001  # 诊断失败记 null，不重试
+        return None, f"tool_correctness:{type(exc).__name__}"
+    if value is None:
+        return None, "tool_correctness:returned_none"
+
+    score = float(value)
+    missing = [name for name in expected_names if name not in actual_names]
+    if score >= 1.0:
+        reason = ""
+    elif not expected_names:
+        reason = "expected no tools but called " + ",".join(sorted(set(actual_names)))
+    elif missing:
+        reason = "missing " + ",".join(missing)
+    else:
+        reason = "partial match"
+    if "delegate_task" in actual_names and missing:
+        reason += "; delegate_task present but expected tools not called at top level"
+    return score, " ".join(reason.replace("|", "/").split())
+
+
 def score_rows(
     rows: list[dict], metrics: dict, *, diagnostic_metrics=None, evidence=None
 ) -> list[dict]:
@@ -693,17 +752,19 @@ def score_rows(
     表现为间歇性错分（design D7）。并发预算留给"跑图"那一侧。
 
     `ContextualRelevancy` 单独构造截断后的 test_case，共享 test_case 保持全量
-    contexts；`empty` 样本不调用任何指标。
+    contexts；`empty` 样本不调用四项主分指标与两项裁判诊断，`tool_correctness`
+    照常按轨迹评分。
 
     Args:
         rows: 每题一行（含 q_index / trace_id / question / answer /
-            ground_truth / contexts / sample_class）
+            ground_truth / contexts / sample_class / expected_tools / trajectory）
         metrics: `build_metrics` 产物（顺序即评分顺序）
         diagnostic_metrics: `build_diagnostic_metrics` 产物；不进主分
         evidence: 可选证据桶（本题评分前 `mark(trace_id)`）
 
     Returns:
-        与输入同序的行副本，追加四指标、诊断值、`tool_correctness` 与 `error`
+        与输入同序的行副本，追加四指标、诊断值、`tool_correctness`、
+        `tool_correctness_reason` 与 `error`
     """
     from src.config.const import EVAL_RELEVANCY_MAX_CONTEXTS
 
@@ -715,13 +776,21 @@ def score_rows(
         scored: dict = {"q_index": row["q_index"], "error": ""}
         errors: list[str] = []
 
+        tool_metric = None
+        if diagnostic_metrics is not None:
+            tool_metric = diagnostic_metrics.get("tool_correctness")
+        tool_value, tool_reason = _score_tool_correctness(row, tool_metric)
+        scored["tool_correctness"] = tool_value
+        scored["tool_correctness_reason"] = tool_reason
+
         if row.get("sample_class") == SAMPLE_CLASS_EMPTY:
             for name in metrics:
                 scored[name] = float("nan")
             if diagnostic_metrics is not None:
                 for name in diagnostic_metrics:
+                    if name == "tool_correctness":
+                        continue
                     scored[name] = float("nan")
-            scored["tool_correctness"] = None
             scored["error"] = "sample_class=empty"
             out.append(scored)
             continue
@@ -766,7 +835,6 @@ def score_rows(
                 if err:
                     errors.append(err)
 
-        scored["tool_correctness"] = None
         scored["error"] = ";".join(errors)
         out.append(scored)
     return out
@@ -782,6 +850,8 @@ def run_evaluation(
     metrics,
     trace_ids,
     *,
+    expected_tools,
+    trajectories,
     evidence=None,
     diagnostic_metrics=None,
     sample_classes=None,
@@ -798,6 +868,8 @@ def run_evaluation(
         contexts: 每题检索上下文列表
         metrics: 主分指标（`build_metrics` 产物）
         trace_ids: 每题 trace_id
+        expected_tools: 每题的期望工具名（三元状态：None 无标签 / [] 明确不调工具）
+        trajectories: 每题轨迹摘要（顶层 `tool_calls` 是工具分的数据源）
         evidence: 可选证据桶（退避时读取 429 的 `Retry-After`）
         diagnostic_metrics: 诊断指标（`build_diagnostic_metrics` 产物）；不进主分
         sample_classes: 每题样本类别；None 表示不分类
@@ -805,6 +877,14 @@ def run_evaluation(
     Returns:
         带 `.to_pandas()` 的结果对象（行序与输入一致）
     """
+    if len(expected_tools) != len(questions):
+        raise ValueError(
+            f"expected_tools ({len(expected_tools)}) != questions ({len(questions)})"
+        )
+    if len(trajectories) != len(questions):
+        raise ValueError(
+            f"trajectories ({len(trajectories)}) != questions ({len(questions)})"
+        )
     rows = []
     for i, (q, a, g, c, t) in enumerate(
         zip(questions, answers, ground_truth, contexts, trace_ids, strict=True)
@@ -821,6 +901,8 @@ def run_evaluation(
                 "ground_truth": g,
                 "contexts": c,
                 "sample_class": sample_class,
+                "expected_tools": expected_tools[i],
+                "trajectory": trajectories[i],
             }
         )
     core_logging.log_event(Event.EVALUATION_START, samples=len(rows))
@@ -1453,6 +1535,8 @@ def main() -> None:
                 contexts,
                 metrics,
                 trace_ids,
+                expected_tools=expected_tools,
+                trajectories=trajectories,
                 evidence=judge_evidence,
                 diagnostic_metrics=diagnostic_metrics,
                 sample_classes=sample_classes,

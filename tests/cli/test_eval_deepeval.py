@@ -436,6 +436,11 @@ class TestRunEvaluation:
             [["ctx1"], ["ctx2"]],
             _fake_metrics(),
             ["trace_1", "trace_2"],
+            expected_tools=[None, None],
+            trajectories=[
+                {"tool_calls": [], "iterations": 2},
+                {"tool_calls": [], "iterations": 2},
+            ],
         )
 
         df = result.to_pandas()
@@ -461,6 +466,8 @@ class TestRunEvaluation:
             [[]],
             _fake_metrics(),
             ["trace_1"],
+            expected_tools=[None],
+            trajectories=[{"tool_calls": [], "iterations": 2}],
         )
         df = result.to_pandas()
         assert len(df) == 1
