@@ -211,6 +211,7 @@ PGPASSWORD="$POSTGRES_PASSWORD" psql -h localhost -U corporate_rag -d corporate_
 | Markdown | 同名 `.md` | 主分均值、诊断段、工具选择段、行为轴段 |
 | `detail_json` | PostgreSQL `eval_report` | 与 CSV 同源的逐题明细；`kb_eval` API 不返回诊断键 |
 | 行为轴 | `data/deepeval/reports/behaviour_<timestamp>/test_run_*.json` | `testCases[].metricsData[]` 的逐题行为分 |
+| 评测证据 | `data/deepeval/evidence/<run_id>/q_<q_index>.json` + `summary.json` | 事实链与确定性归因；仅 `--evidence` / `--evidence-all` 产出 |
 | 日志 / Langfuse | 按 `trace_id` | 裁判调用、检索、工具、错误证据，见 `docs/agents/troubleshooting.md` |
 
 ### 8.4 裁判 / 被测者 trace 怎么看
@@ -226,6 +227,27 @@ PGPASSWORD="$POSTGRES_PASSWORD" psql -h localhost -U corporate_rag -d corporate_
 - **`judge http` 的 `status=null` + `error=no_response` 是传输失败**（连接失败 / 超时），
   **不是裁判判错**；拿到了 2xx 但 `json_ok=false` 才是响应内容不可用。行为轴 judge 没有
   active measure，故在 `judge http` 中缺席（v1 已知边界）。
+
+### 8.5 用 `--evidence` 走六步证据链
+
+`--evidence` 会为低分/异常题写 `data/deepeval/evidence/<run_id>/q_<q_index>.json`，
+把“分数低在哪一层”变成可直接读的事实链。排查时按顺序走，不要跳步：
+
+| 步 | 阶段 | 看哪些字段 | 判断 |
+|---|---|---|---|
+| 1 | 分数 | CSV / `detail_json` 的该题指标 | 先分清低分 / NaN / N/A（§1），NaN 与 0 不是一回事 |
+| 2 | trace | `trace.run_trace_id` / `trace.sut_trace_id` / `trace.judge_measures` | 串起整轮、该题与裁判调用；`judge_measures` 有 error 即裁判失败 |
+| 3 | corpus | `facts.fact_in_corpus` / `facts.fact_coverage.corpus` | false 或 null → 语料没有该事实：解析/分块或题集错误（null = 语料不可用，不下结论） |
+| 4 | candidates | `facts.fact_in_candidates` / `facts.fact_coverage.candidates` | false → `retrieval_miss`：密集/词法/RRF 都没召回 |
+| 5 | rerank | `facts.fact_in_reranked` | false 且 candidates 为 true → `rerank_or_topk`：候选有、精排丢 |
+| 6 | final / answer | `facts.fact_in_final`、`facts.answer_mentions_fact`、`attribution.*` | final false → `rerank_or_topk`（top-k 截断）；final true 但指标低 → 排序或生成；**直接采信 `root_cause` / `confidence` / `evidence`，不要自行再推** |
+
+- 归因只对实际执行的指标产出；`inconclusive` 是合法结果（证据不足），不是“没问题”。
+- 多值题在某一阶段只命中部分 token 时，归因固定为 `inconclusive`，看 `missing_fact_tokens`。
+- web 样本没有 KB 事实链（`retrieval.status=not_applicable`），不做 KB 链归因。
+- faithfulness 在 F v1 没有 claim 级证据，最多只能判到 `judge_failure` 或 `inconclusive`。
+- 命令、选择规则与产物边界见 `src/cli/README.md`「评测证据（--evidence）」；字段契约见
+  `docs/agents/api_contract.md` §8.7。
 
 ## 9. 排查顺序
 

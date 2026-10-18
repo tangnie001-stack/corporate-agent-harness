@@ -207,6 +207,22 @@ MD 摘要末尾会给出整体平均值，例如：
 > 完整的三层指标（主分/诊断/行为轴）、`0` / `NaN` / `N/A` 语义与逐指标排查顺序见
 > `docs/agents/eval-metrics-troubleshooting.md`。
 
+### 评测证据（--evidence）
+
+```bash
+python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 6 --evidence
+python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 6 --evidence-all
+```
+
+- `--evidence`：只写低分 / NaN / 跑图失败 / 工具未命中 / 行为低分题（`sample_class=empty` 必写）；web 样本主分低不触发（没有 KB 事实链），但工具与行为异常仍会写。
+- `--evidence-all`：写全部题（隐含 `--evidence`）。
+- 路径：`data/deepeval/evidence/<run_id>/q_<q_index>.json` + `summary.json`；`run_id` 为 UTC 时间戳 `%Y%m%d_%H%M%S`，与同轮报告同源。
+- 单题内容：`retrieval` 各阶段候选快照（`dense` / `lexical` / `rrf` / `rerank_after` / `dedup` / `topk` / `final_contexts`）、`facts` 事实链与 `attribution` 归因（`root_cause` / `confidence` / `evidence`）。`inconclusive` 是合法结果，表示证据不足以断定。
+- `summary.json`：本轮 `evidence_files` / `low_score_questions` / `root_cause_counts` / `skipped_metric_count` 等汇总。
+- 边界：faithfulness 在 F v1 不做 claim 级幻觉归因；多值题部分覆盖只给 `inconclusive`；web 样本不做 KB 链归因；证据是旁路观测，不改评分、门禁与 Langfuse，写盘失败只告警。
+
+字段契约见 `docs/agents/api_contract.md` §8.7，按证据链排查的顺序见 `docs/agents/eval-metrics-troubleshooting.md` §8.5。
+
 ## 第三步：质量门禁（怎么判定达标）
 
 ```bash
@@ -243,6 +259,8 @@ python -m src.cli.compare_retrieval --kb-name <知识库名称>
 | `--gate` | 评估后检查质量门禁，不达标退出码 1 |
 | `--deepeval-only`（`--behaviour-only`） | 只跑 Agent 行为轴，跳过四指标（无主分/门禁、不写 CSV 与 `eval_report`；工具选择：未跑；与 `--gate` 互斥） |
 | `--run-type` | `manual`（默认）/ `baseline`；`baseline` 不判门禁（与 `--gate` 互斥） |
+| `--evidence` | 写低分/异常题的证据到 `data/deepeval/evidence/<run_id>/`（不改评分与门禁） |
+| `--evidence-all` | 写全部题证据（隐含 `--evidence`） |
 | `--limit` | 只跑前 N 题（冒烟用；勿与 `--gate` 同用） |
 | `--output` | CSV 报告输出路径（默认 `data/deepeval/reports/deepeval_eval_<timestamp>.csv`） |
 | `--session-id` | 评估用会话 ID，默认 `deepeval_eval_session` |
@@ -272,6 +290,7 @@ python -m src.cli.check_retrieval --kb <知识库名称> --query "<问题>" [--t
 |---|---|
 | `testset/` | 测试集 JSON：`testset_<kb_id>_v<N>.json`，按版本递增 |
 | `reports/` | 评估报告：`deepeval_eval_<timestamp>.csv`（逐条）+ 同名 `.md`（摘要） |
+| `evidence/` | 评测证据：`<run_id>/q_<q_index>.json`（逐题）+ `summary.json`（本轮汇总，仅 `--evidence` / `--evidence-all`） |
 | `llm_cache/` | LLM 响应磁盘缓存（重复生成提速，支持中断恢复） |
 
 ## 典型工作流

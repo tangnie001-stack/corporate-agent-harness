@@ -1296,6 +1296,8 @@ DeepEval 原生四指标评测命令行。测试集生成由独立命令 `testse
 | `--gate` | flag | 否 | 评估后检查质量门禁指标 |
 | `--deepeval-only` | flag | 否 | 只跑 Agent 行为轴，跳过四指标（不写 `eval_report`；与 `--gate` 互斥） |
 | `--run-type` | str | 否 | `manual`（默认）/ `baseline`；`baseline` 不判门禁（与 `--gate` 互斥） |
+| `--evidence` | flag | 否 | 写低分/异常题证据到 `data/deepeval/evidence/<run_id>/`（见 §8.7） |
+| `--evidence-all` | flag | 否 | 写全部题证据（隐含 `--evidence`） |
 | `--limit` | int | 否 | 只跑前 N 题（冒烟用） |
 | `--output` | str | 否 | CSV 输出路径（默认: `data/deepeval/reports/deepeval_eval_<timestamp>.csv`） |
 | `--session-id` | str | 否 | 评估用的会话 ID（默认: `deepeval_eval_session`） |
@@ -1523,3 +1525,39 @@ RAGAS 出题已下线。请使用 DeepEval Synthesizer：python -m src.cli.tests
 ```
 
 CLI `eval_deepeval --generate` 同理报错并指向 `testset_synth`。
+
+### 8.7 评测证据产物契约（`--evidence`）
+
+`--evidence` / `--evidence-all` 在评测末尾把逐题证据写到本地目录：
+
+- 位置：`data/deepeval/evidence/<run_id>/`（`<run_id>` = UTC 时间戳 `%Y%m%d_%H%M%S`，与同轮
+  报告文件名同源）；单题 `q_<q_index>.json`，本轮汇总 `summary.json`。
+- 写盘：临时文件 + `os.replace` 原子替换；非有限浮点数落为 `null`，文件是严格 JSON。
+- 归属边界：**只落本地 JSON 文件，不进 API 响应、不进 DB（`eval_report`）、不进
+  Langfuse**；不改评分、门禁、CSV / MD 与 `detail_json`。证据写出发生在门禁之前，
+  单题或汇总写失败只告警，不影响评测结论。
+
+单题 JSON 字段：
+
+| 字段 | 说明 |
+|---|---|
+| `schema_version` | 固定为 `1` |
+| `q_index` | 题号（0 起） |
+| `trace` | `run_trace_id` / `sut_trace_id` / `judge_measures[]`（含 `judge_calls`）/ `behavior`（`trace_id` / `link_method`） |
+| `testset` | 该题测试集样本字段（`reference` / `expected_tools` / `numeric_risk` 等） |
+| `query` | 问题原文与改写/子查询 |
+| `retrieval` | 各阶段候选快照：`dense` / `lexical` / `rrf` / `rerank_before` / `rerank_after` / `dedup` / `topk` / `final_contexts`。阶段形如 `{items, count, total_count, truncated, failed[, reason]}`；`items[]` 含 `chunk_id` / `parent_key` / `doc_id` / `source` / `page` / `rank` / `score` / `score_kind` / `distance`。web 样本另写 `status="not_applicable"` |
+| `tool_calls` | `name` / `args` / `result_count` / `latency_ms` / `iteration` / `call_index`；`retrieve_kb` 由工具现场记录，其余来自轨迹、缺失字段为 `null` |
+| `judge` | 逐指标 `score` / `error` / `metric_attempted` / `skipped_reason` |
+| `behavior` | `metrics` / `reasons` / `trace_id` / `link_method` |
+| `facts` | 事实链 `fact_in_corpus` / `fact_in_candidates` / `fact_in_reranked` / `fact_in_final`（true / false / null）、`fact_coverage`（同四阶段，0~1 或 null）、`fact_tokens` / `fact_hit_tokens` / `missing_fact_tokens`、`gold_chunk_ids` / `gold_chunk_source` / `gold_chunk_confidence`、`judge_failed` / `metric_attempted` / `skipped_reason`、`answer_mentions_fact`、`testset_conflict` |
+| `attribution` | 指标名 → `{root_cause, confidence, evidence}`；`root_cause` ∈ `parsing_or_chunking` / `retrieval_miss` / `rerank_or_topk` / `prompt_or_generation` / `tool_routing` / `testset_error` / `judge_failure` / `agent_orchestration` / `inconclusive`；`confidence` ∈ `high` / `medium` / `low` / `inconclusive` |
+
+`summary.json` 字段：`schema_version` / `run_id` / `run_trace_id` / `qa_count` /
+`low_score_questions`（已写证据的题号）/ `evidence_files`（已写文件名）/
+`elapsed_ms` / `root_cause_counts`（`by_metric` + `total`）/ `scored_metric_count` /
+`skipped_metric_count` / `inconclusive_count`。
+
+**选择规则**（何时写哪些题）：见 `src/cli/README.md`「评测证据（--evidence）」。
+**归因边界与排查顺序**（`inconclusive` 的含义、web / 多值题 / faithfulness 的处理）：
+见 `docs/agents/eval-metrics-troubleshooting.md` §8.5。
