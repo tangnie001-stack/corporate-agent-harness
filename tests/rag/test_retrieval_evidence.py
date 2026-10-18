@@ -220,7 +220,7 @@ def test_rerank_fallback_marks_failed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_timeout_branch_records_rerank_and_dedup(monkeypatch):
-    """外层超时降级：写 rerank 标记、rerank_after 快照与 dedup 丢弃 ID。"""
+    """外层超时降级：写 rerank 标记、rerank 前快照、rerank_after 与 dedup 丢弃 ID。"""
     _, collector = _collector()
     parent = "同一段父块正文"
     results = [
@@ -258,6 +258,12 @@ async def test_timeout_branch_records_rerank_and_dedup(monkeypatch):
         "score_kind": "fallback",
     }
 
+    before = collector.retrieval["rerank_before"]
+    assert before["count"] == 3
+    assert before["total_count"] == 3
+    assert [i["chunk_id"] for i in before["items"]] == ["doc1:0", "doc1:1", "doc1:2"]
+    assert before["items"][0]["score_kind"] == "rrf"
+
     after = collector.retrieval["rerank_after"]
     assert after["count"] == 3
     assert after["total_count"] == 3
@@ -272,3 +278,92 @@ async def test_timeout_branch_records_rerank_and_dedup(monkeypatch):
     dedup = collector.retrieval["dedup"]
     assert dedup["dropped_chunk_ids"] == ["doc1:1", "doc1:2"]
     assert dedup["kept_chunk_ids"] == ["doc1:0"]
+
+    topk = collector.retrieval["topk"]
+    assert topk["rank_before_topk"] == 1
+    assert topk["rank_after_topk"] == 1
+    assert topk["dropped_chunk_ids"] == []
+    assert topk["kept_chunk_ids"] == ["doc1:0"]
+
+
+@pytest.mark.asyncio
+async def test_timeout_branch_records_topk_dropped_ids(monkeypatch):
+    """超时降级也要能看到 top-k 截断：丢弃 ID 必须来自截断前后两次快照。"""
+    _, collector = _collector()
+    results = [
+        _chunk("doc1:0", distance=0.1, parent="父块0"),
+        _chunk("doc1:1", distance=0.2, parent="父块1"),
+        _chunk("doc1:2", distance=0.3, parent="父块2"),
+    ]
+
+    async def fake_search(query, kb_id, vector_store):
+        return results
+
+    def fake_rerank(query, results, reranker):
+        return []
+
+    monkeypatch.setattr(retrieval, "search", fake_search)
+    monkeypatch.setattr(retrieval, "rerank_results", fake_rerank)
+    monkeypatch.setattr(rag_tools_mod, "RERANK_OUTER_TIMEOUT", 0)
+
+    tool = rag_tools_mod.make_rag_tools(
+        vector_store=cast(VectorStore, None),
+        reranker=None,
+        prompt_manager=None,
+    )[0]
+    state = AgentState.make_initial_state("s1", "kb1", "毛利率", [])
+
+    token = current_evidence.set(collector)
+    try:
+        await tool.ainvoke({"query": "毛利率", "state": state, "top_k": 1})
+    finally:
+        current_evidence.reset(token)
+
+    dedup = collector.retrieval["dedup"]
+    assert dedup["dropped_chunk_ids"] == []
+    assert dedup["kept_chunk_ids"] == ["doc1:0", "doc1:1", "doc1:2"]
+
+    topk = collector.retrieval["topk"]
+    assert topk["rank_before_topk"] == 3
+    assert topk["rank_after_topk"] == 1
+    assert topk["dropped_chunk_ids"] == ["doc1:1", "doc1:2"]
+    assert topk["kept_chunk_ids"] == ["doc1:0"]
+
+
+def test_rerank_skips_evidence_when_abandoned():
+    """超时被放弃的后台精排：结果照常返回，但不得回写任何阶段证据。"""
+    _, collector = _collector()
+    collector.rerank_abandoned.set()
+    results = [_chunk("d1:0", distance=0.2), _chunk("d1:1", distance=0.4)]
+
+    class _Reranker:
+        def rerank(self, docs, query):
+            return [
+                {"index": i, "relevance_score": 0.9 - i * 0.1} for i in range(len(docs))
+            ]
+
+    token = current_evidence.set(collector)
+    try:
+        contexts = retrieval.rerank_results("q", results, _Reranker())
+    finally:
+        current_evidence.reset(token)
+
+    assert [c.chunk_id for c in contexts] == ["d1:0", "d1:1"]
+    for key in ("rerank_before", "rerank_after", "dedup", "topk"):
+        assert key not in collector.retrieval
+
+
+def test_rerank_empty_input_skips_evidence_when_abandoned():
+    """早退分支同样受放弃标记约束：晚到线程不得写入空阶段覆盖降级快照。"""
+    _, collector = _collector()
+    collector.rerank_abandoned.set()
+
+    token = current_evidence.set(collector)
+    try:
+        contexts = retrieval.rerank_results("q", [], MagicMock())
+    finally:
+        current_evidence.reset(token)
+
+    assert contexts == []
+    for key in ("rerank_before", "rerank_after", "dedup", "topk"):
+        assert key not in collector.retrieval

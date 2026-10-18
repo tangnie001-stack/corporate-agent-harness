@@ -166,6 +166,12 @@ def make_rag_tools(
                 timeout_s=RERANK_OUTER_TIMEOUT,
                 query=query,
             )
+            # 线程池里的精排不会被 wait_for 取消：先置放弃标记，让它晚到时跳过证据回写，
+            # 否则会覆盖本分支的降级快照，留下 rerank.failed=true 与
+            # rerank_after.failed=false 并存的矛盾证据
+            collector = current_evidence.get()
+            if collector is not None:
+                collector.rerank_abandoned.set()
             contexts = []
             for r in results:
                 pc = r.metadata.get("parent_content")
@@ -201,22 +207,38 @@ def make_rag_tools(
             core_logging.log_event(
                 Event.DEDUP_DONE, dropped=before - len(contexts), kept=len(contexts)
             )
-            # 证据旁路：超时分支无精排结果，但事实链要读到 rerank 失败标记与本阶段快照，
-            # 因此 rerank / rerank_after / dedup 三个键都要写，不能缺段
-            collector = current_evidence.get()
+            contexts_deduped = list(contexts)
+            # 降级路径不经过 rerank_results，top-k 截断在本分支完成；证据须在截断之后写，
+            # 否则看不到 top-k 丢弃的 chunk_id
+            contexts = contexts_deduped[:top_k]
+            # 证据旁路：超时分支无精排结果，但事实链要读到 rerank 失败标记与各阶段快照，
+            # rerank / rerank_before / rerank_after / dedup / topk 五个键都要写，不能缺段
             if collector is not None:
-                before_ids = [c.chunk_id for c in contexts_before_dedup]
-                after_ids = [c.chunk_id for c in contexts]
+                deduped_ids = [c.chunk_id for c in contexts_deduped]
+                final_ids = [c.chunk_id for c in contexts]
                 collector.retrieval["rerank"] = {
                     "failed": True,
                     "reason": "timeout",
                     "score_kind": "fallback",
                 }
+                collector.retrieval["rerank_before"] = retrieval._evidence_stage(
+                    results, "rrf"
+                )
                 collector.retrieval["dedup"] = {
                     "dropped_chunk_ids": [
-                        cid for cid in before_ids if cid not in set(after_ids)
+                        c.chunk_id
+                        for c in contexts_before_dedup
+                        if c.chunk_id not in set(deduped_ids)
                     ],
-                    "kept_chunk_ids": after_ids,
+                    "kept_chunk_ids": deduped_ids,
+                }
+                collector.retrieval["topk"] = {
+                    "dropped_chunk_ids": [
+                        cid for cid in deduped_ids if cid not in set(final_ids)
+                    ],
+                    "kept_chunk_ids": final_ids,
+                    "rank_before_topk": len(contexts_deduped),
+                    "rank_after_topk": len(contexts),
                 }
                 rerank_items = []
                 for rank, chunk in enumerate(
@@ -247,6 +269,7 @@ def make_rag_tools(
                     "failed": True,
                     "reason": "timeout",
                 }
+        # 正常路径在此截断；超时分支已在降级段内截断（证据须在截断后写），重复截断幂等
         contexts = contexts[:top_k]
 
         # iteration：显式形状判定。主循环已内化进装配产物，工具只会拿到映射承载，

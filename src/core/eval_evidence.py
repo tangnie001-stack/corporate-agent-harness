@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -43,6 +44,9 @@ class QuestionEvidence:
     testset: dict = field(default_factory=dict)  # 测试集样本字段
     query: dict = field(default_factory=dict)  # 问题原文与改写/子查询等信息
     retrieval: dict = field(default_factory=dict)  # 检索候选与最终上下文
+    rerank_abandoned: Any = field(
+        default_factory=threading.Event, repr=False
+    )  # 外层超时后置位；后台精排线程据此停写证据
     tool_calls: list[dict] = field(default_factory=list)  # 顶层工具调用补充
     trajectory: dict = field(default_factory=dict)  # summarize_trajectory 摘要
     judge: dict = field(default_factory=dict)  # 裁判调用与证据

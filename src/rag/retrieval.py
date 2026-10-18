@@ -312,7 +312,7 @@ def rerank_results(
     if not results:
         log_event(Event.RERANK_SKIP, reason="empty_input")
         collector = current_evidence.get()
-        if collector is not None:
+        if collector is not None and not collector.rerank_abandoned.is_set():
             # 空输入也把链路写全：后续事实归因看到的是"空阶段"，不是缺键
             collector.retrieval["rerank_before"] = _evidence_stage([], "rrf")
             collector.retrieval["rerank_after"] = {
@@ -400,8 +400,11 @@ def rerank_results(
             latency_ms=rerank_ms,
             **_rerank_stats(reranked, used_fallback),
         )
+    # 超时被放弃的调用不得回写证据：rerank 跑在线程池里，wait_for 取消 Future 不会
+    # 停线程；线程晚到时会用同一 collector 覆盖超时分支的降级快照。
+    # 只跳过证据写入，精排结果本身照常返回。
     collector = current_evidence.get()
-    if collector is not None:
+    if collector is not None and not collector.rerank_abandoned.is_set():
         after_score_kind = "rerank"
         after_reason = None
         if used_fallback:
@@ -432,7 +435,7 @@ def rerank_results(
     final_contexts = contexts[:TOP_K_RERANK]
 
     collector = current_evidence.get()
-    if collector is not None:
+    if collector is not None and not collector.rerank_abandoned.is_set():
         kept_ids = {c.chunk_id for c in contexts}
         dropped = [c.chunk_id for c in before_contexts if c.chunk_id not in kept_ids]
         collector.retrieval["dedup"] = {
