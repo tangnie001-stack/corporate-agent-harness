@@ -123,7 +123,7 @@ def derive_period(chunks_of_doc: list[ChunkResult]) -> str:
         报告期字符串，如 `2024年年度`
 
     Raises:
-        ValueError: 既无 report_period 也无法从 source 推出年份
+        ValueError: report_period、source 与 metadata 均无年份
     """
     first = chunks_of_doc[0]
     raw = str(first.metadata.get("report_period") or "").strip()
@@ -139,10 +139,9 @@ def derive_period(chunks_of_doc: list[ChunkResult]) -> str:
             return f"{year}{_PERIOD_SUFFIX[period_match.group(1).lower()]}"
         return f"{year}年"
 
-    report_type = str(first.metadata.get("report_type") or "").strip()
-    quarter = str(first.metadata.get("quarter") or "").strip()
-    if report_type or quarter:
-        return f"{report_type}{quarter}"
+    meta_year = _YEAR_RE.search(str(first.metadata.get("year") or ""))
+    if meta_year is not None:
+        return f"{meta_year.group(0)}年"
     raise ValueError(f"无法从 {source} 推导报告期")
 
 

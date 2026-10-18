@@ -23,6 +23,7 @@ def _chunk(
     period: str = "2025年第一季度",
     parent: str = "",
     content: str = "",
+    year: str = "2024",
 ) -> ChunkResult:
     """构造最小 ChunkResult。"""
     return ChunkResult(
@@ -35,7 +36,7 @@ def _chunk(
             "company": company,
             "report_period": period,
             "parent_content": parent,
-            "year": "2024",
+            "year": year,
         },
     )
 
@@ -117,6 +118,23 @@ def test_period_uses_year_and_suffix_when_report_period_missing():
         _chunk("d1", "tencent_2024_annual.pdf", 1, period=""),
     ]
     assert derive_period(chunks) == "2024年年度"
+
+
+def test_period_falls_back_to_metadata_year():
+    chunks = [
+        _chunk("d1", "report.pdf", 0, period="", year="2024"),
+        _chunk("d1", "report.pdf", 1, period="", year="2024"),
+    ]
+    assert derive_period(chunks) == "2024年"
+
+
+def test_period_without_any_year_raises():
+    chunks = [
+        _chunk("d1", "report.pdf", 0, period="", year=""),
+        _chunk("d1", "report.pdf", 1, period="", year=""),
+    ]
+    with pytest.raises(ValueError):
+        derive_period(chunks)
 
 
 def test_aliases_strip_longest_suffix_first():
