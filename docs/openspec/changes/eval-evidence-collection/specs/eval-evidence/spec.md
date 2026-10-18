@@ -39,8 +39,8 @@
 - `retrieval` SHALL 含 dense / lexical / RRF / rerank before / rerank after / dedup / top-k / final contexts 的快照与各阶段 `count`、`failed`、`truncated`。
 - `tool_calls` SHALL 含工具名、参数、结果数、迭代数；`delegate_task` 只记顶层。
 - `judge` SHALL 含每个指标的 `score`、`error`、`reason`；行为轴 SHALL 含逐题分数与 reason。
-- `trace` SHALL 含 `run_trace_id`、`sut_trace_id`、`judge_measures[]`（`judge_measure_id` / metric / attempt / model / latency_ms / request_count / response_count / statuses / tokens_in / tokens_out / reason / error）、`judge_calls[]`（`judge_call_id` / call_index / status / finish_reason / tokens / latency / json_ok）与行为轴 `trace_id`/`link_method`；`judge_calls` SHALL 能通过 `judge_measure_id` 归到对应 measure。
-- `trace` 的 ID SHALL 由 `eval-trace-correlation` 提供，SHALL NOT 在本 change 重新生成；缺失时写 null。
+- `trace` SHALL 含 `run_trace_id`、`sut_trace_id`、`judge_measures[]`（`judge_measure_id` / metric / attempt / model / latency_ms / request_count / response_count / statuses / tokens_in / tokens_out / reason / error）、嵌套 `judge_calls[]`（`judge_call_id` / call_index / status / finish_reasons / tokens / latency / json_ok / error）与行为轴 `trace_id`/`link_method`；`judge_calls` SHALL 能通过 `judge_measure_id` 归到对应 measure。
+- `trace` 的 ID 与 measure 记录 SHALL 直接消费 `eval-trace-correlation` 的进程内接口（`HookEvidence.measures` / `EvalTraceContext`），SHALL NOT 重解析日志或重新生成；缺失时写 null。
 - 行为轴 judge 的内部调用不在 v1 范围：SHALL NOT 伪造缺失的 `judge_calls`；只记行为分与 `trace_id` 映射。
 - `facts` SHALL 含 `fact_in_corpus`、`fact_in_candidates`、`fact_in_reranked`、`fact_in_final`、`answer_mentions_fact`、`testset_conflict`、`judge_failed`、`tool_called`；无法判定时写 null。
 - `attribution` SHALL 按指标输出 `root_cause` / `confidence` / `evidence`。
@@ -57,7 +57,7 @@
 
 #### Scenario: Trace ids are absent
 
-- **WHEN** `eval-trace-correlation` 未提供 trace ID（未合并/关闭/失败）
+- **WHEN** 运行时 trace 字段不可用（change 未部署、`evidence=None`、或 measure 记录为空）
 - **THEN** `trace` 段 SHALL 写 null 字段，证据与归因 SHALL 仍照常生成，SHALL NOT 伪造或重新生成 trace ID
 
 #### Scenario: Delegated retrieval is not fabricated

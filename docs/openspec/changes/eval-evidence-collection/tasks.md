@@ -4,7 +4,7 @@
 - [ ] 1.2 `src/cli/eval_deepeval.py` 新增 `--evidence` / `--evidence-all` 参数；默认关闭；与 `--deepeval-only` 可组合；不改变现有参数互斥规则。
 - [ ] 1.3 主流程每题 set/reset `current_evidence`；生成/评分结束后清空；关闭时不创建收集器。
 - [ ] 1.4 单测：关闭时 no-op；开启时同一题内多次记录合并到同一收集器；异常不冒泡。
-- [ ] 1.5 证据 `trace` 段只消费 `eval-trace-correlation` 的 `run_trace_id` / `sut_trace_id` / `judge_measure_id` / `judge_call_id` / 行为映射；按 `judge_measure_id` 组装 `judge_measures[]` 与嵌套 `judge_calls[]`；取不到写 null，不重新生成。
+- [ ] 1.5 证据 `trace` 段只消费 `eval-trace-correlation` 的进程内接口（`HookEvidence.measures` / `EvalTraceContext` / 行为映射）；按 `judge_measure_id` 组装 `judge_measures[]` 与嵌套 `judge_calls[]`；不重解析日志；取不到写 null，不重新生成。
 
 ## 2. 检索链证据
 
@@ -23,7 +23,7 @@
 - [ ] 3.4 行为轴：从 `behaviour_rows` 记录逐题 metrics/reasons；failed 题写 score=null/reason=failed。
 - [ ] 3.5 事实标记：由 gold_chunk_ids 与各阶段 chunk 交集计算 `fact_in_corpus/candidates/reranked/final`；answer 用 fact token 计算 `answer_mentions_fact`；无法判定写 null。
 - [ ] 3.6 单测：judge 无 reason → null；failed 行为题 → null/failed；事实标记交集；answer token 匹配。
-- [ ] 3.7 单测：trace 段在 `eval-trace-correlation` 可用/不可用时分别为有值/null；一条 measure 的多条 HTTP 记录归到同一 `judge_measure_id`；证据仍落盘，不生成伪 ID。
+- [ ] 3.7 单测：trace 段在 measure 记录可用/不可用时分别为有值/null；一条 measure 的多条 HTTP 记录归到同一 `judge_measure_id`；证据仍落盘，不生成伪 ID。
 - [ ] 3.8 单测：行为轴只产出分数 + `trace_id`/`link_method`，不产出行为 judge 的 `judge_calls`。
 
 ## 4. Gold chunk 与 Chunk 探针

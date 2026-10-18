@@ -101,16 +101,17 @@
 
 ### D6.1：Trace 关联只消费，不生成
 
-- 证据 `trace` 段从 `eval-trace-correlation` 读取，分两级：
+- 证据 `trace` 段从 `eval-trace-correlation` 的**进程内**接口读取（`HookEvidence.measures` / `EvalTraceContext`），不重解析日志：
   - `run_trace_id`（整轮）；
   - `sut_trace_id`（该题 `trace_id`）；
-  - `judge_measures[]`：`judge_measure_id` / metric / attempt / model / latency_ms / request_count / response_count / statuses / tokens_in / tokens_out / reason / error；
-  - `judge_calls[]`：`judge_call_id` / `call_index` / status / finish_reason / tokens_in / tokens_out / latency_ms / json_ok；SHALL 通过 `judge_measure_id` 归到对应 measure；
+  - `judge_measures[]`：直接取 `HookEvidence.measures` 的 measure 记录（`judge_measure_id` / metric / attempt / model / latency_ms / request_count / response_count / statuses / tokens_in / tokens_out / reason / error），其中 `calls[]` 即 `judge_calls[]`（`judge_call_id` / call_index / status / finish_reasons / tokens / latency / json_ok / error）；
   - 行为轴映射（`trace_id` + `link_method`）。
-- `JUDGE_CALL` 日志只记 `reason_len` / `reason_hash`；证据文件 MAY 记录完整 `reason`（仅本地 gitignored），由 measure 结果回填。
+- `HookEvidence.measures` 在每题评分后由证据采集器读取并清空；`reset()` 只清当前题窗口，不丢 run ID。
+- `JUDGE_CALL` 日志只记 `reason_len` / `reason_hash`；证据文件 MAY 记录完整 `reason`（仅本地 gitignored），直接取 measure 记录里的 `reason`。
 - 取不到时写 null；SHALL NOT 在本 change 里重新生成/猜测 trace ID。
 - 行为轴 judge 的内部调用不在 v1 范围：证据只记行为分与 `trace_id` 映射，不伪造缺失的 judge call。
-- 证据写入 SHALL NOT 改变 trace ID 的生成/日志行为；trace change 关闭/失败时，证据仍可落盘，trace 字段为 null。
+- 证据写入 SHALL NOT 改变 trace ID 的生成/日志行为；trace change 未部署或运行时字段为空时，证据仍可落盘，trace 字段为 null。
+- 行为行以 `read_behaviour_scores` 归一化后的 `q_index`（已校验等于 `order`）为准，与 trace / Langfuse 使用同一题号。
 
 ### D7：低分选择与落盘
 
