@@ -3044,3 +3044,7 @@ v6 首轮实测发现两类题穿过了语言/自足门：
 ### 4. Worktree 链接 gitignored 资源
 
 执行环境中 worktree 缺少 `.env` / `data` / `.venv`，已创建软链；否则 DB、报告目录与 pre-commit 不可用。
+
+### 5. 提示词收紧与失败分支补 `SYNTH_GATE`
+
+第 2 次出题 `kept=13` 失败时只有一行 `error:`，拿不到门统计。因此在早停失败分支补记 `SYNTH_GATE`，并把 `StylingConfig` 的 `task` / `input_format` 明确为「只许上下文所属公司 + 报告期年份、不得提及其他公司、不得使用不一致年份」。调整后第 3 次出题 `kept=22`。

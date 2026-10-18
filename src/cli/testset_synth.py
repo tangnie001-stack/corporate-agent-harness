@@ -65,9 +65,14 @@ def _styling_config() -> StylingConfig:
     """中文出题的硬约束。"""
     return StylingConfig(
         scenario="财务分析师阅读 A 股或港股上市公司的定期报告",
-        task="基于给定的中文年报或季报上下文，提出可以用该上下文回答的问题",
+        task=(
+            "基于给定的中文年报或季报上下文，提出可以用该上下文回答的问题；"
+            "题目只能涉及上下文所属公司在该报告期的事实"
+        ),
         input_format=(
-            "简体中文问句，一句话，必须包含公司名称与报告期，不得出现英文句子或中英拼接"
+            "简体中文问句，一句话，必须包含上下文首行【公司 · 报告期】中的"
+            "公司名称与报告期年份；不得提及其他公司，不得使用与报告期不一致的"
+            "年份，不得出现英文句子或中英拼接"
         ),
         expected_output_format=(
             "简体中文完整陈述句，包含主体、指标与数值单位（如适用），"
@@ -345,6 +350,14 @@ async def _run(args: argparse.Namespace) -> None:
         kept, stats, failed, last_error = await _generate_once(contexts, synth, 2)
         used_goldens = 2
         if len(kept) < EVAL_SYNTH_MIN_SAMPLES:
+            core_logging.log_event(
+                Event.SYNTH_GATE,
+                generated=stats["generated"],
+                kept=stats["kept"],
+                dropped=stats["dropped"],
+                failed_contexts=stats["failed_contexts"],
+                language_checked=stats["language_checked"],
+            )
             raise SystemExit(
                 f"error: 仅 {len(kept)} 条通过质量门"
                 f"（< {EVAL_SYNTH_MIN_SAMPLES}），未写文件"
