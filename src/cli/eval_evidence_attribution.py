@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import math
+
 from src.core.eval_evidence import QuestionEvidence
 
 _METRICS: tuple[str, ...] = (
@@ -61,6 +63,22 @@ def _result(root: str, evidence: str, confidence: str) -> dict:
     }
 
 
+def _is_missing_score(score: object) -> bool:
+    """判定评分是否缺失。
+
+    行为分用 NaN 表示“未算出”，与 None 同义；两者都不参与阈值比较。
+
+    Args:
+        score: 待判定的评分
+
+    Returns:
+        缺失时为 True
+    """
+    if score is None:
+        return True
+    return isinstance(score, float) and math.isnan(score)
+
+
 def _fact_stage(facts: dict) -> tuple[str, str] | None:
     """按 corpus → candidates → reranked → final 定位首个丢失阶段。
 
@@ -96,7 +114,7 @@ def _partial_stage(facts: dict) -> str | None:
         阶段名；没有部分命中阶段时返回 None
     """
     coverage = facts.get("fact_coverage") or {}
-    for stage in ("corpus", "candidates", "reranked", "final"):
+    for _key, stage, _root in _FACT_STAGES:
         value = coverage.get(stage)
         if value is None:
             continue
@@ -108,20 +126,32 @@ def _partial_stage(facts: dict) -> str | None:
 def _fact_confidence(root: str, facts: dict) -> str:
     """计算事实阶段根因的置信度。
 
+    `retrieval_miss` 依赖 gold 来源：只有题集精确匹配才算高置信。
+    `rerank_or_topk` 不依赖 gold 来源，候选阶段覆盖率 1.0 本身即是直接证据。
+
     Args:
         root: 事实阶段根因
         facts: `QuestionEvidence.facts`
 
     Returns:
-        gold 来自题集且精确匹配时为 high，其余为 medium
+        root 为 `inconclusive` 时为 `inconclusive`；证据充分时为 high，其余 medium
     """
+    if root == _INCONCLUSIVE:
+        return _INCONCLUSIVE
     if root == "retrieval_miss" and facts.get("gold_chunk_confidence") == "high":
         return "high"
+    if root == "rerank_or_topk":
+        coverage = facts.get("fact_coverage") or {}
+        if coverage.get("candidates") == 1.0:
+            return "high"
     return "medium"
 
 
 def _skipped_reason(facts: dict, sample_class: str) -> str:
     """生成跳过原因。
+
+    上游未写 `skipped_reason` 时，兜底只允许 `failed` / `empty`，
+    不得把 `pure_kb` / `web` 等样本类别当作跳过原因。
 
     Args:
         facts: `QuestionEvidence.facts`
@@ -131,9 +161,11 @@ def _skipped_reason(facts: dict, sample_class: str) -> str:
         `skipped:` 之后的原因文本
     """
     reason = facts.get("skipped_reason")
-    if not reason:
-        return f"sample_class={sample_class}"
-    return str(reason)
+    if isinstance(reason, str) and reason:
+        return reason
+    if sample_class == "empty":
+        return "empty"
+    return "failed"
 
 
 def _metric_attempted(facts: dict, item: dict) -> bool:
@@ -153,6 +185,161 @@ def _metric_attempted(facts: dict, item: dict) -> bool:
     if value is None:
         value = facts.get("metric_attempted")
     return value is not False
+
+
+def _faithfulness_result(*, sample_failed: bool, item: dict) -> dict:
+    """faithfulness 的归因：不接事实链，v1 无 claim 级证据。
+
+    Args:
+        sample_failed: 跑图是否失败
+        item: 该指标的 judge 条目
+
+    Returns:
+        归因结果
+    """
+    if sample_failed:
+        return _result("prompt_or_generation", "run failed", "low")
+    if item.get("score") is None:
+        return _result(_INCONCLUSIVE, "no score", _INCONCLUSIVE)
+    return _result(
+        _INCONCLUSIVE,
+        "faithfulness v1 has no claim-level evidence",
+        _INCONCLUSIVE,
+    )
+
+
+def _answer_relevancy_result(*, sample_failed: bool) -> dict:
+    """answer_relevancy 的归因：v1 无 answer 级证据。
+
+    Args:
+        sample_failed: 跑图是否失败
+
+    Returns:
+        归因结果
+    """
+    if sample_failed:
+        return _result("prompt_or_generation", "run failed", "low")
+    return _result(_INCONCLUSIVE, "no answer-level evidence", _INCONCLUSIVE)
+
+
+def _tool_result(facts: dict, *, sample_class: str) -> dict:
+    """tool_correctness 的归因：失败与 web fallback 都不算路由问题。
+
+    Args:
+        facts: `QuestionEvidence.facts`
+        sample_class: 样本类别
+
+    Returns:
+        归因结果
+    """
+    reason = facts.get("tool_correctness_reason")
+    if not isinstance(reason, str):
+        reason = ""
+    if reason == "failed":
+        return _result(_INCONCLUSIVE, "run failed", _INCONCLUSIVE)
+    if sample_class == "web" and reason:
+        return _result(_INCONCLUSIVE, "web fallback", _INCONCLUSIVE)
+    if reason.startswith("missing "):
+        return _result("tool_routing", f"missing expected tool: {reason}", "high")
+    return _result(_INCONCLUSIVE, "no routing signal", _INCONCLUSIVE)
+
+
+def _non_advice_result(item: dict) -> dict:
+    """non_advice 的归因：仅低分视为不合规。
+
+    Args:
+        item: 该指标的 judge 条目
+
+    Returns:
+        归因结果
+    """
+    score = item.get("score")
+    if score is not None and float(score) < 1.0:
+        return _result("prompt_or_generation", "advice detected", "medium")
+    return _result(_INCONCLUSIVE, "no violation", _INCONCLUSIVE)
+
+
+def _fact_metric_result(
+    facts: dict, *, metric: str, item: dict, sample_class: str
+) -> dict:
+    """事实类指标的归因：web 短路 → testset 冲突 → 部分覆盖 → 事实链。
+
+    Args:
+        facts: `QuestionEvidence.facts`
+        metric: 指标名
+        item: 该指标的 judge 条目
+        sample_class: 样本类别
+
+    Returns:
+        归因结果
+    """
+    # web 样本没有 KB 事实链，裁判成功时只可能 inconclusive；
+    # 即使上游 facts 误填了非 null 值，也不能断言检索层根因。
+    if sample_class == "web":
+        return _result(_INCONCLUSIVE, "web sample has no kb fact chain", _INCONCLUSIVE)
+
+    conflict = facts.get("testset_conflict") or {}
+    if conflict.get("numeric_conflict") is True:
+        return _result("testset_error", "numeric_conflict=true", "medium")
+
+    partial_stage = _partial_stage(facts)
+    if partial_stage is not None:
+        missing = facts.get("missing_fact_tokens")
+        return _result(
+            _INCONCLUSIVE,
+            (
+                f"partial_fact_coverage stage={partial_stage} "
+                f"missing_fact_tokens={missing}"
+            ),
+            _INCONCLUSIVE,
+        )
+
+    if metric == "context_precision":
+        score = item.get("score")
+        if (
+            facts.get("fact_in_final") is True
+            and score is not None
+            and float(score) < 1.0
+        ):
+            return _result("rerank_or_topk", "gold in final but precision<1", "medium")
+
+    stage = _fact_stage(facts)
+    if stage is not None:
+        root, evidence = stage
+        return _result(root, evidence, _fact_confidence(root, facts))
+    return _result(_INCONCLUSIVE, "no rule", _INCONCLUSIVE)
+
+
+def _behavior_results(behavior: dict, *, sample_failed: bool) -> dict[str, dict]:
+    """行为分归因；NaN 与 None 一样按缺失处理。
+
+    Args:
+        behavior: `QuestionEvidence.behavior`
+        sample_failed: 跑图是否失败
+
+    Returns:
+        以行为指标名为键的归因结果
+    """
+    out: dict[str, dict] = {}
+    metrics = behavior.get("metrics") or {}
+    for raw_name, score in metrics.items():
+        if not isinstance(raw_name, str):
+            continue
+        key = _BEHAVIOR_ALIASES.get(raw_name, raw_name)
+        if sample_failed:
+            out[key] = _result("prompt_or_generation", "run failed", "low")
+            continue
+        if _is_missing_score(score):
+            out[key] = _result(
+                _INCONCLUSIVE, f"no behavior score for {raw_name}", _INCONCLUSIVE
+            )
+            continue
+        if key in ("StepEfficiency", "AgentLoopDetection") and score < 0.5:
+            out[key] = _result("agent_orchestration", f"score={score}", "medium")
+            continue
+        if key == "TaskCompletion" and score < 0.5:
+            out[key] = _result(_INCONCLUSIVE, f"score={score}", _INCONCLUSIVE)
+    return out
 
 
 def attribute_question(
@@ -187,107 +374,22 @@ def attribute_question(
             out[metric] = _result("judge_failure", "judge_failed=true", "high")
             continue
         if metric == "faithfulness":
-            if sample_failed:
-                out[metric] = _result("prompt_or_generation", "run failed", "low")
-            elif item.get("score") is None:
-                out[metric] = _result(_INCONCLUSIVE, "no score", _INCONCLUSIVE)
-            else:
-                out[metric] = _result(
-                    _INCONCLUSIVE,
-                    "faithfulness v1 has no claim-level evidence",
-                    _INCONCLUSIVE,
-                )
+            out[metric] = _faithfulness_result(sample_failed=sample_failed, item=item)
             continue
         if metric == "answer_relevancy":
-            if sample_failed:
-                out[metric] = _result("prompt_or_generation", "run failed", "low")
-            else:
-                out[metric] = _result(
-                    _INCONCLUSIVE, "no answer-level evidence", _INCONCLUSIVE
-                )
+            out[metric] = _answer_relevancy_result(sample_failed=sample_failed)
             continue
         if metric == "tool_correctness":
-            reason = facts.get("tool_correctness_reason")
-            if not isinstance(reason, str):
-                reason = ""
-            if reason == "failed":
-                out[metric] = _result(_INCONCLUSIVE, "run failed", _INCONCLUSIVE)
-            elif sample_class == "web" and reason:
-                out[metric] = _result(_INCONCLUSIVE, "web fallback", _INCONCLUSIVE)
-            elif reason.startswith("missing "):
-                out[metric] = _result(
-                    "tool_routing", f"missing expected tool: {reason}", "high"
-                )
-            else:
-                out[metric] = _result(_INCONCLUSIVE, "no routing signal", _INCONCLUSIVE)
+            out[metric] = _tool_result(facts, sample_class=sample_class)
             continue
         if metric == "non_advice":
-            score = item.get("score")
-            if score is not None and float(score) < 1.0:
-                out[metric] = _result(
-                    "prompt_or_generation", "advice detected", "medium"
-                )
-            else:
-                out[metric] = _result(_INCONCLUSIVE, "no violation", _INCONCLUSIVE)
+            out[metric] = _non_advice_result(item)
             continue
-        # web 样本没有 KB 事实链，裁判成功时只可能 inconclusive；
-        # 即使上游 facts 误填了非 null 值，也不能断言检索层根因。
-        if sample_class == "web":
-            out[metric] = _result(
-                _INCONCLUSIVE, "web sample has no kb fact chain", _INCONCLUSIVE
-            )
-            continue
+        out[metric] = _fact_metric_result(
+            facts, metric=metric, item=item, sample_class=sample_class
+        )
 
-        conflict = facts.get("testset_conflict") or {}
-        if conflict.get("numeric_conflict") is True:
-            out[metric] = _result("testset_error", "numeric_conflict=true", "medium")
-            continue
-        partial_stage = _partial_stage(facts)
-        if partial_stage is not None:
-            missing = facts.get("missing_fact_tokens")
-            out[metric] = _result(
-                _INCONCLUSIVE,
-                (
-                    f"partial_fact_coverage stage={partial_stage} "
-                    f"missing_fact_tokens={missing}"
-                ),
-                _INCONCLUSIVE,
-            )
-            continue
-        if metric == "context_precision":
-            score = item.get("score")
-            if (
-                facts.get("fact_in_final") is True
-                and score is not None
-                and float(score) < 1.0
-            ):
-                out[metric] = _result(
-                    "rerank_or_topk", "gold in final but precision<1", "medium"
-                )
-                continue
-        stage = _fact_stage(facts)
-        if stage is not None:
-            root, evidence = stage
-            out[metric] = _result(root, evidence, _fact_confidence(root, facts))
-            continue
-        out[metric] = _result(_INCONCLUSIVE, "no rule", _INCONCLUSIVE)
-
-    behavior_metrics = (collector.behavior or {}).get("metrics") or {}
-    for raw_name, score in behavior_metrics.items():
-        if not isinstance(raw_name, str):
-            continue
-        name = raw_name
-        key = _BEHAVIOR_ALIASES.get(name, name)
-        if sample_failed:
-            out[key] = _result("prompt_or_generation", "run failed", "low")
-        elif score is None:
-            out[key] = _result(
-                _INCONCLUSIVE, f"no behavior score for {name}", _INCONCLUSIVE
-            )
-        elif key in ("StepEfficiency", "AgentLoopDetection") and score < 0.5:
-            out[key] = _result("agent_orchestration", f"score={score}", "medium")
-        elif key == "TaskCompletion" and score < 0.5:
-            out[key] = _result(_INCONCLUSIVE, f"score={score}", _INCONCLUSIVE)
+    out.update(_behavior_results(collector.behavior or {}, sample_failed=sample_failed))
     return out
 
 

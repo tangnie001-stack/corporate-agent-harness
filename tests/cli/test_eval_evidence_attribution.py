@@ -54,10 +54,34 @@ def test_faithfulness_does_not_use_fact_chain():
     assert out["faithfulness"]["root_cause"] == "inconclusive"
 
 
-def test_faithfulness_failed_run_is_prompt_or_generation():
-    c = _collector({"metric_attempted": True, "judge_failed": False})
+def test_failed_run_is_skipped_not_prompt_or_generation():
+    c = _collector(
+        {
+            "metric_attempted": False,
+            "skipped_reason": "failed",
+            "error": "failed",
+            "judge_failed": False,
+        }
+    )
+    out = attribute_question(c, sample_class="pure_kb", sample_failed=True)
+    assert out["faithfulness"]["root_cause"] == "inconclusive"
+    assert out["faithfulness"]["confidence"] == "inconclusive"
+    assert out["faithfulness"]["evidence"] == "skipped:failed"
+    assert out["context_recall"]["evidence"] == "skipped:failed"
+
+
+def test_faithfulness_failed_answer_with_attempted_metric():
+    """metric_attempted=true 且 answer 失败时，faithfulness 才归 prompt_or_generation。"""
+    c = _collector(
+        {
+            "metric_attempted": True,
+            "judge_failed": False,
+            "fact_in_corpus": None,
+        }
+    )
     out = attribute_question(c, sample_class="pure_kb", sample_failed=True)
     assert out["faithfulness"]["root_cause"] == "prompt_or_generation"
+    assert out["faithfulness"]["confidence"] == "low"
 
 
 def test_null_fact_does_not_become_parsing():
@@ -73,6 +97,28 @@ def test_null_fact_does_not_become_parsing():
     )
     out = attribute_question(c, sample_class="web", sample_failed=False)
     assert out["context_recall"]["root_cause"] == "inconclusive"
+
+
+def test_null_fact_marker_confidence_is_inconclusive():
+    c = _collector(
+        {
+            "fact_in_corpus": True,
+            "fact_in_candidates": True,
+            "fact_in_reranked": None,
+            "fact_in_final": None,
+            "fact_coverage": {
+                "corpus": 1.0,
+                "candidates": 1.0,
+                "reranked": None,
+                "final": None,
+            },
+            "metric_attempted": True,
+            "judge_failed": False,
+        }
+    )
+    out = attribute_question(c, sample_class="pure_kb", sample_failed=False)
+    assert out["context_recall"]["root_cause"] == "inconclusive"
+    assert out["context_recall"]["confidence"] == "inconclusive"
 
 
 def test_empty_sample_is_not_judge_failure():
@@ -101,6 +147,31 @@ def test_empty_sample_tool_correctness_stays_attempted():
     assert out["context_recall"]["root_cause"] == "inconclusive"
     assert out["context_recall"]["evidence"].startswith("skipped:")
     assert not out["tool_correctness"]["evidence"].startswith("skipped:")
+
+
+def test_metric_attempted_false_beats_judge_failed():
+    c = _collector(
+        {
+            "metric_attempted": False,
+            "skipped_reason": "empty",
+            "judge_failed": True,
+        }
+    )
+    out = attribute_question(c, sample_class="empty", sample_failed=False)
+    assert out["context_recall"]["root_cause"] == "inconclusive"
+    assert out["context_recall"]["evidence"] == "skipped:empty"
+
+
+def test_skipped_fallback_never_uses_sample_class():
+    c = _collector({"metric_attempted": False, "judge_failed": False})
+    out = attribute_question(c, sample_class="pure_kb", sample_failed=False)
+    assert out["context_recall"]["evidence"] == "skipped:failed"
+
+
+def test_empty_sample_without_reason_falls_back_to_empty():
+    c = _collector({"metric_attempted": False, "judge_failed": False})
+    out = attribute_question(c, sample_class="empty", sample_failed=False)
+    assert out["context_recall"]["evidence"] == "skipped:empty"
 
 
 def test_web_judge_failure_wins():
@@ -193,6 +264,7 @@ def test_candidate_dropped_before_final_is_rerank_or_topk():
     )
     out = attribute_question(c, sample_class="pure_kb", sample_failed=False)
     assert out["context_precision"]["root_cause"] == "rerank_or_topk"
+    assert out["context_precision"]["confidence"] == "high"
 
 
 def test_precision_gold_in_final_but_partial_hit():
@@ -343,6 +415,146 @@ def test_behavior_missing_score_is_inconclusive():
     c.behavior = {"metrics": {"Task Completion": None}}
     out = attribute_question(c, sample_class="pure_kb", sample_failed=False)
     assert out["TaskCompletion"]["root_cause"] == "inconclusive"
+
+
+def test_behavior_nan_is_missing_and_still_reported():
+    c = _collector({"metric_attempted": True, "judge_failed": False})
+    c.behavior = {
+        "metrics": {
+            "Task Completion": float("nan"),
+            "Step Efficiency": float("nan"),
+        }
+    }
+    out = attribute_question(c, sample_class="pure_kb", sample_failed=False)
+    assert out["TaskCompletion"]["root_cause"] == "inconclusive"
+    assert out["StepEfficiency"]["root_cause"] == "inconclusive"
+    assert "no behavior score" in out["StepEfficiency"]["evidence"]
+
+
+_ROOT_CAUSES = {
+    "judge_failure",
+    "testset_error",
+    "parsing_or_chunking",
+    "retrieval_miss",
+    "rerank_or_topk",
+    "prompt_or_generation",
+    "tool_routing",
+    "agent_orchestration",
+    "inconclusive",
+}
+
+
+_ENUM_SCENARIOS = [
+    (
+        {"metric_attempted": False, "skipped_reason": "failed"},
+        "pure_kb",
+        False,
+        None,
+    ),
+    ({"metric_attempted": True, "judge_failed": True}, "web", False, None),
+    (
+        {
+            "fact_in_corpus": False,
+            "fact_coverage": {"corpus": 0.0},
+            "testset_conflict": {"numeric_conflict": True},
+            "metric_attempted": True,
+            "judge_failed": False,
+        },
+        "pure_kb",
+        False,
+        None,
+    ),
+    (
+        {
+            "fact_in_corpus": False,
+            "fact_coverage": {"corpus": 0.0},
+            "metric_attempted": True,
+            "judge_failed": False,
+        },
+        "pure_kb",
+        False,
+        None,
+    ),
+    (
+        {
+            "fact_in_corpus": True,
+            "fact_in_candidates": False,
+            "fact_coverage": {"corpus": 1.0, "candidates": 0.0},
+            "metric_attempted": True,
+            "judge_failed": False,
+        },
+        "pure_kb",
+        False,
+        None,
+    ),
+    (
+        {
+            "fact_in_corpus": True,
+            "fact_in_candidates": True,
+            "fact_in_reranked": False,
+            "fact_in_final": False,
+            "fact_coverage": {
+                "corpus": 1.0,
+                "candidates": 1.0,
+                "reranked": 0.0,
+                "final": 0.0,
+            },
+            "metric_attempted": True,
+            "judge_failed": False,
+        },
+        "pure_kb",
+        False,
+        None,
+    ),
+    (
+        {
+            "metric_attempted": True,
+            "judge_failed": False,
+            "tool_correctness_reason": "missing retrieve_kb",
+        },
+        "pure_kb",
+        False,
+        None,
+    ),
+    (
+        {"metric_attempted": True, "judge_failed": False},
+        "pure_kb",
+        False,
+        {"metrics": {"Step Efficiency": 0.2}},
+    ),
+    (
+        {
+            "fact_in_corpus": None,
+            "fact_coverage": {"corpus": None},
+            "metric_attempted": True,
+            "judge_failed": False,
+        },
+        "pure_kb",
+        False,
+        None,
+    ),
+]
+
+
+def test_every_emitted_root_cause_is_in_enum():
+    for facts, sample_class, sample_failed, behavior in _ENUM_SCENARIOS:
+        c = _collector(facts)
+        if behavior is not None:
+            c.behavior = behavior
+        out = attribute_question(
+            c, sample_class=sample_class, sample_failed=sample_failed
+        )
+        for metric, item in out.items():
+            assert item["root_cause"] in _ROOT_CAUSES, (metric, item)
+            if item["root_cause"] == "inconclusive":
+                assert item["confidence"] == "inconclusive", (metric, item)
+
+    non_advice = _collector(
+        {"metric_attempted": True, "judge_failed": False},
+        judge={"non_advice": {"score": 0.0, "error": ""}},
+    )
+    out = attribute_question(non_advice, sample_class="pure_kb", sample_failed=False)
+    assert out["non_advice"]["root_cause"] == "prompt_or_generation"
 
 
 def test_summary_counts_root_causes_and_skipped_separately():
