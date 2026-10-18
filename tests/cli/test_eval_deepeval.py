@@ -490,6 +490,8 @@ class TestSaveResults:
                 "answer_relevancy": [0.88, 0.86],
                 "context_recall": [0.92, 0.88],
                 "context_precision": [0.85, 0.83],
+                "tool_correctness": [1.0, 0.0],
+                "tool_correctness_reason": ["", "missing search_web"],
             }
         )
         mock_result = MagicMock()
@@ -523,6 +525,8 @@ class TestSaveResults:
             assert "skipped" in content
             assert "trajectory" in content
             assert "retrieve_kb" in content
+            assert "tool_correctness" in content
+            assert "tool_correctness_reason" not in content
 
         finally:
             os.unlink(tmp_path)

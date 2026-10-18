@@ -950,6 +950,10 @@ def save_results_csv(
 
     df = apply_sample_masks(df, sample_classes)
 
+    # reason 只进 detail/Markdown，不进 CSV，避免无意改变消费方 schema
+    if "tool_correctness_reason" in df.columns:
+        df = df.drop(columns=["tool_correctness_reason"])
+
     # 添加元信息列
     df.insert(0, "question", questions)
     df.insert(1, "ground_truth", ground_truth)
@@ -1075,6 +1079,61 @@ def _build_diagnostic_section(df: pd.DataFrame) -> list[str]:
         nan_count = int(series.isna().sum())
         nan_parts.append(f"{col}={nan_count}/{len(series)}")
     lines.append(f"**Diagnostic NaN (pure-KB):** {', '.join(nan_parts)}")
+    return lines
+
+
+def _build_tool_correctness_section(df: pd.DataFrame) -> list[str]:
+    """渲染「工具选择」诊断段：逐题分数、原因、均值与计数。"""
+    lines = ["## 工具选择（期望工具调用命中，诊断）", ""]
+    lines.append(
+        "> 只比较工具名与类型（类型固定 FUNCTION）；不比较参数、顺序、调用次数。"
+    )
+    lines.append("")
+    if "tool_correctness" not in df.columns:
+        lines.append("工具选择：N/A（无标签或未产出）")
+        return lines
+
+    # 显式标注以消除 pandas 存根把列/标量推断为 Series 的误判
+    scores: Any = df["tool_correctness"]
+    reasons = (
+        df["tool_correctness_reason"]
+        if "tool_correctness_reason" in df.columns
+        else pd.Series([""] * len(df), index=df.index)
+    )
+    reason_text = reasons.fillna("").astype(str)
+    total = len(df)
+    scored = int(scores.notna().sum())
+    failed = int((reason_text == "failed").sum())
+    metric_error = int(
+        reason_text.str.startswith(("tool_correctness:", "metric_unavailable")).sum()
+    )
+    no_label = total - scored - failed - metric_error
+
+    lines.append("| Question | tool_correctness | reason |")
+    lines.append("|---|---|---|")
+    for i in range(total):
+        raw = scores.iloc[i]
+        value = "N/A" if pd.isna(raw) else f"{float(raw):.4f}"
+        reason = " ".join(str(reason_text.iloc[i]).split()).replace("|", "/")
+        lines.append(f"| Q{i + 1} | {value} | {reason} |")
+
+    mean_text = "N/A" if scored == 0 else f"{float(scores.mean()):.4f}"
+    fully = int((scores == 1.0).sum())
+    lines.append("")
+    lines.append(f"**Tool correctness mean (scored):** {mean_text}")
+    lines.append(f"**Fully matched:** {fully}/{scored}")
+    lines.append(
+        "**Counts:** "
+        f"qa_count={total}, no_label={no_label}, failed={failed}, "
+        f"metric_error={metric_error}, scored={scored}"
+    )
+    violations = [
+        f"Q{i + 1} ({reason_text.iloc[i]})"
+        for i in range(total)
+        if not pd.isna(scores.iloc[i]) and float(scores.iloc[i]) < 1.0
+    ]
+    if violations:
+        lines.append("**Violations:** " + "; ".join(violations))
     return lines
 
 
@@ -1239,6 +1298,18 @@ def save_markdown_report(
         lines.append("")
         lines.extend(_build_diagnostic_section(df))
         lines.append("")
+        lines.extend(_build_tool_correctness_section(df))
+        lines.append("")
+
+    if result is None:
+        lines.extend(
+            [
+                "## 工具选择（诊断）",
+                "",
+                "工具选择：未跑（--deepeval-only）",
+                "",
+            ]
+        )
 
     if behaviour_rows is not None:
         lines.extend(_build_behaviour_section(behaviour_rows, trajectories))
@@ -1715,8 +1786,8 @@ def _build_eval_detail(
         testset_version: 实际加载到的题集版本，逐题条目透传
 
     Returns:
-        (detail, avg)：detail 为逐题条目列表（含诊断键与恒 None 的
-        tool_correctness），avg 为指标名 -> 均值
+        (detail, avg)：detail 为逐题条目列表（含诊断键、tool_correctness 及其
+        原因；N/A 无标签题记 None），avg 为指标名 -> 均值
     """
     from src.config.const import DIAGNOSTIC_METRIC_COLUMNS
 
@@ -1739,7 +1810,20 @@ def _build_eval_detail(
                 entry[col] = float("nan")
             else:
                 entry[col] = float(v)
-        entry["tool_correctness"] = None
+        if "tool_correctness" in df.columns:
+            tool_value: Any = df["tool_correctness"].iloc[i]
+            if pd.isna(tool_value):
+                entry["tool_correctness"] = None
+            else:
+                entry["tool_correctness"] = float(tool_value)
+        else:
+            entry["tool_correctness"] = None
+        if "tool_correctness_reason" in df.columns:
+            entry["tool_correctness_reason"] = str(
+                df["tool_correctness_reason"].iloc[i]
+            )
+        else:
+            entry["tool_correctness_reason"] = ""
         if "error" in df.columns:
             entry["error"] = str(df["error"].iloc[i])
         if retrieval_details is not None and i < len(retrieval_details):
