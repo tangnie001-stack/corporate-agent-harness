@@ -7,7 +7,9 @@
 - `--evidence` SHALL 只写低分/异常题；`--evidence-all` SHALL 写全部题。
 - 证据采集/归因 SHALL NOT 改变任何指标分数、主分、门禁判据、CSV、Markdown、`eval_report` 或 Langfuse。
 - 证据采集/归因/写入失败 SHALL 只记 warning，SHALL NOT 中断评测、改变退出码或改变任何分数。
-- `--evidence` SHALL 可与 `--limit`、`--gate`、`--run-type` 组合；SHALL NOT 与 `--deepeval-only` 互斥。
+- `--evidence` SHALL 可与 `--limit`、`--gate`、`--run-type`、`--deepeval-only` 组合；SHALL NOT 与任何现有参数互斥。
+- `--deepeval-only` 下没有四主分，`--evidence` SHALL 只按行为分 `< 0.5` 或缺失选题，SHALL NOT 把“主分缺失”当成低分。
+- 证据写盘 SHALL 发生在 `check_gate` 之前；`--gate` 的 `sys.exit` SHALL NOT 导致已选中的证据丢失。
 
 #### Scenario: Default is off
 
@@ -29,18 +31,27 @@
 - **WHEN** 用户传 `--evidence-all`
 - **THEN** 每个评测题 SHALL 生成证据文件，不论分数高低
 
+#### Scenario: DeepEval-only has no main-score filter
+
+- **WHEN** 用户同时传 `--deepeval-only` 与 `--evidence`
+- **THEN** 选题 SHALL 只使用行为分；SHALL NOT 因四主分不存在而写全部题或写 0 分
+
+#### Scenario: Gate exits after evidence is written
+
+- **WHEN** 用户传 `--gate` 且门禁失败
+- **THEN** 已选中的证据文件 SHALL 已完整落盘；`sys.exit(1)` SHALL NOT 留下半截文件
+
 ### Requirement: Each evidence file covers the attribution chain
 
 每题证据 SHALL 是一个带 `schema_version` 的 JSON，覆盖从题集到裁判的链路；取不到的值 SHALL 写 `null`，SHALL NOT 省略键或伪造值。
 
-- `testset` SHALL 含 `reference`、`reference_contexts`、`source_file`、`expected_tools`，可选 `source_chunk_ids`。
-- `gold_chunk_ids` SHALL 优先取题集 `source_chunk_ids`；缺失时由 chunk 探针生成，并记 `gold_chunk_source` 与 `gold_chunk_confidence`。
+- `testset` SHALL 含 `reference`、`reference_contexts`、`source_file`、`expected_tools`、`numeric_risk`，可选 `source_chunk_ids`。
 - `query` SHALL 含 `original` 与 `tool_queries`；可用的 `rewritten` / `sub_queries` / `intent_route` 有则记录，无则 null。
-- `retrieval` SHALL 含 dense / lexical / RRF / rerank before / rerank after / dedup / top-k / final contexts 的快照与各阶段 `count`、`failed`、`truncated`。
-- `tool_calls` SHALL 含工具名、参数、结果数、迭代数；`delegate_task` 只记顶层。
+- `retrieval` SHALL 含 dense / lexical / RRF / rerank before / rerank after / dedup / top-k / final contexts 的快照与各阶段 `count`、`total_count`、`failed`、`truncated`。
+- `tool_calls` SHALL 含工具名、参数、结果数、迭代数、`call_index`；`delegate_task` 只记顶层。
 - `judge` SHALL 含每个指标的 `score`、`error`、`reason`；行为轴 SHALL 含逐题分数与 reason。
 - `trace` SHALL 含 `run_trace_id`、`sut_trace_id`、`judge_measures[]`（`judge_measure_id` / metric / attempt / model / latency_ms / request_count / response_count / statuses / tokens_in / tokens_out / reason / error）、嵌套 `judge_calls[]`（`judge_call_id` / call_index / status / finish_reasons / tokens / latency / json_ok / error）与行为轴 `trace_id`/`link_method`；`judge_calls` SHALL 能通过 `judge_measure_id` 归到对应 measure。
-- `trace` 的 ID 与 measure 记录 SHALL 直接消费 `eval-trace-correlation` 的进程内接口（`HookEvidence.measures` / `EvalTraceContext`），SHALL NOT 重解析日志或重新生成；缺失时写 null。
+- `trace` 的 ID 与 measure 记录 SHALL 直接消费 `eval-trace-correlation` 的进程内接口（`HookEvidence.measures` / `EvalTraceContext` / `link_behavior_traces`），SHALL NOT 重解析日志或重新生成；缺失时写 null。
 - 行为轴 judge 的内部调用不在 v1 范围：SHALL NOT 伪造缺失的 `judge_calls`；只记行为分与 `trace_id` 映射。
 - `facts` SHALL 含 `fact_in_corpus`、`fact_in_candidates`、`fact_in_reranked`、`fact_in_final`、`answer_mentions_fact`、`testset_conflict`、`judge_failed`、`tool_called`；无法判定时写 null。
 - `attribution` SHALL 按指标输出 `root_cause` / `confidence` / `evidence`。
@@ -67,13 +78,21 @@
 
 ### Requirement: Retrieval evidence exposes candidate identity, score and rank
 
-检索证据 SHALL 使用 `chunk_id` 作为候选身份，并记录各阶段分数与排名，使“候选里有但 rerank 后没有”与“候选里没有”可区分。
+检索证据 SHALL 使用 `chunk_id` 与 `parent_key` 作为候选身份，并记录各阶段分数、分数类型与排名，使“候选里有但 rerank 后没有”与“候选里没有”可区分。
 
-- 每阶段 SHALL 记录 `chunk_id`、`doc_id`、`source`、`page`、`score`（该阶段适用时）与 `rank`。
-- 最终 contexts SHALL 记录 `order_in_prompt`，与最终 prompt 顺序一致。
+- 每阶段 SHALL 记录 `chunk_id`、`parent_key`、`doc_id`、`source`、`page`、`score`、`score_kind`、`rank`（0-based）。
+- `score_kind` SHALL 取 `cosine_similarity` / `lexical` / `rrf` / `rerank` / `fallback`。
+- dense 条目 SHALL 同时记录 `distance`；lexical 条目的 `distance` SHALL 为 null。
+- RRF 条目 SHALL 记录 `rrf_score`（来自 `ChunkResult.rrf_score`），SHALL NOT 只保留融合后的顺序。
+- 最终 contexts SHALL 记录 `order_in_prompt`（1-based，全局引用编号）。
 - 每阶段候选 SHALL 有上限（默认 50）；截断时 SHALL 记 `truncated=true` 与 `total_count`。
-- 候选 ID/分数 SHALL 来自运行期采集；SHALL NOT 事后用重跑结果替代。
 - dedup 与 top-k 截断 SHALL 记录被丢弃的 `chunk_id`，不得只记数量。
+- 候选 ID/分数 SHALL 来自运行期采集；SHALL NOT 事后用重跑结果替代。
+
+#### Scenario: RRF score is carried into evidence
+
+- **WHEN** 混合检索产出 RRF 融合结果
+- **THEN** 每条 RRF 证据 SHALL 带 `rrf_score` 与 `score_kind="rrf"`，而不是只有排名
 
 #### Scenario: Candidate survives dense but disappears after rerank
 
@@ -85,16 +104,24 @@
 - **WHEN** 某 chunk 不在 dense/lexical/RRF/rerank/final 任一阶段
 - **THEN** 证据 SHALL 明确显示各阶段均未命中（而不是字段缺失）
 
+#### Scenario: Dedup and top-k record dropped ids
+
+- **WHEN** 某候选被 parent 去重或 top-k 截断丢弃
+- **THEN** 证据 SHALL 在 `dropped_chunk_ids` 中列出它，并保留 `kept_chunk_ids`
+
 ### Requirement: Chunk probe and gold chunk IDs distinguish corpus absence from retrieval miss
 
 评测 SHALL 提供确定性 chunk 探针：用参考答案的数值/文本片段在当前 KB 全量分块中定位命中 chunk，并生成 gold chunk 归属。
 
-- 探针 SHALL 记录命中的 `doc_id`、`chunk_id`、`source`、`page`，并给出 `fact_in_corpus` 的 `true`/`false`/`null`。
+- 探针 SHALL 记录命中的 `doc_id`、`chunk_id`、`parent_key`、`source`、`page`，并给出 `fact_in_corpus` 的 `true`/`false`/`null`。
 - `gold_chunk_ids` SHALL 优先取题集 `source_chunk_ids`；缺失时 SHALL 用探针命中结果；都没有时 SHALL 为 null。
 - `gold_chunk_source` SHALL 记 `testset` / `probe` / `null`；`gold_chunk_confidence` SHALL 记 `high` / `medium` / `null`。
+- `gold_parent_keys` SHALL 记录命中的 parent 键；`fact_in_candidates` / `fact_in_reranked` / `fact_in_final` SHALL 用 `chunk_id OR parent_key` 判交集。
 - 探针 SHALL NOT 调用 LLM；匹配 SHALL 为归一化字符串/数值匹配。
-- 每个 KB 的全量分块在一次评测 run 内 SHALL 最多读取一次。
+- 全量分块 SHALL 复用 `main()` 空库检查已读取的 chunks；一次评测 run 内 SHALL NOT 二次读库。
 - 命中数 SHALL 有上限（默认 20），截断时记 `truncated=true`。
+- `numeric_conflict` SHALL 为 `true` 当参考答案有数值 token、语料中完全找不到、且题集 `numeric_risk=true`；找到时为 `false`；无数值 token 或语料不可用时为 `null`。
+- `unit_missing` SHALL 记录参考数值附近是否缺单位；`period_conflict` 在 v1 SHALL 恒为 `null`。
 
 #### Scenario: Fact exists in corpus but was not retrieved
 
@@ -111,10 +138,20 @@
 - **WHEN** 参考答案的数值/文本在所有 chunk 中都不命中
 - **THEN** 证据 SHALL 记 `fact_in_corpus=false`，供判断题集/解析/分块问题
 
+#### Scenario: Numeric risk and no corpus match
+
+- **WHEN** 参考答案含数值 token、语料中完全找不到、且题集 `numeric_risk=true`
+- **THEN** `testset_conflict.numeric_conflict` SHALL 为 `true`，供 `testset_error` 优先于 `parsing_or_chunking`
+
 #### Scenario: Probe cannot decide
 
 - **WHEN** 参考答案没有可提取的数值/文本片段，或 KB 读取失败
 - **THEN** 证据 SHALL 记 `fact_in_corpus=null`，SHALL NOT 猜测 true/false
+
+#### Scenario: Parent-child equivalence
+
+- **WHEN** gold 命中 child A，最终 context 保留的是同 parent 的 child B
+- **THEN** `fact_in_final` SHALL 通过 `parent_key` 判为 true，SHALL NOT 因 `chunk_id` 不同而误判为 false
 
 ### Requirement: Deterministic attribution assigns a root cause per metric
 
@@ -123,8 +160,12 @@
 - `attribution` SHALL 以指标名为键，每项含 `root_cause`、`confidence`、`evidence`。
 - `root_cause` SHALL 取自固定枚举：`judge_failure`、`testset_error`、`parsing_or_chunking`、`retrieval_miss`、`rerank_or_topk`、`prompt_or_generation`、`tool_routing`、`agent_orchestration`、`inconclusive`。
 - 归因规则 SHALL 先处理 `judge_failed` 与 `testset_conflict`，再按事实阶段（corpus → candidates → rerank → final）定位；无法判定时 SHALL 写 `inconclusive`。
+- `tool_correctness` 的 `reason=="failed"`（跑图失败）SHALL 归为 `inconclusive`，SHALL NOT 归为 `tool_routing`；只有跑图成功且有标签、期望工具缺失才 SHALL 归为 `tool_routing`。
+- `contextual_relevancy` 在 `fact_in_corpus=false` 时 SHALL 优先归为 `parsing_or_chunking` 或 `testset_error`，SHALL NOT 归为 `retrieval_miss`。
 - `confidence` SHALL 取 `high` / `medium` / `low`；`inconclusive` 时 SHALL 为 `inconclusive`。
 - `evidence` SHALL 是单行字符串，指出触发规则的证据（如 `fact_in_corpus=true, fact_in_candidates=false`），SHALL NOT 只写“低分”。
+- `root_cause` SHALL 表示“最可能丢在哪一层”，SHALL NOT 被描述为因果证明；`confidence` SHALL 反映证据质量。
+- `period_conflict` 在 v1 SHALL 恒为 null；归因 SHALL NOT 仅凭期间差异断言 `testset_error`。
 
 #### Scenario: Fact exists but is missing from candidates
 
@@ -136,32 +177,38 @@
 - **WHEN** `fact_in_candidates=true` 且 `fact_in_final=false`
 - **THEN** 相关指标的 `root_cause` SHALL 为 `rerank_or_topk`，并区分 rerank/dedup/top-k 证据
 
-#### Scenario: Testset period or numeric conflict
+#### Scenario: Testset numeric conflict
 
-- **WHEN** 参考答案的期间/数值/单位与语料冲突
+- **WHEN** 参考答案的数值在语料中不存在且 `numeric_risk=true`
 - **THEN** `context_recall` 的 `root_cause` SHALL 优先为 `testset_error`，SHALL NOT 先归因为检索
+
+#### Scenario: Period conflict is not guessed
+
+- **WHEN** 参考答案的期间/季度可能与语料不一致，但 v1 没有结构化期间抽取
+- **THEN** `period_conflict` SHALL 为 null，归因 SHALL 依据其他事实或写 `inconclusive`；SHALL NOT 仅凭期间差异断言 `testset_error`
 
 #### Scenario: Judge failed
 
 - **WHEN** 指标 score 为 NaN 或 error 非空
 - **THEN** 该指标的 `root_cause` SHALL 为 `judge_failure`，`confidence=high`
 
+#### Scenario: Failed run is not tool routing
+
+- **WHEN** `tool_correctness_reason == "failed"`
+- **THEN** `tool_correctness` 的 `root_cause` SHALL 为 `inconclusive`，SHALL NOT 为 `tool_routing`
+
 #### Scenario: Abstract question cannot be matched
 
 - **WHEN** 参考答案抽不出可匹配的数值/文本 token，关键事实标记为 null
 - **THEN** 归因 SHALL 为 `inconclusive`，SHALL NOT 猜测 `retrieval_miss` 或 `prompt_or_generation`
 
-#### Scenario: Tool was not called
-
-- **WHEN** 期望工具不在顶层轨迹，且标签存在
-- **THEN** `tool_correctness` 的 `root_cause` SHALL 为 `tool_routing`
-
 ### Requirement: Attribution summary reports root-cause distribution
 
 `summary.json` SHALL 汇总本次 run 的根因分布，供回答“这一轮整体最该修哪一层”。
 
+- SHALL 含 `run_id`、`run_trace_id`、`qa_count`、`low_score_questions`、`evidence_files`、`elapsed_ms`。
 - SHALL 含 `root_cause_counts.by_metric` 与 `root_cause_counts.total`。
-- SHALL 含 `inconclusive_count` 与 `low_score_questions`。
+- SHALL 含 `inconclusive_count`。
 - 计数 SHALL 与逐题 `attribution` 一致；同一题不同指标分别计数。
 - `summary.json` SHALL 与逐题证据同目录、同样的原子写语义。
 
@@ -181,8 +228,8 @@
 
 - 目录 SHALL 被 `.gitignore` 忽略；证据 SHALL NOT 提交到 git。
 - 每题证据与 `summary.json` SHALL 以临时文件 + 原子替换写入，避免半截文件。
-- `summary.json` SHALL 记录 run_id、题数、低分题号、每题证据路径与采集耗时。
-- 证据 README/手册 SHALL 提示“含完整上下文与回答，勿外发”。
+- 证据文件名 SHALL 只含 `q_index`，SHALL NOT 含用户输入。
+- 证据手册 SHALL 提示“含完整上下文与回答，勿外发”。
 
 #### Scenario: Evidence is not exposed through API
 
@@ -199,10 +246,11 @@
 证据采集/归因 SHALL 是观测旁路；任一阶段不可用时，其余阶段 SHALL 继续采集并落盘。
 
 - dense/lexical 单路失败 SHALL 记 `failed=true`，不得丢弃另一路证据。
-- rerank 降级（fallback）SHALL 记 `scored="fallback"` 或等价标记。
+- rerank 降级（fallback）SHALL 记 `score_kind="fallback"`。
 - 裁判/行为分缺失 SHALL 记 null + reason，SHALL NOT 阻断证据文件生成。
 - 指标实现差异（RAGAS 桥 / DeepEval 原生）SHALL NOT 导致证据采集失败；不支持的字段记 null，归因写 `inconclusive`。
 - 归因器抛异常 SHALL 只影响该题 `attribution`，SHALL NOT 阻断证据写入或评测。
+- 题集样本读取失败 SHALL 只让 `testset` 字段为 null，SHALL NOT 阻断采集。
 
 #### Scenario: Dense path fails but lexical succeeds
 

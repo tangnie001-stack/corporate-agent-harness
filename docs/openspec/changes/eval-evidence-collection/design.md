@@ -2,10 +2,11 @@
 
 评测报告目前只有逐题分数、最终 contexts（`source/score/kind`）、工具名/参数/迭代与错误摘要。用它无法回答“事实在哪一步丢了”：
 
-- `retrieval_details` 没有 `chunk_id`，也没有 rerank 前后的候选集；
+- `retrieval_details` 没有 `chunk_id`，也没有 dense/lexical/RRF 候选与 rerank 前后快照；
 - `trajectory` 没有工具结果数/耗时，也没有检索阶段快照；
-- 题集只有 `reference_contexts` 文本，没有 gold chunk 归属；
-- 裁判只有 `error` 摘要，没有 reason/verdict。
+- 题集只有 `reference_contexts` 文本，没有 gold chunk 归属（v6 全量无 `source_chunk_ids`）；
+- 裁判只有 `error` 摘要，没有 reason/逐条 verdict；
+- `trace_id` 能串起请求与裁判调用，但不能说明事实在哪一层丢失。
 
 只落证据仍然需要人/Agent 读。本 change 在证据包之上加一层**确定性归因摘要**：按指标输出 `root_cause` + `confidence` + `evidence`，证据不足时写 `inconclusive`。它不调用 LLM、不改评分口径、不做跨题因果推断。
 
@@ -14,7 +15,7 @@
 **Goals:**
 
 - `--evidence` 开启后，为低分/NaN/失败/工具或行为异常的题生成逐题证据 JSON。
-- 证据覆盖：题集出处、gold chunk、query 路径、dense/lexical/RRF 候选、rerank 前后、最终 contexts、工具调用、answer、裁判 score/error/reason、行为分/reason。
+- 证据覆盖：题集出处、gold chunk、query 路径、dense/lexical/RRF 候选、rerank 前后、dedup、top-k、最终 contexts、工具调用、answer、裁判 score/error/reason、行为分/reason。
 - 证据带 **trace 关联**：`run_trace_id` / `sut_trace_id` / `judge_measures` / `judge_calls` / 行为轴 `trace_id` 映射；ID 来自 `eval-trace-correlation`，本 change 只消费。
 - 产出**逐指标**的确定性归因：`root_cause` / `confidence` / `evidence`；无法判定写 `inconclusive`。
 - `summary.json` 给出根因分布（按指标与总计），回答“这一轮整体最该修哪一层”。
@@ -25,95 +26,131 @@
 
 - 不调用 LLM 做根因判断；归因只基于确定性匹配与规则。
 - 不做跨题/全局因果推断；只回答“这一题、这个指标，最可能丢在哪一步”。
+- 不做“参考答案与语料谁对”的语义判断；`numeric_conflict` 只做数值存在性硬匹配，`period_conflict` v1 恒为 null。
 - 不改评分口径、指标实现、门禁、报告结构、DB schema。
 - 不扩测试集、不生成新题、不改出题器；`source_chunk_ids` 可选，缺失时用探针。
 - 不把证据上传 Langfuse、不新增 API。
 - 不展开子代理内部轨迹（顶层工具调用之外不可观测的部分记 null/unknown）。
-- 不生成 trace ID：`run_trace_id` / `trace_id` / `judge_call_id` 由 `eval-trace-correlation` 提供；本 change 只读取并写入证据。
+- 不生成 trace ID：`run_trace_id` / `trace_id` / `judge_measure_id` / `judge_call_id` 由 `eval-trace-correlation` 提供；本 change 只读取并写入证据。
 
 ## Decisions
 
 ### D1：opt-in + 非评分，默认零开销
 
-- 新增 CLI `--evidence`；`--evidence-all`（可选）写全部题，否则只写低分题。
-- 采集器/归因器在关闭时 no-op；检索/评分路径只多一次 `None` 判断。
+- 新增 CLI `--evidence`；`--evidence-all` 写全部题，否则只写低分题。
+- 采集器/归因器在关闭时 no-op；检索/评分路径只多一次 `current_evidence.get() is None` 判断。
 - 证据写入与归因包在 `try/except` 内：失败只 `warning`，不得改变退出码、分数、CSV/DB。
 - 不把证据放进 `detail_json`（避免 DB 膨胀与隐私面扩大）。
+- 证据写盘必须排在 `--gate` 之前：`check_gate` 会 `sys.exit`，晚写等于丢证据。
 
-### D2：用 ContextVar 采集器，不穿透业务签名
+### D2：EvidenceRun + 每题 QuestionEvidence + ContextVar
 
-新增 `src/core/eval_evidence.py`：
+新增 `src/core/eval_evidence.py`（不 import `rag`/`infra`）：
 
-- `EvidenceCollector`：每轮一个实例，记录 query/retrieval/rerank/tool/context/judge/behavior 快照。
-- `current_evidence: ContextVar[EvidenceCollector | None]`；默认 `None`。
-- 检索/工具/评分层通过 `current_evidence.get()` 取收集器；没有就跳过。
-- 不改 `retrieve_kb` / `search` / `rerank_results` 的公共签名，也不影响生产链路。
+```python
+@dataclass(slots=True)
+class QuestionEvidence:
+    q_index: int
+    trace_id: str | None
+    testset: dict
+    query: dict
+    retrieval: dict
+    tool_calls: list[dict]
+    judge: dict
+    behavior: dict
+    facts: dict
+    attribution: dict
 
-理由：证据只服务评测 CLI；用 ContextVar 与现有 `RequestContext`/`current_trace_id` 的传播方式一致。
+@dataclass(slots=True)
+class EvidenceRun:
+    run_id: str
+    run_trace_id: str | None
+    enabled: bool
+    collectors: list[QuestionEvidence | None]
+    corpus_chunks: list | None       # ChunkResult，仅类型上不 import
+    captured_at: str
+```
 
-### D3：检索链记录“三张快照 + 去重 + 最终上下文”
+- `current_evidence: ContextVar[QuestionEvidence | None]`，默认 `None`。
+- `EvidenceRun.new_question(q_index)` 创建 collector；生成阶段每题 set/reset；评分阶段对同一题再次 set，用于 drain judge。
+- 采集器只接受 dict/list/基本类型；`ChunkResult` 由调用方转成 dict 后写入，避免 core 依赖 infra。
+- 归因/探针/写盘放在 `src/cli/eval_evidence_report.py`（CLI 专用，可 import `ChunkResult`/`VectorStore`）。
+- 理由：`rag` 只能 import `core`，不能反向依赖 `cli`；把“采集”和“报告”拆开，避免循环与职责混杂。
+
+### D3：检索链记录“三张快照 + 去重 + 截断 + 最终上下文”
 
 在 `retrieval.search` / `rerank_results` / `retrieve_kb` 记录：
 
-1. **dense**：`[{"chunk_id","doc_id","source","page","score"}]`
-2. **lexical**：同上
-3. **RRF**：融合后的 `chunk_id + rrf_score + rank`
-4. **rerank 前**：每条 `chunk_id + rank_before + 原始 score`
-5. **rerank 后**：`chunk_id + rank_after + rerank_score`
-6. **dedup**：`dropped_chunk_ids`、`kept_chunk_ids`
-7. **top-k 截断**：`rank_before_topk`、`rank_after_topk`
-8. **最终 contexts**：`chunk_id + source + page + score + order_in_prompt`
+1. **dense**：`chunk_id` / `parent_key` / `doc_id` / `source` / `page` / `rank` / `score` / `distance` / `score_kind="cosine_similarity"`
+2. **lexical**：同上，`score_kind="lexical"`，`distance=null`
+3. **RRF**：`chunk_id` / `parent_key` / `rank` / `score` / `score_kind="rrf"`；`score` 取 `ChunkResult.rrf_score`
+4. **rerank 前**：融合结果顺序的 `chunk_id` / `rank_before` / `dense_rank` / `sparse_rank` / `score_kind="rrf"`
+5. **rerank 后（dedup 前）**：`chunk_id` / `rank_after` / `score` / `score_kind="rerank"`（降级时 `"fallback"`）
+6. **dedup**：`dropped_chunk_ids` / `kept_chunk_ids`，两者都按 `parent_key` 去重口径
+7. **top-k 截断**：`dropped_chunk_ids` / `kept_chunk_ids` / `rank_before_topk` / `rank_after_topk`
+8. **最终 contexts**：`chunk_id` / `parent_key` / `source` / `page` / `score` / `order_in_prompt`（1-based，全局引用编号）
 
-每阶段记录 `count`、`failed`、`truncated`；dense/lexical 单路失败必须可见。候选列表上限默认 50 条/阶段。
+每阶段记录 `count` / `total_count` / `truncated` / `failed`；dense/lexical 单路失败必须可见。候选列表上限默认 50 条/阶段。
+
+**RRF 分数来源**：`rrf_fusion` 当前只返回 `ChunkResult`，分数在局部变量里丢失。给 `ChunkResult` 增加 `rrf_score: float | None = None`，`rrf_fusion` / `rrf_fusion_multi` 回填；`row_to_chunk_result` 默认 None，不影响现有消费者。
+
+**dedup / top-k 丢弃**：`_dedup_by_parent` 只返回 kept；在 `rerank_results` 内用 dedup 前后列表的 `parent_key` 集合差计算 dropped，不改 `_dedup_by_parent` 签名。
 
 ### D4：Query 路径记录“原始 → 实际工具 query → 可用的改写”
 
 - `original_query`：题集 `user_input`。
-- `tool_query`：`trajectory.tool_calls[].args.query`（现有数据即可）。
-- `rewritten_query` / `sub_queries`：如果评测路径实际执行了改写，记录其输出；没有就 `null`，不伪造。
-- `intent_route` / `history_len`：有则记，无则 null。
+- `tool_queries`：每次 `retrieve_kb` 的实际 `query`（含 `call_index`）。
+- `rewritten_query` / `sub_queries` / `intent_route` / `history_len`：评测路径实际执行了改写才记录；当前 eval 的 `retrieve_kb` 不调用 `rewrite_query`，因此写 `null`，不伪造。
+- `trajectory` 里的工具 args 只作为交叉核对，不作为 query 路径的唯一来源。
 
 ### D5：Gold chunk 与 Chunk 探针
 
 **gold_chunk_ids 来源优先级**：
 
-1. 题集可选字段 `source_chunk_ids` → `gold_chunk_source="testset"`，置信度高；
-2. 否则用 chunk 探针匹配 `reference` 的数值/文本片段 → `gold_chunk_source="probe"`，置信度中；
-3. 都不可用 → `gold_chunk_ids=null`，`gold_chunk_source=null`。
+1. 题集可选字段 `source_chunk_ids` → `gold_chunk_source="testset"`、`gold_chunk_confidence="high"`；
+2. 否则用 chunk 探针匹配 `reference` 的数值/文本片段 → `gold_chunk_source="probe"`、`gold_chunk_confidence="medium"`；
+3. 都不可用 → `gold_chunk_ids=null`、`gold_chunk_source=null`、`gold_chunk_confidence=null`。
 
 **探针**：
 
-1. 取 `reference` 中的数值 token（含千分位/百分号/单位附近的数字）与归一化文本片段（前 40 个有效字符）。
-2. 从 `VectorStore.get_all_chunks(kb_id)` 一次性取回全量分块（本次 run 只读一次）。
-3. 在 `content` 与 `parent_content` 中做归一化子串/数值匹配，记录命中的 `doc_id/chunk_id/source/page`。
+1. 取 `reference` 中的数值 token（含负号、千分位、百分号、万元/亿元等单位）与归一化文本片段（前 40 个有效字符）。
+2. 从 `EvidenceRun.corpus_chunks` 取全量分块；该列表由 `main()` 的空库检查 `get_all_chunks` 复用，**不再二次读库**。
+3. 在 `content` 与 `parent_content` 中做归一化子串/数值匹配，记录命中的 `doc_id/chunk_id/source/page/parent_key`。
 4. 输出：
-   - `matched_chunks`：命中 chunk 列表（上限 20）；
+   - `gold_chunk_ids`：命中 chunk（上限 20）；
+   - `gold_parent_keys`：命中 parent 键（上限 20）；
    - `fact_in_corpus`：`true` / `false` / `null`；
-   - `probe_tokens`：实际用的数值/文本 token。
+   - `probe_tokens`：实际用的数值/文本 token；
+   - `truncated`：命中超过上限时为 `true`。
 
-### D6：裁判与行为证据只记现有可观测值
+**parent/child 等价**：`parent_key = (doc_id, md5(parent_content))`，与 `_dedup_by_parent` 同口径。`fact_in_candidates` / `fact_in_reranked` / `fact_in_final` 用 `chunk_id OR parent_key` 判交集，避免“同 parent 的另一个 child 在 final”被误判为未命中。
 
-- 每个指标：`score`、`error`、`reason`；DeepEval 指标实例暴露 `reason` 就记，没有就 null。
-- `reason` 只在 measure 正常返回后读取；异常分支不得读 `metric.reason`（指标实例跨题复用，可能是上一题残留）。
-- 不解析/持久化 `verbose_logs` 全文；需要时用 `trace_id` 查 Langfuse/日志。
-- 行为轴：从 `behaviour_rows` 记 `metrics` 与 `reasons`；`failed` 题记 `score=null` / `reason=failed`。
+**testset_conflict**：
+
+- `numeric_conflict`：`true` 当参考答案有数值 token、语料中完全找不到、且题集 `numeric_risk=true`；`false` 当找到；`null` 当没有数值 token 或语料不可用。它是“数值存在性”判断，不是“谁对”的语义判断。
+- `unit_missing`：参考答案数值 token 附近没有单位（万元/亿元/%/元等）→ `true`，否则 `false`/`null`。
+- `period_conflict`：v1 **恒为 null**；不做期间/季度语义判断（见 Non-Goals）。
+
+### D6：裁判、评分与行为证据
+
+- 每个指标：`score`、`error`、`reason`；`reason` 只在 measure 正常返回后读取，异常分支不读 `metric.reason`。
+- `score_rows` 每题评分结束、下一次 `evidence.reset()` 前，把 `HookEvidence.measures` 拷进当前 `QuestionEvidence.judge`；不重解析日志。
+- 行为轴：从 `behaviour_rows` 记 `metrics` / `reasons`；`failed` 题记 `score=null` / `reason=failed`；用 `link_behavior_traces` 得到 `trace_id` / `link_method`。
 - 不把裁判 raw prompt 或完整 raw output 落盘；只记错误摘要与 reason。
 
 ### D6.1：Trace 关联只消费，不生成
 
-- 证据 `trace` 段从 `eval-trace-correlation` 的**进程内**接口读取（`HookEvidence.measures` / `EvalTraceContext`），不重解析日志：
-  - `run_trace_id`（整轮）；
+- 证据 `trace` 段从 `eval-trace-correlation` 的进程内接口读取：
+  - `run_trace_id`（整轮，`EvalTraceContext`）；
   - `sut_trace_id`（该题 `trace_id`）；
-  - `judge_measures[]`：直接取 `HookEvidence.measures` 的 measure 记录（`judge_measure_id` / metric / attempt / model / latency_ms / request_count / response_count / statuses / tokens_in / tokens_out / reason / error），其中 `calls[]` 即 `judge_calls[]`（`judge_call_id` / call_index / status / finish_reasons / tokens / latency / json_ok / error）；
-  - 行为轴映射（`trace_id` + `link_method`）。
-- `HookEvidence.measures` 在每题评分后由证据采集器读取并清空；`reset()` 只清当前题窗口，不丢 run ID。
+  - `judge_measures[]`：直接取 `HookEvidence.measures`（`judge_measure_id` / metric / attempt / model / latency_ms / request_count / response_count / statuses / tokens_in / tokens_out / reason / error），其中 `calls[]` 即嵌套 `judge_calls[]`；
+  - 行为轴映射（`trace_id` / `link_method`）。
 - `JUDGE_CALL` 日志只记 `reason_len` / `reason_hash`；证据文件 MAY 记录完整 `reason`（仅本地 gitignored），直接取 measure 记录里的 `reason`。
 - 取不到时写 null；SHALL NOT 在本 change 里重新生成/猜测 trace ID。
 - 行为轴 judge 的内部调用不在 v1 范围：证据只记行为分与 `trace_id` 映射，不伪造缺失的 judge call。
-- 证据写入 SHALL NOT 改变 trace ID 的生成/日志行为；trace change 未部署或运行时字段为空时，证据仍可落盘，trace 字段为 null。
 - 行为行以 `read_behaviour_scores` 归一化后的 `q_index`（已校验等于 `order`）为准，与 trace / Langfuse 使用同一题号。
 
-### D7：低分选择与落盘
+### D7：低分选择、落盘顺序与 `--deepeval-only`
 
 低分判定（满足任一）：
 
@@ -122,7 +159,11 @@
 - `sample_class=empty` 或 `failed`；
 - 行为轴任一分 `< 0.5` 或缺失。
 
-`--evidence` 只写这些题；`--evidence-all` 写全部。落盘：
+`--evidence` 只写这些题；`--evidence-all` 写全部。
+
+**`--deepeval-only`**：没有四主分与 `masked_df`，只按行为分 `< 0.5` 或缺失选；不把“主分缺失”当成低分。
+
+**落盘**：
 
 ```
 data/deepeval/evidence/<run_id>/
@@ -130,21 +171,23 @@ data/deepeval/evidence/<run_id>/
   q_<q_index>.json
 ```
 
-`run_id` 用报告时间戳（与 CSV/MD 同源）。`summary.json` 记录：run_id、题数、低分题号、各题证据路径、采集耗时、`root_cause_counts`、`inconclusive_count`。写入用临时文件 + `os.replace` 原子落盘。
+`run_id` 用报告时间戳（与 CSV/MD 同源）。写入用临时文件 + `os.replace` 原子落盘。写盘位置在 `_save_eval_report` / Langfuse 回写之后、`check_gate` 之前。
+
+`summary.json` 记录：`run_id`、`qa_count`、`low_score_questions`、各题证据路径、采集耗时、`root_cause_counts.by_metric` / `total`、`inconclusive_count`。
 
 ### D8：根因枚举（固定，不自由文本）
 
 | 枚举 | 含义 |
 |---|---|
 | `judge_failure` | 裁判失败/NaN/JSON 解析失败 |
-| `testset_error` | 参考答案期间/数值/单位/口径错误 |
+| `testset_error` | 参考答案的数值在语料中不存在（硬匹配），或单位缺失 |
 | `parsing_or_chunking` | 语料里没有该事实：解析/分块/文档缺失 |
 | `retrieval_miss` | chunk 存在，但没进 dense/lexical/RRF 候选 |
-| `rerank_or_topk` | 进了候选，但被 rerank/dedup/top-k 挤掉 |
+| `rerank_or_topk` | 进了候选，但被 rerank/dedup/top-k 挤掉或排序差 |
 | `prompt_or_generation` | 进了最终上下文，但回答没用/用错/跑题/给建议 |
-| `tool_routing` | 该调的工具没调，或调错工具 |
+| `tool_routing` | 跑图成功、有标签，但期望工具没在顶层调用 |
 | `agent_orchestration` | 重复检索、打转、冗余步骤 |
-| `inconclusive` | 证据不足（抽象题/匹配不到事实） |
+| `inconclusive` | 证据不足（抽象题/匹配不到事实/运行失败） |
 
 `root_cause` 按**指标**输出，不强行一题一个；同一题不同指标可以有不同根因。
 
@@ -152,45 +195,46 @@ data/deepeval/evidence/<run_id>/
 
 先算事实标记：
 
-- `fact_in_corpus`：gold chunk 在探针/题集中存在；
-- `fact_in_candidates`：gold chunk 与 dense/lexical/RRF 候选有交集；
-- `fact_in_reranked`：gold chunk 与 rerank 后（dedup 前）有交集；
-- `fact_in_final`：gold chunk 与最终 contexts 有交集；
-- `answer_mentions_fact`：answer 中出现 gold 的数值/实体 token；无 token 时 null；
+- `fact_in_corpus`：探针在语料中找到 gold 事实；
+- `fact_in_candidates`：gold 的 `chunk_id` 或 `parent_key` 与 dense/lexical/RRF 候选有交集；
+- `fact_in_reranked`：与 rerank 后（dedup 前）有交集；
+- `fact_in_final`：与最终 contexts 有交集（`chunk_id` 或 `parent_key`）；
+- `answer_mentions_fact`：answer 中出现 gold 的数值/文本 token；无 token 时 null；
 - `judge_failed`：score 为 NaN 或 `error` 非空；
-- `testset_conflict`：`period_conflict` / `numeric_conflict` / `unit_missing` 任一为 true；
+- `testset_conflict`：`numeric_conflict` / `unit_missing` 任一为 true；`period_conflict` v1 恒 null；
 - `tool_called` / `call_count`：顶层轨迹。
 
 规则（按顺序，首个命中即停）：
 
 | 指标 | 规则 |
 |---|---|
-| `faithfulness` | judge_failed → `judge_failure`；`fact_in_final=false` → 事实阶段根因；`fact_in_final=true` 且 `answer_mentions_fact=false` → `prompt_or_generation`；否则 `inconclusive` |
+| `faithfulness` | judge_failed → `judge_failure`；`fact_in_final=false` → 事实阶段根因（从 `fact_in_corpus` 起，不用 testset_conflict）；`fact_in_final=true` 且 `answer_mentions_fact=false` → `prompt_or_generation`；否则 `inconclusive` |
 | `answer_relevancy` | judge_failed → `judge_failure`；answer 为空/failed → `prompt_or_generation`；否则 `inconclusive` |
-| `context_precision` | judge_failed → `judge_failure`；gold 不在 candidates → `retrieval_miss`；gold 不在 final → `rerank_or_topk`；gold 在 final 但分数低 → `rerank_or_topk`（排序/噪声）；否则 `inconclusive` |
+| `context_precision` | judge_failed → `judge_failure`；gold 不在 candidates → `retrieval_miss`；gold 在 candidates 但不在 final → `rerank_or_topk`；gold 在 final 但分数低 → `rerank_or_topk`（排序/噪声）；否则 `inconclusive` |
 | `context_recall` | judge_failed → `judge_failure`；testset_conflict → `testset_error`；`fact_in_corpus=false` → `parsing_or_chunking`；`fact_in_final=false` → 事实阶段根因；否则 `inconclusive` |
-| `contextual_relevancy` | judge_failed → `judge_failure`；gold 在 candidates 但不在 final → `rerank_or_topk`；否则 `retrieval_miss`；否则 `inconclusive` |
+| `contextual_relevancy` | judge_failed → `judge_failure`；`fact_in_corpus=false` → `parsing_or_chunking` / `testset_error`；gold 不在 candidates → `retrieval_miss`；gold 在 candidates 但不在 final → `rerank_or_topk`；否则 `inconclusive` |
 | `non_advice` | judge_failed → `judge_failure`；低分 → `prompt_or_generation`（合规建议） |
-| `tool_correctness` | failed → `tool_routing`；只有 delegate_task → `inconclusive`；期望工具缺失 → `tool_routing` |
+| `tool_correctness` | `tool_correctness_reason=="failed"`（跑图失败）→ `inconclusive`；只有 `delegate_task` → `inconclusive`；跑图成功且期望工具缺失 → `tool_routing` |
 | `TaskCompletion` | failed/空回答 → `prompt_or_generation`；低分 → `inconclusive` |
 | `StepEfficiency` | 低分 → `agent_orchestration` |
 | `AgentLoopDetection` | 低分 → `agent_orchestration` |
 
-**事实阶段根因**（供 F/CR 使用）：
+**事实阶段根因**（供 F/CR/CREL 使用；`testset_conflict → testset_error` 仅用于 CR/CREL，F 从 `fact_in_corpus` 起）：
 
 ```
-!fact_in_corpus      → parsing_or_chunking
-!fact_in_candidates  → retrieval_miss
-!fact_in_reranked    → rerank_or_topk
-!fact_in_final       → rerank_or_topk（dedup/top-k）
-否则                  → prompt_or_generation / inconclusive
+testset_conflict           → testset_error
+!fact_in_corpus            → parsing_or_chunking
+!fact_in_candidates        → retrieval_miss
+!fact_in_reranked          → rerank_or_topk
+!fact_in_final             → rerank_or_topk（dedup/top-k）
+否则                        → prompt_or_generation / inconclusive
 ```
 
 ### D10：置信度规则
 
 | 置信度 | 条件 |
 |---|---|
-| `high` | judge_failed 明确；或 gold chunk 来自 testset 且阶段交集明确；或 testset 数值/期间硬冲突 |
+| `high` | judge_failed 明确；或 gold 来自 testset 且阶段交集明确；或 testset 数值硬冲突 |
 | `medium` | gold 来自探针文本匹配；或事实阶段只能推断到层；或 testset 单位缺失 |
 | `low` | 只有间接证据（如 answer 未出现 token 但 reference 是抽象表述） |
 | `inconclusive` | 无规则命中，或关键事实标记为 null |
@@ -205,8 +249,11 @@ data/deepeval/evidence/<run_id>/
 {
   "schema_version": 1,
   "run_id": "20261018_041404",
+  "run_trace_id": "eval_run_20261018_041404_ab12cd34",
   "qa_count": 22,
   "low_score_questions": [3, 15, 16, 19, 20, 21, 22],
+  "evidence_files": ["q_3.json", "..."],
+  "elapsed_ms": 1234,
   "root_cause_counts": {
     "by_metric": {
       "context_recall": {"testset_error": 2, "retrieval_miss": 1},
@@ -227,6 +274,8 @@ data/deepeval/evidence/<run_id>/
 }
 ```
 
+`by_metric` 的分母是该指标被归因的题数；`total` 是各指标 attribution 的条目总数（同一题不同指标分别计数）。
+
 ### D12：隐私、原子写与保留
 
 - 证据包含完整 answer / contexts / 题集 reference；目录必须加入 `.gitignore`。
@@ -234,6 +283,7 @@ data/deepeval/evidence/<run_id>/
 - 每题证据用临时文件 + `os.replace`；`summary.json` 同。
 - 保留策略：手动清理；README/排障手册提示“含原文，勿提交/外发”。
 - 证据文件名不含用户输入，只含 `q_index`。
+- 每阶段候选上限 50、gold 命中上限 20；`truncated` 必须记录。
 
 ### D13：schema 版本与向后兼容
 
@@ -242,41 +292,74 @@ data/deepeval/evidence/<run_id>/
 - 未来加字段只增不改；删除/改名必须升 `schema_version`。
 - 证据/归因不依赖某个指标实现（RAGAS/DeepEval 都可）；取不到的值写 null + `inconclusive`。
 
-### D14：测试策略
+### D14：能回答什么、不能回答什么（验收口径）
 
-- 单测：schema、低分选择、no-op 关闭路径、写入失败不影响主流程、chunk 探针命中/未命中、候选截断。
+**能回答（分层定位）**：
+
+| 问题 | 证据 | root_cause | 置信度 |
+|---|---|---|---|
+| 事实在语料里吗 | `fact_in_corpus` / gold chunks | `parsing_or_chunking` / `testset_error` | 探针 medium；source_chunk_ids high |
+| 进了召回候选吗 | dense/lexical/RRF | `retrieval_miss` | medium（v6 无 gold ids） |
+| 进了 rerank 后吗 | rerank 前/后 + dedup/top-k | `rerank_or_topk` | medium |
+| 进了最终上下文吗 | final contexts（含 parent_key） | `rerank_or_topk` / `prompt_or_generation` | medium |
+| 回答用了吗 | `answer_mentions_fact` | `prompt_or_generation` | low/medium |
+| 裁判是否挂了 | `judge_failed` + trace measure/calls | `judge_failure` | high |
+| 工具是否该调没调 | `tool_correctness` + trajectory | `tool_routing` | high（跑图成功时） |
+| 是否重复检索/打转 | StepEfficiency / LoopDetection | `agent_orchestration` | medium |
+
+**不能回答（v1 明写）**：
+
+- 参考答案的数值在**语义上**是否正确（42% vs 53% 谁对）——只做存在性匹配；
+- 期间/季度是否错标——`period_conflict` 恒 null，Q15 类可能落到 `inconclusive` 或被其他事实带偏；
+- query rewrite 改了什么——评测路径不执行改写，`rewritten` 为 null；
+- 子代理内部检索——只看顶层 `delegate_task`；
+- 裁判为什么给某个具体 verdict——只有 score/reason，没有逐条 verdict；
+- 多因一果的因果证明——`root_cause` 是“最可能丢在哪一层”，不是因果推断。
+
+**因此**：score 告诉你“有问题”，trace 告诉你“哪次请求/哪次裁判”，证据回答“事实在哪一层”，归因给出“最可能的层”。三者合起来能定位大多数单层问题；跨层/语义问题必须保留 `inconclusive` 或人工复核。
+
+### D15：测试策略
+
+- 单测：schema、低分选择（含 `--deepeval-only`）、no-op 关闭路径、写入失败不影响主流程、候选截断、RRF 分数、dedup/top-k 丢弃 ID。
+- 检索单测：dense 有/rerank 后无；dense 失败 lexical 成功；parent/child 等价；final 顺序与全局 `order_in_prompt`。
+- 探针单测：Q21 类“语料有但没召回” → true；臆造数值 + `numeric_risk` → `numeric_conflict=true`；无 token → null；`source_chunk_ids` 优先；KB 不可用 → null；命中上限。
 - 归因单测：
-  - Q21 类：gold 在 corpus、不在 candidates → `retrieval_miss`；
-  - Q20 类：gold 在 candidates、不在 final → `rerank_or_topk`；
-  - Q19 类：参考数值与语料冲突 → `testset_error`；
+  - Q21 类：corpus 有、candidates 无 → `retrieval_miss`；
+  - Q20 类：candidates 有、final 无 → `rerank_or_topk`；
+  - Q19 类：数值存在性冲突 → `testset_error`；
   - Q16/Q22 类：error/NaN → `judge_failure`；
-  - 抽象题无 token → `inconclusive`；
-  - `source_chunk_ids` 存在时优先于探针。
-- 集成：固定 fake retrieval/scorer 造“候选有但 rerank 后没有”，跑 `--evidence`，断言 `attribution.context_precision.root_cause=="rerank_or_topk"`。
-- CLI：`--evidence` 与 `--deepeval-only` / `--gate` 组合不改变退出码；`--evidence-all` 写全部。
-- 性能：关闭时无额外 DB/文件 IO；开启时全量 chunk 只读一次。
+  - `tool_correctness_reason="failed"` → `inconclusive`，不是 `tool_routing`；
+  - CREL：`fact_in_corpus=false` → `parsing_or_chunking`/`testset_error`，不是 `retrieval_miss`；
+  - 抽象题无 token → `inconclusive`。
+- 集成：固定 fake retrieval/scorer 造“候选有但 rerank 后没有”，跑 `--evidence`，断言 retrieval 证据与 `attribution.context_precision.root_cause=="rerank_or_topk"`。
+- CLI：`--evidence` 与 `--deepeval-only` / `--gate` 组合不改变退出码；`--evidence-all` 写全部；gate 退出前证据已落盘。
+- 性能：关闭时无额外 DB/文件 IO；开启时全量 chunk 只读一次（复用空库检查结果）。
 
 ## Risks / Trade-offs
 
 - **归因会错**：抽象题/改写题的事实无法用 token 匹配 → `inconclusive`，不强行给标签；`low` 置信度必须保留。
+- **parent/child 等价**：用 `parent_key` 降低“同 parent 的另一个 child”误判，但仍可能把同 parent 下不同事实混在一起；证据保留 `chunk_id` 与 `parent_key`，便于人工核对。
+- **RRF 字段扩散**：给 `ChunkResult` 加 `rrf_score` 是共享类型变更；默认 None，现有消费者不受影响，但需要测试锁住。
+- **探针误判**：数值格式化（千分位/单位/负号）可能漏匹配；v1 只做可解释的硬匹配，匹配不到时 `fact_in_corpus=null/false`，不升级为高置信结论。
+- **`numeric_conflict` 启发式**：依赖 `numeric_risk`，只做存在性判断；不判断“42% vs 53% 谁对”，避免误伤。
 - **证据体积**：候选集/上下文可能很大 → 每阶段上限 50、最终 contexts 全量、chunk 命中上限 20；截断记 `truncated`。
 - **隐私**：证据含原文 → gitignore、仅本地、文档提示；不写 DB/Langfuse。
-- **性能开销**：开启时多一次全量 chunk 读取 + 文件写；只用于调试，默认关闭。
-- **query rewrite 不可见**：评测路径可能不经 `QueryRouter`；取不到就写 null，不用工具 query 冒充改写结果。
-- **候选集重建不确定性**：必须运行期采集；事后重跑可能因 embedding/rerank 波动不同。证据文件记录 `captured_at` 与配置快照。
+- **性能开销**：开启时多一次题集 samples 读取 + 文件写；chunk 全量读取复用空库检查，不额外读库。
 - **子代理盲区**：`delegate_task` 只记顶层；子代理内部工具调用记 null/unknown，归因 `inconclusive`。
-- **gold chunk 缺失**：题集没有 `source_chunk_ids` 时用探针，置信度只到 medium；要 high 需题集侧补字段。
+- **gold chunk 缺失**：v6 没有 `source_chunk_ids`，全部走探针，置信度只到 medium；要 high 需题集侧补字段。
+- **`--deepeval-only`**：没有主分，只按行为分选；文档必须写清，避免误以为“没写就是没问题”。
 - **schema 漂移**：用 `schema_version` 与字段全量 null 约束。
 
 ## Migration Plan
 
-1. 先合并 `tool-correctness-diagnostic`，让 `tool_correctness` / `trajectory` / `expected_tools` 链路可用。
-2. 新增证据模块、CLI 开关与归因器；默认关闭，无需迁移。
-3. 新增 `data/deepeval/evidence/` 到 `.gitignore`；历史报告不受影响。
-4. 回滚：删除开关/采集器/归因器即可；已落盘证据可手动清理。
+1. 先合并 `eval-trace-correlation`，让 `run_trace_id` / `judge_measure_id` / `HookEvidence.measures` / `link_behavior_traces` 可用。
+2. `tool-correctness-diagnostic` 已合并/归档，`tool_correctness` / `trajectory` / `expected_tools` 链路已在。
+3. 新增证据模块、CLI 开关与归因器；默认关闭，无需迁移。
+4. 新增 `data/deepeval/evidence/` 到 `.gitignore`；历史报告不受影响。
+5. 回滚：删除开关/采集器/归因器即可；已落盘证据可手动清理。
 
 ## Open Questions
 
-- 低分阈值是否要包含 `contextual_relevancy`？默认不包含（它是诊断，低分常态）；如需纳入，用常量扩展，不改 schema。
-- 是否要把 `source_chunk_ids` 写进题集？本 change 先读可选字段、缺失时用探针；题集 schema 的强制化留给出题侧 change。
+- `source_chunk_ids` 是否要在出题侧强制化？本 change 先读可选字段、缺失时用探针；题集 schema 的强制化留给出题侧 change。
 - 证据保留期？暂定手动清理；若未来自动化，再定天数与清理命令。
+- `period_conflict` 是否值得做？v1 先不做；若 Q15 类题集错误反复出现，再单独设计期间抽取与对齐。
