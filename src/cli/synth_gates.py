@@ -65,7 +65,7 @@ def strip_context_entities(text: str, entities: set[str]) -> str:
     return result
 
 
-_LATIN_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9&.\- ]{1,40}")
+_LATIN_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9&.\-]{1,39}")
 
 
 def extract_context_entities(contexts: list[str]) -> set[str]:
@@ -131,7 +131,7 @@ def compute_numeric_risk(reference: str) -> bool:
 def _first_numeric_fact(reference: str) -> re.Match[str] | None:
     """定位第一个「后接单位/百分号/金额词」的非日期数字。"""
     for match in _NUMBER_RE.finditer(reference):
-        if _DATE_NUMBER_RE.fullmatch(match.group(0)):
+        if _DATE_NUMBER_RE.match(reference, match.start()):
             continue
         tail = reference[match.end() : match.end() + 4]
         if _MONEY_RE.match(tail):

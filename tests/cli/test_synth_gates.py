@@ -6,7 +6,9 @@ from src.cli.synth_gates import (
     check_complete_sentence,
     check_language,
     compute_numeric_risk,
+    extract_context_entities,
     run_gates,
+    strip_context_entities,
 )
 
 
@@ -132,3 +134,32 @@ def test_self_contained_rewrite_is_counted():
     kept, stats = run_gates(samples, {"东软集团股份有限公司": {"东软集团股份有限公司"}})
     assert stats["self_contained_rewritten"] == 1
     assert kept[0]["user_input"].startswith("东软集团股份有限公司")
+
+
+def test_context_entities_extracted_per_word():
+    entities = extract_context_entities(["报告提到 SAP SE 和 Tencent Holdings Limited"])
+    assert {"SAP", "SE", "Tencent", "Holdings", "Limited"} <= entities
+
+
+def test_strip_context_entities_removes_each_word():
+    stripped = strip_context_entities("报告中SAP SE的持股比例", {"SAP", "SE"})
+    assert "SAP" not in stripped
+    assert "SE" not in stripped
+
+
+def test_pure_english_sentence_rejected_even_if_entities_known():
+    entities = {"SAP", "SE", "Tencent", "Holdings", "Limited"}
+    assert not check_language(
+        "What did Tencent Holdings Limited report?",
+        "Revenue was 18.5 billion.",
+        entities,
+    )
+
+
+def test_run_gates_reconciles_generated_and_dropped():
+    samples = [
+        _sample("东软集团2025年营业收入？", "东软集团2025年营业收入为18.5亿元。"),
+        _sample("东软集团2025年净利润？", "1,234,567.89"),
+    ]
+    kept, stats = run_gates(samples, {"东软集团股份有限公司": {"东软集团股份有限公司"}})
+    assert stats["generated"] - sum(stats["dropped"].values()) == len(kept)
