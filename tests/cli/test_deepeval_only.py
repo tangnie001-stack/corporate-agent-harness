@@ -130,6 +130,10 @@ def test_deepeval_only_skips_all_ragas_side_effects(monkeypatch, tmp_path):
         def __init__(self) -> None:
             self.events: list[dict] = [{"phase": "response"}]
 
+        def set_run(self, run_trace_id, judge_model=None):
+            self.run_trace_id = run_trace_id
+            self.judge_model = judge_model
+
     monkeypatch.setattr(
         "src.infra.llm.provider.http_observability.HookEvidence", _FakeHookEvidence
     )

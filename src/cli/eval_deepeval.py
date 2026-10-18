@@ -32,6 +32,7 @@ from typing import Any
 
 import pandas as pd
 from langfuse.decorators import langfuse_context, observe
+from loguru import logger
 
 from src.cli.eval_scoring import (
     apply_sample_masks,
@@ -64,7 +65,11 @@ from src.core import logging as core_logging
 from src.core.log_events import Event
 from src.core.logging import setup_logging
 from src.infra.llm.request_context import RequestContext, current_request_ctx
-from src.infra.llm.trace_context import current_trace_id
+from src.infra.llm.trace_context import (
+    EvalTraceContext,
+    current_eval_trace,
+    current_trace_id,
+)
 from src.infra.llm.tracing import configure_tracing, flush_tracing
 
 setup_logging(configure_trace_id=True)
@@ -286,7 +291,11 @@ async def _collect_one_question(
         判定为失败（空回答/纯空白，如迭代触顶）时补 `failed: True`，使该题与
         异常题走同样的 N/A 路径（不得把失败误记成 0 分）。
     """
-    core_logging.log_event(Event.QA_ANSWER_START, index=index, query=query)
+    trace_ctx = current_eval_trace.get()
+    run_trace_id = trace_ctx.run_trace_id if trace_ctx is not None else ""
+    core_logging.log_event(
+        Event.QA_ANSWER_START, index=index, query=query, run_trace_id=run_trace_id
+    )
     # F-32：镜像 turn_runner，seed 请求上下文，使 retrieve_kb 等工具收集的
     # 材料可经 agent_finalize 回填 state.tool_contexts（否则 context 指标恒空）
     req_ctx = RequestContext(session_id=session_id, kb_id=kb_id)
@@ -314,6 +323,7 @@ async def _collect_one_question(
             index=index,
             answer_len=len(answer),
             contexts=len(ctx_list),
+            run_trace_id=run_trace_id,
         )
         return answer, ctx_list, details, sample_class, trajectory
     except Exception as e:  # noqa: BLE001
@@ -325,6 +335,7 @@ async def _collect_one_question(
             err=str(e),
             err_type=type(e).__name__,
             err_repr=repr(e)[:200],
+            run_trace_id=run_trace_id,
         )
         return (
             f"[ERROR] {e}",
@@ -913,7 +924,11 @@ def run_evaluation(
                 "trajectory": trajectories[i],
             }
         )
-    core_logging.log_event(Event.EVALUATION_START, samples=len(rows))
+    trace_ctx = current_eval_trace.get()
+    run_trace_id = trace_ctx.run_trace_id if trace_ctx is not None else ""
+    core_logging.log_event(
+        Event.EVALUATION_START, samples=len(rows), run_trace_id=run_trace_id
+    )
     scored = score_rows(
         rows,
         metrics,
@@ -1257,6 +1272,8 @@ def save_markdown_report(
         f"**Configuration:** TOP_K_RETRIEVAL={cfg_topk}, TOP_K_RERANK={cfg_rerank}"
     )
     lines.append(f"**QA Pairs:** {len(questions)}")
+    if report_meta is not None and report_meta.get("run_trace_id"):
+        lines.append(f"**Run trace:** {report_meta['run_trace_id']}")
     if report_meta is not None:
         version_value = report_meta.get("testset_version")
         if version_value is None:
@@ -1393,6 +1410,30 @@ def check_gate(df: pd.DataFrame, questions: list[str]) -> None:
     sys.exit(0)
 
 
+def begin_eval_run(kb_id: str) -> tuple[str, str]:
+    """生成并记录一次评测的 run id / run trace id。
+
+    Args:
+        kb_id: 知识库 UUID（仅用于事件字段）
+
+    Returns:
+        `(run_id, run_trace_id)`；`run_id` 为 UTC 时间戳，`run_trace_id` 为
+        `eval_run_<run_id>_<8hex>`。
+    """
+    run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    run_trace_id = f"eval_run_{run_id}_{uuid.uuid4().hex[:8]}"
+    try:
+        core_logging.log_event(
+            Event.EVALUATION_RUN,
+            kb_id=kb_id,
+            run_id=run_id,
+            run_trace_id=run_trace_id,
+        )
+    except Exception as exc:  # noqa: BLE001  # 观测旁路，失败不阻断评测
+        logger.warning("[cli] evaluation run trace log failed err={}", exc)
+    return run_id, run_trace_id
+
+
 def build_report_meta(
     *,
     judge_model: str,
@@ -1400,6 +1441,7 @@ def build_report_meta(
     runner_versions: dict,
     ragas_enabled: bool = True,
     testset_version: int | None = None,
+    run_trace_id: str | None = None,
 ) -> dict:
     """报告/台账元数据（口径版本、NaN 计数、模型显式性、题集版本）。
 
@@ -1412,6 +1454,7 @@ def build_report_meta(
         runner_versions: 版本字典，形如 `{"deepeval": "4.2.9", "metrics": "native"}`
         ragas_enabled: 是否跑四指标（False 即 --deepeval-only）
         testset_version: 实际加载到的题集版本
+        run_trace_id: 整轮 trace id（见 `begin_eval_run`）；None 表示不记录
 
     Returns:
         报告元数据字典
@@ -1423,6 +1466,7 @@ def build_report_meta(
             "model_arg_explicit": True,
             "ragas_skipped": True,
             "testset_version": testset_version,
+            "run_trace_id": run_trace_id,
             "runner_versions": dict(runner_versions),
         }
     if nan_stats is None:
@@ -1432,6 +1476,7 @@ def build_report_meta(
         "judge_model": judge_model,
         "model_arg_explicit": True,
         "testset_version": testset_version,
+        "run_trace_id": run_trace_id,
         "nan_cells": nan_stats["nan_cells"],
         "nan_denominator_cells": nan_stats["denominator_cells"],
         "nan_rate": round(nan_stats["nan_rate"], 4),
@@ -1473,9 +1518,11 @@ def main() -> None:
     # LangfuseSingleton 惰性构造客户端，先 flush 会造出 enabled 客户端、
     # 绕过 settings.LANGFUSE_ENABLE。
     configure_tracing()
+    run_id, run_trace_id = begin_eval_run(kb_id)
+    eval_trace_token = None
     try:
         session_id = args.session_id
-        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        timestamp = run_id
         output_path = (
             args.output or f"{settings.EVAL_REPORT_DIR}/deepeval_eval_{timestamp}.csv"
         )
@@ -1500,7 +1547,6 @@ def main() -> None:
         )
 
         core_logging.log_event(Event.TESTSET_LOADED, count=len(questions))
-        core_logging.log_event(Event.EVALUATION_RUN, kb_id=kb_id)
 
         # ---- 初始化 RAG 组件 ----
         from src.agents.graph.workflow import build_graph
@@ -1529,6 +1575,13 @@ def main() -> None:
 
         judge_evidence = HookEvidence()
         bridge_judge = build_bridge_judge(evidence=judge_evidence)
+        eval_trace = EvalTraceContext(
+            run_id=run_id,
+            run_trace_id=run_trace_id,
+            judge_model=bridge_judge.model_name,
+        )
+        eval_trace_token = current_eval_trace.set(eval_trace)
+        judge_evidence.set_run(run_trace_id, bridge_judge.model_name)
         judge_llm = BridgeDeepEvalLLM(bridge_judge)
         metrics = None
         diagnostic_metrics = None
@@ -1647,6 +1700,7 @@ def main() -> None:
             },
             ragas_enabled=ragas_enabled,
             testset_version=resolved_version,
+            run_trace_id=run_trace_id,
         )
 
         if ragas_enabled:
@@ -1709,6 +1763,8 @@ def main() -> None:
         core_logging.log_event(Event.EVALUATION_DONE)
     finally:
         # 异常退出 / --gate 的 sys.exit 路径也须 flush，否则缓冲事件丢失
+        if eval_trace_token is not None:
+            current_eval_trace.reset(eval_trace_token)
         flush_tracing()
 
 

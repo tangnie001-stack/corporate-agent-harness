@@ -231,8 +231,12 @@ EVENT_SPECS: dict[str, EventSpec] = {
     "content end": EventSpec("content end", "llm", "info", ("model", "output")),
     # [cli] 离线工具（3.5 批：eval_ragas / eval_ragas_generate / check_retrieval / compare_rewrite）
     "testset loaded": EventSpec("testset loaded", "cli", "info", ("count",)),
-    "evaluation run": EventSpec("evaluation run", "cli", "info", ("kb_id",)),
-    "evaluation start": EventSpec("evaluation start", "cli", "info", ("samples",)),
+    "evaluation run": EventSpec(
+        "evaluation run", "cli", "info", ("kb_id", "run_id", "run_trace_id")
+    ),
+    "evaluation start": EventSpec(
+        "evaluation start", "cli", "info", ("samples", "run_trace_id")
+    ),
     "evaluation done": EventSpec("evaluation done", "cli", "info"),
     "eval model init": EventSpec("eval model init", "cli", "info", ("sut", "judge")),
     "rag component init": EventSpec("rag component init", "cli", "info"),
@@ -241,16 +245,19 @@ EVENT_SPECS: dict[str, EventSpec] = {
     "judge model missing": EventSpec("judge model missing", "cli", "error"),
     "answers generation": EventSpec("answers generation", "cli", "info", ("count",)),
     "question answer start": EventSpec(
-        "question answer start", "cli", "info", ("index", "query")
+        "question answer start", "cli", "info", ("index", "query", "run_trace_id")
     ),
     "question answer done": EventSpec(
-        "question answer done", "cli", "info", ("index", "answer_len", "contexts")
+        "question answer done",
+        "cli",
+        "info",
+        ("index", "answer_len", "contexts", "run_trace_id"),
     ),
     "question answer failed": EventSpec(
         "question answer failed",
         "cli",
         "warning",
-        ("index", "err", "err_type", "err_repr"),
+        ("index", "err", "err_type", "err_repr", "run_trace_id"),
     ),
     "metric mean": EventSpec("metric mean", "cli", "info", ("metric", "mean")),
     "metrics nan": EventSpec("metrics nan", "cli", "warning", ("counts",)),

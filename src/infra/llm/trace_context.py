@@ -7,11 +7,35 @@
 
 current_channel 取值域见 `src/config/const.py` 的 `Channel`；未设置时为空串，
 日志 patcher 会以 `CHANNEL_DEFAULT`（`none`）占位。
+
+current_eval_trace 承载一次评测 run 的 run id / run trace id / 裁判模型，
+仅评测 CLI 设置；未设置时为 None。
 """
 
 from contextvars import ContextVar
+from dataclasses import dataclass
 
 current_trace_id: ContextVar[str | None] = ContextVar("current_trace_id", default=None)
 current_user_id: ContextVar[str] = ContextVar("current_user_id", default="")
 current_session_id: ContextVar[str] = ContextVar("current_session_id", default="")
 current_channel: ContextVar[str] = ContextVar("current_channel", default="")
+
+
+@dataclass(frozen=True)
+class EvalTraceContext:
+    """评测 run 级上下文。
+
+    Args:
+        run_id: 时间戳 run id（与报告/CSV 同源）
+        run_trace_id: 整轮 trace id（`eval_run_<timestamp>_<8hex>`）
+        judge_model: 裁判模型名；构造 bridge judge 后才有值
+    """
+
+    run_id: str
+    run_trace_id: str
+    judge_model: str | None
+
+
+current_eval_trace: ContextVar[EvalTraceContext | None] = ContextVar(
+    "current_eval_trace", default=None
+)

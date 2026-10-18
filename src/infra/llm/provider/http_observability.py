@@ -25,6 +25,19 @@ class HookEvidence:
     def __init__(self) -> None:
         self.events: list[dict] = []
         self._trace_id: str | None = None
+        # 整轮评测的 trace 身份（`begin_eval_run` 产物），随请求记录一并落日志
+        self.run_trace_id: str | None = None
+        self.judge_model: str | None = None
+
+    def set_run(self, run_trace_id: str, judge_model: str | None = None) -> None:
+        """登记整轮评测的 run trace id 与裁判模型名。
+
+        Args:
+            run_trace_id: 整轮 trace id（`eval_run_<timestamp>_<8hex>`）
+            judge_model: 裁判模型名；None 表示未知
+        """
+        self.run_trace_id = run_trace_id
+        self.judge_model = judge_model
 
     def mark(self, trace_id: str | None) -> None:
         """切到某题的证据窗口（评分串行，并发=1，故单槽安全）。"""
