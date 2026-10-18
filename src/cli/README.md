@@ -17,8 +17,48 @@ python -m src.cli.<模块名> --help
 | 命令 | 用途 |
 |---|---|
 | `eval_deepeval` | DeepEval 原生四指标评估主脚本：执行评估 / 质量门禁 |
+| `testset_synth` | v6 出题：从知识库分块生成测试集 |
 | `compare_retrieval` | 遍历「检索 top-K × 重排 top-K」参数网格，用评测指标对比选参 |
 | `check_retrieval` | 对已有知识库执行语义检索，打印结果供人工检查 |
+
+---
+
+# v6 出题（DeepEval Synthesizer）
+
+从知识库分块生成测试集，产出 `data/deepeval/testset/testset_<kb_id>_v<N>.json`，供 `eval_deepeval` 直接读取。
+
+```bash
+python -m src.cli.testset_synth --kb-id <uuid> --version 6 \
+  --docs neusoft_2025_q1.pdf tencent_2024_annual.pdf --kb-name test
+```
+
+## 参数
+
+| 参数 | 说明 |
+|---|---|
+| `--kb-id` | 知识库 UUID（必填） |
+| `--version` | 版本号；省略时取「现有最大版本 + 1」 |
+| `--docs` | 限定文档文件名（分块 metadata 的 `source`）；省略 = 全部 |
+| `--kb-name` | 写入元数据的知识库名 |
+| `--force` | 允许覆盖已存在的版本文件 |
+| `--dry-run` | 只打印计划，不调用 LLM |
+
+- 显式 `--version` 时必须同时传 `--docs`（保证版本可复现）。
+- `--docs` 每一项必须匹配 ≥1 个分块，否则报错退出。
+- `--dry-run` 打印实际 `doc_names`、上下文数、覆盖块数、目标路径与调用量区间。
+- 每个上下文默认取 2 个连续分块（`EVAL_SYNTH_CHUNKS_PER_CONTEXT`），末尾不足 2 块的余量丢弃。
+
+## 退出语义
+
+| 情形 | 退出码 |
+|---|---|
+| 写出成功 / `--dry-run` 完成 | 0 |
+| 参数非法（如显式 `--version` 未带 `--docs`） | 2 |
+| 语料不匹配、全部上下文失败、语言门失效（丢弃率 > 50%）、通过样本 < 15、目标版本已存在且未 `--force` | 1 |
+
+质量门为确定性检查、不调用 LLM，顺序：自足改写 → 完整句 → 语言 → 去重 → 多跳占比 ≤ 1/3。通过样本 < 15 时自动把每上下文出题数提到 2 重跑一次，仍不足则失败且不写文件。
+
+> `eval_deepeval --generate` 保留参数，命中即报错并指向本命令。
 
 ---
 
@@ -28,41 +68,18 @@ python -m src.cli.<模块名> --help
 
 ```
 ① 准备测试集 ──> ② 执行评估 ──> ③ 质量门禁 ──> ④ 参数选优（可选）
-（出题已下线）      eval_deepeval --kb-id   eval_deepeval --gate   compare_retrieval
+testset_synth     eval_deepeval --kb-id   eval_deepeval --gate   compare_retrieval
 ```
 
-## 第一步：准备测试集（出题已下线）
+## 第一步：准备测试集
 
-测试集生成模块已退役：`--generate` 保留参数、命中即报错，后续由 DeepEval `Synthesizer` 承接。
-评测直接读取已有测试集 JSON，可用 `--testset-version` 指定历史版本。
+出题由 v6 出题器（DeepEval `Synthesizer`）承接，命令与退出语义见上文「v6 出题」一节。评测直接读取已有测试集 JSON，可用 `--testset-version` 指定历史版本。
 
 - **位置**：`data/deepeval/testset/testset_<kb_id>_v<N>.json`（目录默认 `EVAL_TESTSET_DIR`）
 - **版本管理**：文件名中的 `v<N>` 为版本号，评估时可指定任意历史版本
-- **文件结构**：
+- **文件结构**：`metadata` + `samples`，完整字段契约见 `docs/agents/api_contract.md` §8.2；v6 每题额外带 `hop_type` / `hop_basis` / `expected_tools` / `numeric_risk` / `source_file`
 
-```json
-{
-  "metadata": {
-    "kb_name": "知识库名",
-    "version": 1,
-    "generated_at": "ISO 8601 时间",
-    "llm_model": "生成用模型",
-    "testset_size": 20,
-    "ragas_version": "0.4.x",
-    "doc_ids": ["文档UUID..."]
-  },
-  "samples": [
-    {
-      "user_input": "问题",
-      "reference": "参考答案",
-      "reference_contexts": ["依据文档片段..."],
-      "synthesizer_name": "生成器类型"
-    }
-  ]
-}
-```
-
-> `ragas_version` / `synthesizer_name` 是历史测试集文件的遗留字段，当前加载器不消费。
+> 历史测试集文件中 `ragas_version` / `synthesizer_name` 为遗留字段，当前加载器不消费。
 
 ## 第二步：执行评估（怎么测试）
 
@@ -186,7 +203,7 @@ python -m src.cli.compare_retrieval --kb-name <知识库名称>
 |---|---|
 | `--kb-id` | 知识库 UUID（与 `--list-kbs` 互斥） |
 | `--list-kbs` | 列出所有可用知识库后退出 |
-| `--generate` | 已下线（保留参数，命中即报错并指向 DeepEval Synthesizer） |
+| `--generate` | 已下线（保留参数，命中即报错并指向 `testset_synth`） |
 | `--size` | 出题已下线（保留参数，当前无效果） |
 | `--model` | 出题已下线（保留参数，当前无效果） |
 | `--testset-version` | 指定测试集版本号（默认取最新） |
@@ -226,7 +243,7 @@ python -m src.cli.check_retrieval --kb <知识库名称> --query "<问题>" [--t
 
 ## 典型工作流
 
-1. **准备测试集**：确认 `data/deepeval/testset/` 下已有目标知识库的测试集（出题已下线）
+1. **准备测试集**：`testset_synth --kb-id <uuid> --docs <文件...>` 生成，或确认 `data/deepeval/testset/` 下已有目标知识库的测试集
 2. **执行评估**：`eval_deepeval --kb-id <uuid>` → 查看 `data/deepeval/reports/` 下的 CSV 与 MD
 3. **质量门禁**：`eval_deepeval --kb-id <uuid> --gate`（CI / 提交前检查，不达标退出码 1）
 4. **参数选优**：`compare_retrieval --kb-name <名称>` → 按指标对比表确定 `TOP_K` 组合

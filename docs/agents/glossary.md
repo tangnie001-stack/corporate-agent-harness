@@ -222,6 +222,16 @@
 | `contextual_relevancy` | **诊断指标**（不进主分）：检索上下文与问题的相关程度，仅判前 8 条 |
 | `non_advice` | **诊断指标**（不进主分）：回答是否给出越界建议（`financial` 类型），不做金融建议 |
 
+### 出题题集字段（v6）
+
+| 术语 | 定义 | 常见错误 |
+|------|------|---------|
+| `hop_type` | 题目跳数类型，取值 `single_hop` / `multi_hop`；按 DeepEval evolution 是否含 `Multi-context` 判定 | ❌ 当作已证明的跨块推理 |
+| `hop_basis` | `hop_type` 的判定依据，当前恒为 `evolution`（代理标签，不宣称已证明跨块） | ❌ 读成人工标注 |
+| `multi_hop` | 多上下文题（evolution 含 `Multi-context`），题集内占比上限 1/3，超出按题面哈希确定性截断 | ❌ 与"多次工具调用"混为一谈 |
+| `expected_tools` | 该题期望调用的工具名列表；v6 恒为 `["retrieve_kb"]`（一次检索返回 top-k，多跳不重复标） | ❌ 按跳数重复标 `retrieve_kb` |
+| `numeric_risk` | 参考答案是否含需单位/口径判定的数值事实：同时命中数字与金额/百分比/倍数等单位词 | ❌ 当作"答案错误"标记 |
+
 ## 基础设施
 
 - **PostgreSQL**：关系型存储后端（用户 / 知识库 / 文档 / 会话 / 消息 / 反馈 / 评估报告 7 张表，外加检索底座表 `chunks`），经 `postgresql+asyncpg` 访问。结构、引擎归属与迁移链见 `docs/agents/code-map.md`「关系型存储（PostgreSQL）」

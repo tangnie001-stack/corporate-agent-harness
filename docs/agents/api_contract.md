@@ -1282,7 +1282,7 @@ agent（外层节点：组装首轮 → seed 装配产物 → ainvoke）
 
 ### 8.1 `python -m src.cli.eval_deepeval`
 
-DeepEval 原生四指标评测命令行。测试集生成已下线（`--generate` 保留参数、命中即报错并指向 DeepEval `Synthesizer`）。
+DeepEval 原生四指标评测命令行。测试集生成由独立命令 `testset_synth` 承接（§8.6）；`--generate` 保留参数、命中即报错并指向该命令。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -1321,32 +1321,64 @@ python -m src.cli.eval_deepeval --list-kbs
 
 ### 8.2 测试集 JSON 格式
 
-位置：`data/deepeval/testset/testset_<kb_id>_v<N>.json`
+位置：`data/deepeval/testset/testset_<kb_id>_v<N>.json`（原子写：先写 `.tmp` 再 `os.replace`）。
 
 ```json
 {
   "metadata": {
     "kb_id": "知识库UUID",
     "kb_name": "知识库名称",
-    "doc_names": ["文档名.pdf"],
-    "version": 1,
+    "version": 6,
     "generated_at": "ISO 8601",
-    "llm_model": "模型名",
-    "testset_size": 20,
-    "ragas_version": "x.y.z",
-    "doc_ids": ["文档UUID"]
+    "testset_size": 21,
+    "doc_names": ["文档名.pdf"],
+    "doc_ids": ["文档UUID"],
+    "source_chunks": 51,
+    "covered_chunks": 50,
+    "company_source": {"文档名.pdf": "metadata"},
+    "synth_params": {
+      "chunks_per_context": 2,
+      "goldens_per_context": 1,
+      "max_concurrent": 4,
+      "evolution_weights": {"Multi-context": 0.28},
+      "elapsed_seconds": 123.4
+    },
+    "hop_stats": {"single_hop": 14, "multi_hop": 7},
+    "gate_stats": {
+      "generated": 25,
+      "kept": 21,
+      "language_checked": 23,
+      "self_contained_rewritten": 2,
+      "failed_contexts": 0,
+      "dropped": {
+        "self_contained": 1,
+        "not_complete_sentence": 1,
+        "language": 1,
+        "duplicate": 1,
+        "hop_ratio": 0
+      }
+    }
   },
   "samples": [
     {
       "user_input": "问题",
       "reference": "参考答案",
-      "reference_contexts": ["上下文1", "上下文2"],
-      "synthesizer_name": "合成器名"
+      "reference_contexts": ["【公司 · 报告期】\n上下文..."],
+      "expected_tools": ["retrieve_kb"],
+      "hop_type": "single_hop",
+      "hop_basis": "evolution",
+      "evolutions": ["Reasoning"],
+      "source_file": "文档名.pdf",
+      "numeric_risk": false,
+      "synth_quality": 0.8
     }
   ]
 }
 ```
-metadata 中的 ragas_version / synthesizer_name 为历史测试集文件的遗留字段，当前加载器不消费。
+
+- `version` 与文件名中的 `v<N>` 一致；`testset_version` **不写入题集文件**，由评测按文件名解析后写入报告与 DB（§8.6）。
+- `samples[]` 只含白名单字段（`public_sample`），内部判定键（`_company` / `_entities` / `_original_user_input`）不落盘。
+- 历史测试集文件的 ragas_version / synthesizer_name / llm_model 为遗留字段，当前加载器不消费。
 
 ### 8.3 质量门禁阈值
 
@@ -1395,7 +1427,7 @@ metadata 中的 ragas_version / synthesizer_name 为历史测试集文件的遗�
 | `skipped` | 被掩码跳过的指标名，`;` 分隔；未跳过为空串 |
 | `trajectory` | Agent 轨迹诊断摘要 JSON：`{"tool_calls":[{"name","args"}, ...], "iterations":N}`，**不含工具输出正文** |
 
-**MD**（与 CSV 同路径的 `.md`）：逐题表含 `Question`、四个主分指标、`error`、`trace_id`、
+**MD**（与 CSV 同路径的 `.md`）：报告头含 `caliber` / `judge` / `Testset version` / NaN 计数 / 运行器版本；逐题表含 `Question`、四个主分指标、`error`、`trace_id`、
 `sample_class`、`skipped`、`trajectory`；**不含** `ground_truth`，诊断指标另起「诊断指标」段。
 指标列按 `EVAL_METRIC_COLUMNS` 排序。末尾一行 `**Main scores (pure-KB):** <指标=值, ...>`，
 与 stdout / 门禁同口径。
@@ -1410,7 +1442,7 @@ metadata 中的 ragas_version / synthesizer_name 为历史测试集文件的遗�
 是跨进程契约，改动会静默改变 A/B 结论**。
 
 **落库（`eval_report` 表）**：`_build_eval_detail` 产出的逐题 `detail` 与各指标
-`avg` 均含**全部** `EVAL_METRIC_COLUMNS`；落库前先按
+`avg` 均含**全部** `EVAL_METRIC_COLUMNS`，每条 `detail` 另带 `testset_version`；落库前先按
 样本类别掩码（`apply_sample_masks`），表内四列指标与 `overall_score` 均为**仅
 `pure_kb` 样本**的指标均值（`main_score_means`），`passed` 取 `EVAL_PASS_THRESHOLD`
 （`run_type=baseline` 时强制 `False`）—— 与 §3.6 一致。
@@ -1432,3 +1464,43 @@ POSTGRES_HOST=localhost LANGFUSE_HOST=http://localhost:3000 python -m src.cli.ev
 `EVAL_TESTSET_DIR` / `EVAL_REPORT_DIR` 默认是 cwd 相对路径（`data/deepeval/...`）；
 在 git worktree 里 `data/` 不入库、可能不存在，需用这两个环境变量指向已有测试集 /
 期望的报告输出目录。
+
+### 8.6 `python -m src.cli.testset_synth`
+
+v6 出题命令（DeepEval `Synthesizer`），从 KB 分块生成测试集，产物格式见 §8.2。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `--kb-id` | str | 是 | 知识库 UUID |
+| `--version` | int | 否 | 目标版本号；省略 = 现有最大版本 + 1（无题集时为 1） |
+| `--docs` | str... | 否 | 限定文档文件名（分块 metadata 的 `source`）；省略 = 全部文档 |
+| `--kb-name` | str | 否 | 写入 `metadata.kb_name`；默认空串 |
+| `--force` | flag | 否 | 允许覆盖已存在的版本文件 |
+| `--dry-run` | flag | 否 | 只打印计划（版本、实际 `doc_names`、上下文数、覆盖块数、目标路径、调用量区间），不调用 LLM |
+
+**版本与语料绑定**：显式 `--version` 时 `--docs` 必填（保证版本可复现）；`--docs` 的每一项
+必须匹配 ≥1 个分块，未匹配即失败。显式版本不校验目标文件是否存在，覆盖由 `--force` 控制。
+
+**退出码**：
+
+| 退出码 | 情形 |
+|--------|------|
+| 0 | 写出成功；`--dry-run` 完成 |
+| 2 | 参数非法（argparse），如显式 `--version` 未带 `--docs` |
+| 1 | `--docs` 有未匹配项；全部上下文失败；无样本进入语言门或语言门丢弃率 > 50%；通过样本 < `EVAL_SYNTH_MIN_SAMPLES`（15，已自动升到每上下文 2 题重跑一次）；目标版本已存在且未 `--force` |
+
+**质量门**（确定性，不调用 LLM）：自足改写 → 完整句 → 语言 → 去重 → 多跳占比
+≤ `EVAL_HOP_MULTI_MAX_RATIO`（1/3）；单上下文失败被隔离，不拖垮整批。
+
+**`testset_version` 归属**：评测侧按文件名解析实际版本（`resolve_testset_version`），
+写入 MD 报告头 `**Testset version:** N` 与 DB `eval_report.detail_json` 的逐题条目；
+`--testset-version` 可显式指定历史版本。该值不写入题集文件本身。
+
+**旧同步出题端点**：`POST /api/ragas/generate` 保留路由、恒返回 **410**，
+响应 `code="GONE"`、`message` 为 `Code.GONE_MSG`：
+
+```
+RAGAS 出题已下线。请使用 DeepEval Synthesizer：python -m src.cli.testset_synth --kb-id <uuid> --version <n> --docs <文件...>
+```
+
+CLI `eval_deepeval --generate` 同理报错并指向 `testset_synth`。

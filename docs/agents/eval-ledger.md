@@ -18,6 +18,7 @@
 - 检索：`TOP_K_RETRIEVAL=30` · `TOP_K_RERANK=5`
 - 评测并发：**口径分代** —— 当前 `deep-eval-native` 四指标评分**串行（并发=1）**（四项与诊断指标共用同一组指标实例与裁判，并发会互踩，见 design D7）；历史 #1–#4（现代栈）为**行级并发=5**，#5（DeepEval 桥）串行
 - 测试集：`data/deepeval/testset/testset_4a1dcb8bb340473c8149ead5b7f75873_v5.json`（21 条；四轮全量的题面集合已核对一致）
+- **题集版本归属**：v6 题集对应 `testset_version=6`；报告头与 DB `detail_json` 均记录该值。历史报告（`report_path`）对应 v5 题集，二者不混用。
 - 主分口径：仅 `pure_kb` 样本的四项均值（`src/cli/eval_scoring.py`）
 - 门禁阈值：`faithfulness≥0.85` · `context_precision≥0.80` · `context_recall≥0.70` · `answer_relevancy≥0.85`
 - 报告文件：`data/deepeval/reports/deepeval_eval_<timestamp>.csv` / 同名 `.md`（`--deepeval-only` 只产 `.md`）

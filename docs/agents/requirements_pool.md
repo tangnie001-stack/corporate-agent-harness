@@ -129,6 +129,10 @@
 | H-11 | **版本回滚未生效（demo，2026-10-05 起搁置待查）** | 现象：从版本页回滚到旧版本后，页面 `brand-version` **没退回**（`v0.1.1` 应回 `v0.1.0`）。**已确认的机理（避免下次重走弯路）**：① 回滚 = 用**旧部署单** → 下发**旧制品** → 制品 compose 里烘着**旧 tag**；② `deploy.sh:342` 从**制品里的 compose** 解析 tag（**不从环境读 `BUILD_NUMBER`**）—— 这是正确设计，若改成"从环境读"会让回滚**永久拉最新版**；③ ACR 是 **Docker Registry v2**，镜像**不能 curl**（实测 `https://…/v2/` 返回 `401` + `WWW-Authenticate: Bearer`；`http://` 的 80 口直接超时）—— 曾试图"传镜像下载链接"失败。**待查点（按性价比排序）**：① 部署页「启动槽位」是否真的消费 `${package_download_path}`，是否残留"自己下载 / 写死 `/package.tgz`"；② 对比**首次发布 v0.1.1** 与**回滚**两次执行的日志里下载 URL（`artifactName` / `version`）是否不同 —— 相同 ⇒ 平台没换制品（问题在部署单/回滚配置）；不同 ⇒ 脚本没消费；③ 回滚后目标机上 `deploy/nginx/html/chat.html` 的 `brand-version` 实际值（区分"旧制品没落地" vs "落地了但浏览器/nginx 缓存"）；④ 解压目标路径是否与 `deploy.sh` 的 `ROOT`（`/opt/www/corporate_rag`）一致 | demo 部署回滚验证（2026-10-05） | P2 | 中 | 无 |
 | H-12 | **无指标/告警出口：Langfuse v2 无 Prometheus 端点，应用侧也不暴露 metrics** | **为什么需要**：上游可用性故障（403 额度耗尽 / 429 穷尽）要"分钟级人工介入切换"，但**没有叫醒人的通道**。**实测（2026-10-16，本地 `langfuse/langfuse:2.95.11` 容器直连，逐路径校准 401=存在需鉴权 / 404=不存在）**：① **`/metrics` = 404** ⇒ **无 Prometheus 端点**，不能直接接 Grafana 的 Prometheus 数据源；② **`/api/public/metrics/daily` 存在**（需 Basic auth），返回**日粒度**聚合（`date / countTraces / countObservations / totalCost / usage[]{model,inputUsage,outputUsage,totalCost,...}`，实测有 12 天数据、`meta.totalItems=12`）⇒ 只能做**成本/用量趋势**，**天粒度不能用于分钟级告警**；③ `/api/public/health` → `{"status":"OK","version":"2.95.11"}`（**无需鉴权**，近实时，但**只表示 Langfuse 自身活着**，**不反映模型调用失败**）；④ `/api/public/metrics`（旧路径）、`/api/public/v2/metrics`、`/api/metrics` 均 **404**（不存在）。**应用侧**同样无 metrics 端点（`grep prometheus\|/metrics` 无结果）；`src/api/alerts.py` 是**入站**（接收阿里云/Grafana 告警并跑 Agent 分析），**不是出站**。**方向（用户 2026-10-16 告知）**：后续接入**阿里云 Grafana** + **阿里云日志（SLS）**；**最小可行出站源** = 把已有的 `logger.exception`（`logs/error_*.log`）接进 **SLS 日志告警**（近乎纯配置），或暴露一个健康/指标端点由云监控打点。**依赖方**：change `timeout-and-degradation-hardening` 的 **D9-(A) 档**（"快速失败 + 明确告知 + 人工切换"）**依赖本项** —— 没有触发源，"分钟级可介入"不成立 | 2026-10-16 排查 A-03/A-05 的"长时不可用"方案时实测 | P1 | 低 | 无 |
 
+## I. 评测题集
+
+- **v7 题集扩文档**：v6 冻结在 v5 的两份文档（50/51 块），v7 再扩到全量 4 份（161 块），保持同出题器以单独归因。
+
 ## 标签说明
 
 **优先级：**

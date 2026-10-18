@@ -73,12 +73,21 @@ config/            settings(环境变量) / const(常量/文案/枚举) / respon
                    —— 段模板(`kind: section`)与独立任务模板(`kind: task`)同处一包；改 prompt 文案改 YAML，改规则的挂载点改代码
 infra/             基础设施：db(engine/DSN + transaction 事务边界 + models + repos + vector_store + lexical_query) / llm(tracing 为 Langfuse 开关/flush/trace id 校验唯一入口；langfuse_purge 为保留期删除的 SQL 后端；token_count 为统一 token 计数入口——tiktoken 近似，encoder 缺失时降级 `len(text)//2` 并记一次 warning；**provider/ 为 provider 兼容层，见下**) / search(tokenizer 为唯一 jieba 分词入口) / auth / redis_client
 middleware/        auth / trace_id / response_processor（统一响应包装）
-cli/               DeepEval 评测、检索对比、trace 回放/清理、症状指标、种子与防腐闸门（check_docs / check_adr）等命令行工具
+cli/               DeepEval 评测、v6 出题、检索对比、trace 回放/清理、症状指标、种子与防腐闸门（check_docs / check_adr）等命令行工具
 models.py          模型门面（**薄委托** `src/infra/llm/provider/`）：get_llm / get_classify_llm / get_summary_llm / get_judge_llm / get_embeddings / get_rerank
 utils/             sse 事件类型 / errors / desensitize / auth_crypto
 tools/             工具基类（base.py）
 channels/          接入通道：base(通用抽象) / wecom(parse 入站解析 / crypto 加解密 / callback 回调驱动 / long_connection(长连接驱动，封装官方 aibot SDK))
 ```
+
+### CLI 出题模块（v6）
+
+| 模块 | 职责 |
+|------|------|
+| `synth_contexts.py` | v6 出题上下文：分块读取、分组、公司/报告期锚点 |
+| `synth_gates.py` | v6 出题质量门：语言/完整句/自足/去重/多跳 |
+| `synth_writer.py` | v6 样本转换、元数据、原子写 |
+| `testset_synth.py` | v6 出题编排与 CLI |
 
 > **provider 兼容层** —— `src/infra/llm/provider/`：把各家 LLM provider 的差异（思考参数形状 / reasoning 字段名 / 端点 / 密钥 / 定价 / 窗口）**收敛到一层**，调用侧只认三个门面。**不是网关**（不做路由 / fallback / 限流，见 ADR-0020 / ADR-0021）。
 > - `registry.yaml` —— **数据面**（随镜像发布）：每个 provider 的 `base_url` / `api_key_env` / `thinking_style` / `reasoning_field` / `capabilities` / `models`(角色→默认模型名) / `catalog`(模型→`context_window` / `pricing` / `tokens_per_cjk_char` / embedding 批大小与维度)。密钥不入库，只写 env 名。
