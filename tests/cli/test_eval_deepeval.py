@@ -246,6 +246,33 @@ class TestGenerateAnswers:
             {"source": "kweichow.pdf", "score": 0.87, "kind": "kb"},
         ]
 
+    def test_generate_marks_empty_answer_as_failed(self) -> None:
+        """空回答（迭代触顶的已知故障）与异常同样标 failed，走 N/A 路径。"""
+        from src.cli.eval_deepeval import generate_answers_and_contexts
+
+        mock_graph = MagicMock()
+
+        async def mock_ainvoke(state: dict) -> dict:
+            return {"answer": "   "}
+
+        mock_graph.ainvoke = AsyncMock(side_effect=mock_ainvoke)
+
+        (
+            answers,
+            _contexts,
+            _trace_ids,
+            _details,
+            _classes,
+            trajectories,
+        ) = asyncio.run(generate_answers_and_contexts(mock_graph, "kb", "sess", ["Q0"]))
+
+        assert answers[0].strip() == ""
+        assert trajectories[0] == {
+            "tool_calls": [],
+            "iterations": 0,
+            "failed": True,
+        }
+
     def test_generate_partial_failure(self) -> None:
         """部分问题失败时应返回错误标记，不中断整体流程。"""
         from src.cli.eval_deepeval import generate_answers_and_contexts

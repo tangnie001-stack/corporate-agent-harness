@@ -41,6 +41,7 @@ from src.cli.eval_scoring import (
     build_metrics,
     classify_sample,
     fill_missing_behaviour_rows,
+    is_failed_run,
     main_score_means,
     nan_cell_stats,
     read_behaviour_scores,
@@ -279,8 +280,10 @@ async def _collect_one_question(
 
     Returns:
         (回答文本, 渲染后的上下文列表, 结构化检索明细, 样本类别, 轨迹摘要)。
-        异常分支的回答为 `[ERROR]` 占位，轨迹摘要额外带 `failed: True`；
-        `summarize_trajectory` 本身不改，成功分支的轨迹永不含该键。
+        异常分支的回答为 `[ERROR]` 占位，轨迹摘要额外带 `failed: True`。
+        成功分支的轨迹摘要由 `summarize_trajectory` 产出，仅当 `is_failed_run`
+        判定为失败（空回答/纯空白，如迭代触顶）时补 `failed: True`，使该题与
+        异常题走同样的 N/A 路径（不得把失败误记成 0 分）。
     """
     core_logging.log_event(Event.QA_ANSWER_START, index=index, query=query)
     # F-32：镜像 turn_runner，seed 请求上下文，使 retrieve_kb 等工具收集的
@@ -301,6 +304,10 @@ async def _collect_one_question(
         )
         sample_class = classify_sample(req_ctx.tool_contexts)
         trajectory = summarize_trajectory(messages)
+        # 空回答/纯空白（迭代触顶的已知生产故障）与异常同属跑图失败：
+        # 打上 failed 让下游断言豁免、报告记 N/A（failed），而不是 0 分。
+        if is_failed_run(answer, trajectory):
+            trajectory["failed"] = True
         core_logging.log_event(
             Event.QA_ANSWER_DONE,
             index=index,
