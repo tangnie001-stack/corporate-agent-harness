@@ -138,15 +138,25 @@ index, question, ground_truth, trace_id, q_index, error, faithfulness, answer_re
 
 MD 摘要表格同样带 `trace_id` 列。每个问题在评估时会生成独立的 `eval_<hex>` 格式 trace_id，并注入到该问题期间的所有日志行（loguru patcher 读取 `current_trace_id`），同时作为 Langfuse trace id —— 用 CSV 里的 trace_id 即可在日志 / Langfuse 中回溯这个问题的完整链路（分类 → 改写 → 检索 → 精排 → 生成），定位指标异常的根因（前提：`.env` 的 `LANGFUSE_ENABLE=true` 且 Langfuse 后端可达 —— 关闭时该列无对应 trace）。
 
-**按 trace_id 查日志（含裁判调用事件与失败时的请求级证据）**：
+**按 trace_id 查日志（含裁判调用事件与请求级明细）**：
 
 ```bash
 python -m src.cli.trace_logs eval_19128e15c446                    # 该题的全部日志
-python -m src.cli.trace_logs eval_19128e15c446 --grep "judge call" # 只看裁判调用
+python -m src.cli.trace_logs eval_19128e15c446 --grep "judge call" # 只看裁判 measure 汇总
+python -m src.cli.trace_logs eval_19128e15c446 --grep "judge http" # 只看每次裁判 HTTP
 python -m src.cli.trace_logs eval_19128e15c446 --count             # 只看行数
 ```
 
-裁判每次尝试记 `judge call` 事件（`metric` / `q_index` / `trace_id` / `attempt` / `seconds` / `ok` / `note`）；**失败时 `note` 为异常链摘要**（`外层类<-根因类: 根因消息`），**不含** `finish_reason` / 输出 token 数 / 原始输出片段。请求级证据（请求 URL、响应状态码 / 体积 / `finish_reason`）由裁判 client 的 event hooks 收集在 `HookEvidence` 桶中，**仅在失败时落日志**（非 2xx 或响应体不可读各一条 warning），成功调用不产生日志行。
+### 评测 trace
+
+- `run_trace_id`：每次评测一个（`eval_run_<timestamp>_<8hex>`），报告头 `Run trace`。
+- `trace_id`：每题一个，CSV 已有。
+- `judge_measure_id`：一次裁判指标打分一个（`<trace_id>:<metric>:<attempt>`）。
+- `judge_call_id`：一次裁判 HTTP 调用一个（`<judge_measure_id>:<call_index>`）。
+
+`judge call` 是 measure 汇总，`judge http` 是每次 HTTP 明细（成功与失败都记）。
+
+裁判每次尝试记 `judge call` 事件（`metric` / `q_index` / `trace_id` / `run_trace_id` / `judge_measure_id` / `attempt` / `latency_ms` / `ok`，以及本次 measure 的 `request_count` / `response_count` / `statuses` / `tokens_in` / `tokens_out` / `error_count`）；**失败时 `error` 为异常链摘要**（`外层类<-根因类: 根因消息`），成功时为空串，**不含** reason 原文（只记 `reason_len` / `reason_hash`）。每次 HTTP 调用另记 `judge http`（`judge_call_id` / `status` / `finish_reasons` / tokens / `json_ok` / `error`）；`status=null` + `error=no_response` 表示连接失败/超时。
 
 MD 摘要末尾会给出整体平均值，例如：
 

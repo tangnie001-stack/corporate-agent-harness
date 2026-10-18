@@ -226,7 +226,15 @@ async def _answer_one_question(
     Returns:
         (回答文本, 渲染后的上下文列表, 结构化检索明细, 状态中的消息列表)
     """
-    langfuse_context.update_current_trace(input={"query": query}, session_id=session_id)
+    trace_ctx = current_eval_trace.get()
+    metadata = {"component": "sut"}
+    if trace_ctx is not None:
+        metadata["run_trace_id"] = trace_ctx.run_trace_id
+    langfuse_context.update_current_trace(
+        input={"query": query},
+        session_id=session_id,
+        metadata=metadata,
+    )
     # 仅在显式传入 callbacks 时附加 config；否则不传（保持既有路径行为不变）
     invoke_kwargs: dict[str, Any] = {}
     if callbacks:

@@ -93,3 +93,45 @@ def test_row_without_trace_id_does_not_keyerror():
         "faithfulness", _Metric(), object(), {"q_index": 0}, ev
     )
     assert value == pytest.approx(0.9) and err == ""
+
+
+def test_langfuse_trace_metadata_carries_run_and_component(monkeypatch):
+    from src.cli import eval_deepeval
+    from src.infra.llm.trace_context import EvalTraceContext, current_eval_trace
+
+    captured: dict = {}
+
+    def _update(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(eval_deepeval.langfuse_context, "update_current_trace", _update)
+    ctx = EvalTraceContext(
+        run_id="20261019_000000",
+        run_trace_id="eval_run_20261019_000000_abcd1234",
+        judge_model="judge",
+    )
+    token = current_eval_trace.set(ctx)
+    try:
+        import asyncio
+
+        asyncio.run(
+            eval_deepeval._answer_one_question(
+                graph=_FakeGraph(),
+                kb_id="kb",
+                session_id="s",
+                query="q",
+                trace_id="eval_t1",
+            )
+        )
+    finally:
+        current_eval_trace.reset(token)
+
+    assert captured["metadata"] == {
+        "run_trace_id": "eval_run_20261019_000000_abcd1234",
+        "component": "sut",
+    }
+
+
+class _FakeGraph:
+    async def ainvoke(self, state, **kwargs):
+        return {"answer": "a", "tool_contexts": [], "messages": []}
