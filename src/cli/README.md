@@ -102,14 +102,14 @@ python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 5 --de
 
 `--limit N` 只用于逐级活体（1 → 5 → 21），**不要与 `--gate` 同用**——少数题上的门禁没有统计意义；全量口径仍是不加 `--limit`。
 
-`--deepeval-only`（别名 `--behaviour-only`）跳过四指标：**不产出主分、不写 CSV、不写 `eval_report`、不回写 Langfuse、不执行门禁**，报告只含 Agent 行为轴。它用于 DeepEval 功能的快速迭代验收，**不要用于 A/B 对比或发布判定**。与 `--gate` 互斥。
+`--deepeval-only`（别名 `--behaviour-only`）跳过四指标：**不产出主分、不写 CSV、不写 `eval_report`、不回写 Langfuse、不执行门禁**，报告只含 Agent 行为轴；「工具选择」段显式写「未跑（--deepeval-only）」，不静默缺失。它用于 DeepEval 功能的快速迭代验收，**不要用于 A/B 对比或发布判定**。与 `--gate` 互斥。
 
 ### 内部流程
 
-1. 加载测试集 JSON（取出 `questions` 与 `ground_truth`）
+1. 加载测试集 JSON（取出 `questions`、`ground_truth` 与 `expected_tools`）
 2. 构建生产同款 LangGraph（检索 → rerank → 生成）
 3. 逐题让 RAG 系统生成回答 `answer` 与检索上下文 `contexts`
-4. 用 DeepEval 原生四指标打分（`AnswerRelevancyMetric` / `FaithfulnessMetric` / `ContextualPrecisionMetric` / `ContextualRecallMetric`）；诊断指标（`contextual_relevancy` / `non_advice`）另行记录，不进主分与门禁
+4. 用 DeepEval 原生四指标打分（`AnswerRelevancyMetric` / `FaithfulnessMetric` / `ContextualPrecisionMetric` / `ContextualRecallMetric`）；诊断指标（`contextual_relevancy` / `non_advice` / `tool_correctness`）另行记录，不进主分与门禁
 
 > **上下文含实体锚点**：评估收集的 `contexts` 与生产 prompt 共用 `RAGContext.to_prompt_text()` 渲染格式（`src/rag/context.py`）。当分块 metadata 带实体（`company`/`report_period`/`sec_code` 等，标签为 `公司`/`期间`/`代码`）时，上下文会多出一行 `实体标签: 值` 锚点，再跟 `内容:` 正文；无实体时保持 `来源 → 内容` 原格式。这保证评测裁判看到的上下文与线上生成模型完全一致（实体锚点用于增强忠实度）。评估脚本入口见 `src/cli/eval_deepeval.py:157`。
 
@@ -131,6 +131,10 @@ CSV 每行结构（`question`、`ground_truth` 为原测试集内容，`trace_id
 ```
 index, question, ground_truth, trace_id, q_index, error, faithfulness, answer_relevancy, context_precision, context_recall, contextual_relevancy, non_advice, tool_correctness, ...
 ```
+
+- `contextual_relevancy` / `non_advice` / `tool_correctness` 都是**诊断列**，`--deepeval-only` 不产出。
+- `tool_correctness` 在**有 `expected_tools` 且非失败**时为 `0.0`–`1.0`；**无标签或跑图失败/空回答**时为空。
+- 逐题原因**只进 `detail_json` 与 Markdown 报告**：CSV **不新增** `tool_correctness_reason` 列。
 
 MD 摘要表格同样带 `trace_id` 列。每个问题在评估时会生成独立的 `eval_<hex>` 格式 trace_id，并注入到该问题期间的所有日志行（loguru patcher 读取 `current_trace_id`），同时作为 Langfuse trace id —— 用 CSV 里的 trace_id 即可在日志 / Langfuse 中回溯这个问题的完整链路（分类 → 改写 → 检索 → 精排 → 生成），定位指标异常的根因（前提：`.env` 的 `LANGFUSE_ENABLE=true` 且 Langfuse 后端可达 —— 关闭时该列无对应 trace）。
 
@@ -160,6 +164,22 @@ MD 摘要末尾会给出整体平均值，例如：
 | `answer_relevancy` 相关性 | ≥ 0.85 | 回答与问题的相关程度 | 答非所问、回答跑题 |
 | `context_recall` 召回率 | ≥ 0.70 | 检索上下文覆盖参考答案所需信息的比例 | 检索环节漏掉了关键内容 |
 | `context_precision` 精确率 | ≥ 0.80 | 检索上下文中真正有用的信息占比 | 检索混入大量无关噪音 |
+
+### 诊断指标（不进主分与门禁）
+
+| 指标 | 含义 | 口径 |
+|---|---|---|
+| `contextual_relevancy` | 检索上下文与问题的相关程度 | 只判前 8 条 context（并集顺序，非最相关 8 条） |
+| `non_advice` | 回答是否给出越界建议（`financial` 类型） | 不做金融建议；跑图失败/空样本不评分 |
+| `tool_correctness` | 工具选择是否正确 | 命中的期望工具数 / **去重后**的期望数（0.0–1.0）；只比较工具名与类型（类型固定 `FUNCTION`），不比较参数、顺序、调用次数 |
+
+`tool_correctness` 的三态：
+
+- **有标签**：按 `expected_tools` 逐题评分；`[]` 表示「期望不调用任何工具」——无调用记 `1.0`，有调用记 `0.0`。
+- **无标签**（字段缺失或 `null`，如 v5 题集）：N/A（`null` / CSV 空）。
+- **失败**（跑图异常、`[ERROR]` 回答、空回答或纯空白）：N/A（`null` / CSV 空），不记 `0.0`。
+
+`sample_class=empty` 只掩码四指标与 `contextual_relevancy` / `non_advice`，`tool_correctness` **照常评分**。
 
 ### 解读方法
 
@@ -208,7 +228,7 @@ python -m src.cli.compare_retrieval --kb-name <知识库名称>
 | `--model` | 出题已下线（保留参数，当前无效果） |
 | `--testset-version` | 指定测试集版本号（默认取最新） |
 | `--gate` | 评估后检查质量门禁，不达标退出码 1 |
-| `--deepeval-only`（`--behaviour-only`） | 只跑 Agent 行为轴，跳过四指标（无主分/门禁、不写 CSV 与 `eval_report`；与 `--gate` 互斥） |
+| `--deepeval-only`（`--behaviour-only`） | 只跑 Agent 行为轴，跳过四指标（无主分/门禁、不写 CSV 与 `eval_report`；工具选择：未跑；与 `--gate` 互斥） |
 | `--run-type` | `manual`（默认）/ `baseline`；`baseline` 不判门禁（与 `--gate` 互斥） |
 | `--limit` | 只跑前 N 题（冒烟用；勿与 `--gate` 同用） |
 | `--output` | CSV 报告输出路径（默认 `data/deepeval/reports/deepeval_eval_<timestamp>.csv`） |
