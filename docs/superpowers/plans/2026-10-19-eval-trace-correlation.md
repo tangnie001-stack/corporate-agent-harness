@@ -184,12 +184,15 @@ def begin_eval_run(kb_id: str) -> tuple[str, str]:
     """
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     run_trace_id = f"eval_run_{run_id}_{uuid.uuid4().hex[:8]}"
-    core_logging.log_event(
-        Event.EVALUATION_RUN,
-        kb_id=kb_id,
-        run_id=run_id,
-        run_trace_id=run_trace_id,
-    )
+    try:
+        core_logging.log_event(
+            Event.EVALUATION_RUN,
+            kb_id=kb_id,
+            run_id=run_id,
+            run_trace_id=run_trace_id,
+        )
+    except Exception as exc:  # noqa: BLE001  # 观测旁路，失败不阻断评测
+        logger.warning("[cli] evaluation run trace log failed err={}", exc)
     return run_id, run_trace_id
 ```
 
@@ -244,6 +247,8 @@ def begin_eval_run(kb_id: str) -> tuple[str, str]:
 imports 增加：
 
 ```python
+from loguru import logger
+
 from src.infra.llm.trace_context import EvalTraceContext, current_eval_trace, current_trace_id
 ```
 
