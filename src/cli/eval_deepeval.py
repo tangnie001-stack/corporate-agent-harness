@@ -18,6 +18,7 @@
 
 import argparse
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -25,6 +26,7 @@ import random
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -582,6 +584,40 @@ def _exc_chain_summary(exc: BaseException, limit: int = 140) -> str:
     return f"{chain}: {msg}" if msg else chain
 
 
+@contextmanager
+def _trace_scope(trace_id: str | None):
+    """在评分期间把 current_trace_id 设为当前题；缺失时 no-op。"""
+    token = None
+    if trace_id:
+        try:
+            token = current_trace_id.set(trace_id)
+        except Exception as exc:  # noqa: BLE001  # 观测旁路
+            logger.warning("[cli] trace set failed err={}", exc)
+    try:
+        yield
+    finally:
+        if token is not None:
+            current_trace_id.reset(token)
+
+
+def _metric_reason(metric) -> str | None:
+    """只在 measure 成功后读取 reason；无属性或非字符串返回 None。"""
+    if not hasattr(metric, "reason"):
+        return None
+    try:
+        reason = metric.reason
+    except Exception:  # noqa: BLE001  # 观测旁路，reason 读取失败不影响评分
+        return None
+    if isinstance(reason, str) and reason:
+        return reason
+    return None
+
+
+def _reason_hash(reason: str) -> str:
+    """reason 的短哈希（只留指纹，不落原文）。"""
+    return hashlib.sha256(reason.encode("utf-8")).hexdigest()[:16]
+
+
 def _retry_delay(attempt: int, evidence, event_start: int = 0) -> float:
     """计算第 attempt 次失败后的等待秒数。
 
@@ -642,7 +678,8 @@ def _score_metric_with_retry(
         metric: 指标实例（需实现 `measure(test_case)`）
         test_case: 待评用例
         row: 当前行（取 q_index / trace_id 记日志）
-        evidence: 可选证据桶（退避时读取 429 的 `Retry-After`）
+        evidence: 可选证据桶（每次 attempt 起止 measure 汇总；退避时读取
+            429 的 `Retry-After`）；None 表示无观测，JUDGE_CALL 的请求汇总全空
         max_attempts: 显式重试次数；None 时取 `settings.EVAL_METRIC_MAX_ATTEMPTS`
 
     Returns:
@@ -653,42 +690,87 @@ def _score_metric_with_retry(
         attempts = max(1, settings.EVAL_METRIC_MAX_ATTEMPTS)
     else:
         attempts = max(1, max_attempts)
+    trace_ctx = current_eval_trace.get()
+    run_trace_id = trace_ctx.run_trace_id if trace_ctx is not None else None
+    judge_model = trace_ctx.judge_model if trace_ctx is not None else None
+
     last_note = ""
     for attempt in range(1, attempts + 1):
-        if evidence is None:
-            event_start = 0
-        else:
-            event_start = len(evidence.events)
-        started = time.monotonic()
-        try:
-            value = metric.measure(test_case)
-            note = ""
-        except Exception as exc:  # noqa: BLE001  # 异常仅作留证，判据是 NaN
-            value, note = float("nan"), _exc_chain_summary(exc)
-        seconds = round(time.monotonic() - started, 1)
+        trace_id = row.get("trace_id")
+        measure_id = f"{trace_id or 'no_trace'}:{metric_name}:{attempt}"
+        event_start = 0 if evidence is None else len(evidence.events)
+        if evidence is not None:
+            try:
+                evidence.begin_measure(
+                    measure_id=measure_id,
+                    metric=metric_name,
+                    attempt=attempt,
+                    trace_id=trace_id,
+                    q_index=row.get("q_index"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[cli] begin measure failed err={}", exc)
 
+        started = time.monotonic()
+        value: float = float("nan")
+        note = ""
+        reason: str | None = None
+        measure: dict | None = None
+        try:
+            try:
+                value = metric.measure(test_case)
+                note = ""
+            except Exception as exc:  # noqa: BLE001  # 异常仅作留证，判据是 NaN
+                value, note = float("nan"), _exc_chain_summary(exc)
+
+            is_nan = value is None or (isinstance(value, float) and math.isnan(value))
+            if not is_nan and not note:
+                reason = _metric_reason(metric)
+        finally:
+            if evidence is not None:
+                try:
+                    measure = evidence.end_measure(reason=reason, error=note)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[cli] end measure failed err={}", exc)
+
+        latency_ms = int((time.monotonic() - started) * 1000)
         is_nan = value is None or (isinstance(value, float) and math.isnan(value))
-        core_logging.log_event(
-            Event.JUDGE_CALL,
-            metric=metric_name,
-            q_index=row.get("q_index"),
-            trace_id=row.get("trace_id"),
-            attempt=attempt,
-            seconds=seconds,
-            ok=not is_nan,
-            note=note,
-        )
+        try:
+            core_logging.log_event(
+                Event.JUDGE_CALL,
+                metric=metric_name,
+                q_index=row.get("q_index"),
+                trace_id=trace_id,
+                run_trace_id=run_trace_id,
+                judge_measure_id=measure_id,
+                component="judge",
+                attempt=attempt,
+                model=judge_model,
+                latency_ms=latency_ms,
+                ok=not is_nan,
+                request_count=(measure or {}).get("request_count", 0),
+                response_count=(measure or {}).get("response_count", 0),
+                statuses=(measure or {}).get("statuses", []),
+                tokens_in=(measure or {}).get("tokens_in"),
+                tokens_out=(measure or {}).get("tokens_out"),
+                error_count=(measure or {}).get("error_count", 0),
+                error=note,
+                reason_len=len(reason) if reason else None,
+                reason_hash=_reason_hash(reason) if reason else None,
+            )
+        except Exception as exc:  # noqa: BLE001  # 观测旁路，失败不影响评分
+            logger.warning("[cli] judge call log failed err={}", exc)
+
         if value is not None and not is_nan:
             return float(value), ""
         last_note = note or "nan"
-
         if attempt >= attempts:
             break
         core_logging.log_event(
             Event.METRIC_RETRY,
             metric=metric_name,
             q_index=row.get("q_index"),
-            trace_id=row.get("trace_id"),
+            trace_id=trace_id,
             reason=last_note,
         )
         time.sleep(_retry_delay(attempt, evidence, event_start))
@@ -777,6 +859,10 @@ def score_rows(
     Returns:
         与输入同序的行副本，追加四指标、诊断值、`tool_correctness`、
         `tool_correctness_reason` 与 `error`
+
+    每题评分体（含 `tool_correctness` 与 empty/failed 短路）都在
+    `_trace_scope(row.get("trace_id"))` 内，使裁判 HTTP 钩子产出的事件与日志
+    带本题 trace；缺失 `trace_id` 的 row 不报错、只是不设题级 trace。
     """
     from src.config.const import EVAL_RELEVANCY_MAX_CONTEXTS
 
@@ -785,75 +871,76 @@ def score_rows(
         if evidence is not None:
             evidence.reset()
             evidence.mark(row.get("trace_id"))
-        scored: dict = {"q_index": row["q_index"], "error": ""}
-        errors: list[str] = []
+        with _trace_scope(row.get("trace_id")):
+            scored: dict = {"q_index": row["q_index"], "error": ""}
+            errors: list[str] = []
 
-        tool_metric = None
-        if diagnostic_metrics is not None:
-            tool_metric = diagnostic_metrics.get("tool_correctness")
-        tool_value, tool_reason = _score_tool_correctness(row, tool_metric)
-        scored["tool_correctness"] = tool_value
-        scored["tool_correctness_reason"] = tool_reason
-
-        if row.get("sample_class") == SAMPLE_CLASS_EMPTY or is_failed_run(
-            row.get("answer"), row.get("trajectory")
-        ):
-            for name in metrics:
-                scored[name] = float("nan")
+            tool_metric = None
             if diagnostic_metrics is not None:
-                for name in diagnostic_metrics:
-                    if name == "tool_correctness":
-                        continue
+                tool_metric = diagnostic_metrics.get("tool_correctness")
+            tool_value, tool_reason = _score_tool_correctness(row, tool_metric)
+            scored["tool_correctness"] = tool_value
+            scored["tool_correctness_reason"] = tool_reason
+
+            if row.get("sample_class") == SAMPLE_CLASS_EMPTY or is_failed_run(
+                row.get("answer"), row.get("trajectory")
+            ):
+                for name in metrics:
                     scored[name] = float("nan")
-            if row.get("sample_class") == SAMPLE_CLASS_EMPTY:
-                scored["error"] = "sample_class=empty"
-            else:
-                scored["error"] = "failed"
+                if diagnostic_metrics is not None:
+                    for name in diagnostic_metrics:
+                        if name == "tool_correctness":
+                            continue
+                        scored[name] = float("nan")
+                if row.get("sample_class") == SAMPLE_CLASS_EMPTY:
+                    scored["error"] = "sample_class=empty"
+                else:
+                    scored["error"] = "failed"
+                out.append(scored)
+                continue
+
+            test_case = _bridge_test_case(row)
+            for name, metric in metrics.items():
+                value, err = _score_metric_with_retry(
+                    name, metric, test_case, row, evidence
+                )
+                scored[name] = value
+                if err:
+                    errors.append(err)
+
+            if diagnostic_metrics is not None:
+                relevancy = diagnostic_metrics.get("contextual_relevancy")
+                if relevancy is not None:
+                    relevancy_case = _bridge_test_case(
+                        row, max_contexts=EVAL_RELEVANCY_MAX_CONTEXTS
+                    )
+                    value, err = _score_metric_with_retry(
+                        "contextual_relevancy",
+                        relevancy,
+                        relevancy_case,
+                        row,
+                        evidence,
+                        max_attempts=1,
+                    )
+                    scored["contextual_relevancy"] = value
+                    if err:
+                        errors.append(err)
+                non_advice = diagnostic_metrics.get("non_advice")
+                if non_advice is not None:
+                    value, err = _score_metric_with_retry(
+                        "non_advice",
+                        non_advice,
+                        test_case,
+                        row,
+                        evidence,
+                        max_attempts=1,
+                    )
+                    scored["non_advice"] = value
+                    if err:
+                        errors.append(err)
+
+            scored["error"] = ";".join(errors)
             out.append(scored)
-            continue
-
-        test_case = _bridge_test_case(row)
-        for name, metric in metrics.items():
-            value, err = _score_metric_with_retry(
-                name, metric, test_case, row, evidence
-            )
-            scored[name] = value
-            if err:
-                errors.append(err)
-
-        if diagnostic_metrics is not None:
-            relevancy = diagnostic_metrics.get("contextual_relevancy")
-            if relevancy is not None:
-                relevancy_case = _bridge_test_case(
-                    row, max_contexts=EVAL_RELEVANCY_MAX_CONTEXTS
-                )
-                value, err = _score_metric_with_retry(
-                    "contextual_relevancy",
-                    relevancy,
-                    relevancy_case,
-                    row,
-                    evidence,
-                    max_attempts=1,
-                )
-                scored["contextual_relevancy"] = value
-                if err:
-                    errors.append(err)
-            non_advice = diagnostic_metrics.get("non_advice")
-            if non_advice is not None:
-                value, err = _score_metric_with_retry(
-                    "non_advice",
-                    non_advice,
-                    test_case,
-                    row,
-                    evidence,
-                    max_attempts=1,
-                )
-                scored["non_advice"] = value
-                if err:
-                    errors.append(err)
-
-        scored["error"] = ";".join(errors)
-        out.append(scored)
     return out
 
 

@@ -49,10 +49,19 @@ def _seq_with_429(ev, retry_after: str) -> _Seq:
             return
         ev.append(
             {
+                "phase": "request",
+                "call_index": 1,
+                "judge_call_id": "t0:faithfulness:1:1",
+            }
+        )
+        ev.append(
+            {
                 "phase": "response",
                 "status": 429,
                 "json_ok": True,
                 "finish_reason": [],
+                "finish_reasons": [],
+                "call_index": 1,
                 "retry_after": retry_after,
             }
         )
