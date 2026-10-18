@@ -340,31 +340,82 @@ def read_behaviour_scores(results_folder: str) -> list[dict]:
     return rows
 
 
+def is_failed_run(answer: object, trajectory: dict | None) -> bool:
+    """判断一题是否属于跑图失败（而非“未检索到材料”）。
+
+    三种失败形态必须统一：异常分支的 failed 标记、[ERROR] 占位回答、
+    空回答/纯空白（迭代触顶的已知生产故障）。
+
+    Args:
+        answer: 被测系统的回答
+        trajectory: 轨迹摘要（可能带 failed 键）
+
+    Returns:
+        True 表示失败，应记 N/A；False 表示跑图成功
+    """
+    if (trajectory or {}).get("failed") is True:
+        return True
+    text = "" if answer is None else str(answer)
+    if text.startswith("[ERROR]"):
+        return True
+    return not text.strip()
+
+
+def fill_missing_behaviour_rows(
+    rows: list[dict], questions: list[str], trajectories: list[dict]
+) -> list[dict]:
+    """按 q_index 补齐行为分行；只允许 `failed=True` 的题缺行。
+
+    补齐后用空 metrics/reasons 表示“该题行为分 N/A”，使后续断言、
+    Langfuse 回写与报告都能按 q_index 稳定对齐。
+    """
+    by_index = {r.get("q_index"): r for r in rows}
+    out: list[dict] = []
+    for i, question in enumerate(questions):
+        row = by_index.get(i)
+        if row is None:
+            failed = i < len(trajectories) and bool(
+                (trajectories[i] or {}).get("failed")
+            )
+            if not failed:
+                raise RuntimeError(f"第 {i} 题缺少行为分行（行为分不可信）")
+            row = {"q_index": i, "input": question, "metrics": {}, "reasons": {}}
+        out.append(row)
+    return out
+
+
 def assert_behaviour_scores_complete(
     questions: list[str], rows: list[dict], trajectories: list[dict]
 ) -> None:
     """行为轴 fail-loud：题数对齐 + 每题至少一个非 None 分 + 轨迹非空。
 
-    为什么必须 fail-loud：`AgentLoopDetection` 在**无 trace 时源码直接置 0.0**
-    （静默假分数）；若 JSON 缺失或循环提前结束，回读会得到空表 ⇒ 必须炸掉而不是
-    把"没测到"当成"行为良好"。
+    `trajectory.failed=True` 的题豁免：失败由评测层转成 N/A，不能让整轮 abort。
+    调用前应先用 `fill_missing_behaviour_rows` 补齐 failed 题的空行。
     """
-    if len(rows) != len(questions):
-        raise RuntimeError(
-            f"行为分题数不齐：questions={len(questions)} rows={len(rows)}（JSON 缺失或循环未耗尽）"
-        )
     if len(trajectories) != len(questions):
-        # 缺这条守卫时，trajectories 偏短会让下面的循环体一次都不跑 ⇒ 静默通过，
-        # 正是本函数要防的"没测到当成没异常"（评审 Important）
         raise RuntimeError(
             f"轨迹数与题数不齐：questions={len(questions)} trajectories={len(trajectories)}"
         )
-    for r in rows:
-        if not any(v is not None for v in (r.get("metrics") or {}).values()):
-            raise RuntimeError(
-                f"第 {r.get('q_index')} 题没有任何行为分（行为分不可信）"
-            )
+    if len(rows) != len(questions):
+        raise RuntimeError(
+            f"行为分题数不齐：questions={len(questions)} rows={len(rows)}"
+            "（JSON 缺失或循环未耗尽）"
+        )
+    failed_indexes = {
+        i for i, t in enumerate(trajectories) if bool((t or {}).get("failed"))
+    }
+    row_by_index = {r.get("q_index"): r for r in rows}
+    for i in range(len(questions)):
+        if i in failed_indexes:
+            continue
+        row = row_by_index.get(i)
+        if row is None:
+            raise RuntimeError(f"第 {i} 题缺少行为分行（行为分不可信）")
+        if not any(v is not None for v in (row.get("metrics") or {}).values()):
+            raise RuntimeError(f"第 {i} 题没有任何行为分（行为分不可信）")
     for i, t in enumerate(trajectories):
+        if i in failed_indexes:
+            continue
         if not (t or {}).get("tool_calls") and not (t or {}).get("iterations"):
             raise RuntimeError(
                 f"第 {i} 题轨迹为空（行为指标无 trace 时源码直接置 0.0）"

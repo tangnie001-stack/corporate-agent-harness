@@ -42,3 +42,44 @@ def test_trajectory_count_mismatch_fails_loud():
     """轨迹数偏短 ⇒ 循环体一次都不跑，会静默通过 —— 必须显式拦（评审 Important）。"""
     with pytest.raises(RuntimeError, match="轨迹"):
         assert_behaviour_scores_complete(["Q0", "Q1"], _rows(2), _traj(1))
+
+
+def test_failed_trajectory_is_exempt():
+    rows = [{"q_index": 0, "input": "Q0", "metrics": {}}]
+    assert_behaviour_scores_complete(
+        ["Q0"],
+        rows,
+        [{"tool_calls": [], "iterations": 0, "failed": True}],
+    )
+
+
+def test_failed_trajectory_with_other_row_still_checks_the_rest():
+    rows = [
+        {"q_index": 0, "input": "Q0", "metrics": {}},
+        {"q_index": 1, "input": "Q1", "metrics": {"Task Completion": 1.0}},
+    ]
+    trajectories = [
+        {"tool_calls": [], "iterations": 0, "failed": True},
+        {"tool_calls": ["lookup"], "iterations": 2},
+    ]
+    assert_behaviour_scores_complete(["Q0", "Q1"], rows, trajectories)
+
+
+def test_fill_missing_failed_row():
+    from src.cli.eval_scoring import fill_missing_behaviour_rows
+
+    rows = fill_missing_behaviour_rows(
+        [],
+        ["Q0"],
+        [{"tool_calls": [], "iterations": 0, "failed": True}],
+    )
+    assert rows == [{"q_index": 0, "input": "Q0", "metrics": {}, "reasons": {}}]
+
+
+def test_non_failed_empty_trajectory_still_fails_loud():
+    with pytest.raises(RuntimeError, match="轨迹"):
+        assert_behaviour_scores_complete(
+            ["Q0"],
+            [{"q_index": 0, "input": "Q0", "metrics": {"Task Completion": 1.0}}],
+            [{"tool_calls": [], "iterations": 0}],
+        )

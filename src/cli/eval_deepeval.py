@@ -40,6 +40,7 @@ from src.cli.eval_scoring import (
     build_diagnostic_metrics,
     build_metrics,
     classify_sample,
+    fill_missing_behaviour_rows,
     main_score_means,
     nan_cell_stats,
     read_behaviour_scores,
@@ -277,7 +278,9 @@ async def _collect_one_question(
         index: 该问题在整批中的 1-based 序号（仅用于日志）
 
     Returns:
-        (回答文本, 渲染后的上下文列表, 结构化检索明细, 样本类别, 轨迹摘要)
+        (回答文本, 渲染后的上下文列表, 结构化检索明细, 样本类别, 轨迹摘要)。
+        异常分支的回答为 `[ERROR]` 占位，轨迹摘要额外带 `failed: True`；
+        `summarize_trajectory` 本身不改，成功分支的轨迹永不含该键。
     """
     core_logging.log_event(Event.QA_ANSWER_START, index=index, query=query)
     # F-32：镜像 turn_runner，seed 请求上下文，使 retrieve_kb 等工具收集的
@@ -320,7 +323,7 @@ async def _collect_one_question(
             [],
             [],
             SAMPLE_CLASS_EMPTY,
-            {"tool_calls": [], "iterations": 0},
+            {"tool_calls": [], "iterations": 0, "failed": True},
         )
     finally:
         current_request_ctx.reset(ctx_token)
@@ -986,7 +989,9 @@ def _build_diagnostic_section(df: pd.DataFrame) -> list[str]:
     return lines
 
 
-def _build_behaviour_section(behaviour_rows: list[dict]) -> list[str]:
+def _build_behaviour_section(
+    behaviour_rows: list[dict], trajectories: list[dict] | None = None
+) -> list[str]:
     """渲染「Agent 行为轴」段：逐题 input + 各行为指标分。
 
     行为轴仅作诊断观测、**不进主分/门禁**；指标列按首次出现顺序收集
@@ -994,10 +999,12 @@ def _build_behaviour_section(behaviour_rows: list[dict]) -> list[str]:
     返回空列表（不写段）。
 
     指标缺分时以 test_run JSON 的 `reason` 摘要标注（design R9：行为轴不走 hooks
-    逐题归因，失败证据由 JSON 承载）。
+    逐题归因，失败证据由 JSON 承载）。跑图失败（`trajectory.failed=True`）的题
+    整行记 `N/A（failed）`——失败不是「零分」，不能被误读成行为差。
 
     Args:
         behaviour_rows: 逐题行为分（见 eval_scoring.read_behaviour_scores 返回形状）
+        trajectories: 逐题轨迹摘要（与 behaviour_rows 同序），用于识别 failed 题
 
     Returns:
         Markdown 行列表（含段标题与表格）
@@ -1018,6 +1025,15 @@ def _build_behaviour_section(behaviour_rows: list[dict]) -> list[str]:
     lines.append("|" + "|".join("---" for _ in header) + "|")
     for i, row in enumerate(behaviour_rows):
         vals = [str(row.get("input") or f"Q{i + 1}")]
+        failed = bool(
+            trajectories
+            and i < len(trajectories)
+            and (trajectories[i] or {}).get("failed")
+        )
+        if failed:
+            vals.extend(["N/A（failed）"] * len(metric_names))
+            lines.append("| " + " | ".join(vals) + " |")
+            continue
         reasons = row.get("reasons") or {}
         for name in metric_names:
             value = (row.get("metrics") or {}).get(name)
@@ -1136,7 +1152,7 @@ def save_markdown_report(
         lines.append("")
 
     if behaviour_rows is not None:
-        lines.extend(_build_behaviour_section(behaviour_rows))
+        lines.extend(_build_behaviour_section(behaviour_rows, trajectories))
         lines.append("")
 
     os.makedirs(os.path.dirname(md_path) or ".", exist_ok=True)
@@ -1409,7 +1425,9 @@ def main() -> None:
         # 行为分事后回读 + fail-loud（题数/分数对齐、轨迹非空、hooks 确实触发）。
         # hooks 断言必须在 run_evaluation 之前：score_rows 会逐题 reset 证据桶，
         # 晚查会因 events 被清空而误判「未触发」。
-        behaviour_rows = read_behaviour_scores(behaviour_out)
+        behaviour_rows = fill_missing_behaviour_rows(
+            read_behaviour_scores(behaviour_out), questions, trajectories
+        )
         assert_behaviour_scores_complete(questions, behaviour_rows, trajectories)
         if not any(e.get("phase") == "response" for e in judge_evidence.events):
             raise RuntimeError(

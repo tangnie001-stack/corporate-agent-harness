@@ -295,11 +295,15 @@ class TestGenerateAnswers:
         assert len(sample_classes) == 3
         assert "[ERROR]" in answers[1]
         assert contexts[1] == []
-        # 失败的问题也要有 trace_id，便于回溯；检索明细与轨迹摘要异常分支为空
+        # 失败的问题也要有 trace_id，便于回溯；检索明细为空，轨迹摘要带 failed 标记
         assert trace_ids[1].startswith("eval_")
         assert retrieval_details[0] == [{"source": "s.pdf", "score": 0.5, "kind": "kb"}]
         assert retrieval_details[1] == []
-        assert trajectories[1] == {"tool_calls": [], "iterations": 0}
+        assert trajectories[1] == {
+            "tool_calls": [],
+            "iterations": 0,
+            "failed": True,
+        }
 
     def test_generate_collects_trajectory_from_messages(self) -> None:
         """图 state 含工具调用消息时，轨迹应含工具名/入参/迭代数。
