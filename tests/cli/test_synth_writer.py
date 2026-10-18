@@ -8,7 +8,12 @@ import pytest
 from deepeval.dataset import Golden
 
 from src.cli.synth_contexts import ContextGroup
-from src.cli.synth_writer import build_metadata, golden_to_sample, write_testset
+from src.cli.synth_writer import (
+    build_metadata,
+    golden_to_sample,
+    public_sample,
+    write_testset,
+)
 from src.infra.db.vector_store.types import ChunkResult
 
 
@@ -70,6 +75,34 @@ def test_retrieval_context_none_does_not_break_conversion():
     assert golden.retrieval_context is None
     sample = golden_to_sample(golden, _group())
     assert sample["reference_contexts"]
+
+
+def test_public_sample_keeps_only_contract_keys():
+    golden = Golden(  # type: ignore[reportCallIssue]
+        input="东软集团2025年第一季度营业收入是多少？",
+        expected_output="东软集团2025年第一季度营业收入为18.5亿元。",
+        context=["正文"],
+        additional_metadata={
+            "evolutions": ["Multi-context"],
+            "synthetic_input_quality": 0.9,
+        },
+    )
+    sample = golden_to_sample(golden, _group())
+    public = public_sample(sample)
+    assert set(public) == {
+        "user_input",
+        "reference",
+        "reference_contexts",
+        "expected_tools",
+        "hop_type",
+        "hop_basis",
+        "evolutions",
+        "source_file",
+        "numeric_risk",
+        "synth_quality",
+    }
+    for key in ("_company", "_entities", "_original_user_input"):
+        assert key not in public
 
 
 def test_write_is_atomic_and_creates_parent(tmp_path):

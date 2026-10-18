@@ -42,12 +42,16 @@ def golden_to_sample(golden: Any, group: ContextGroup) -> dict:
     metadata = golden.additional_metadata or {}
     evolutions = list(metadata.get("evolutions") or [])
     reference = golden.expected_output or ""
+    if "Multi-context" in evolutions:
+        hop_type = "multi_hop"
+    else:
+        hop_type = "single_hop"
     return {
         "user_input": golden.input,
         "reference": reference,
         "reference_contexts": contexts,
         "expected_tools": list(EVAL_SYNTH_EXPECTED_TOOLS),
-        "hop_type": "multi_hop" if "Multi-context" in evolutions else "single_hop",
+        "hop_type": hop_type,
         "hop_basis": "evolution",
         "evolutions": evolutions,
         "source_file": group.source,
