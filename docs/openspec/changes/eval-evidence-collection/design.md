@@ -72,7 +72,9 @@ class EvidenceRun:
 ```
 
 - `current_evidence: ContextVar[QuestionEvidence | None]`，默认 `None`。
-- `EvidenceRun.new_question(q_index)` 创建 collector；生成阶段每题 set/reset；评分阶段对同一题再次 set，用于 drain judge。
+- `EvidenceRun.new_question(q_index)` 创建 collector；生成阶段每题 set/reset。
+- **评分阶段显式传参**：`run_evaluation(..., evidence_run=None)` → `score_rows(..., evidence_run=None)`；`score_rows` 每行按 `row["q_index"]` 从 `evidence_run.collectors` 取 collector，`current_evidence.set(collector)`，评分结束把 `HookEvidence.measures` 拷进去。不新增第二个全局 `current_evidence_run`。`evidence_run=None` 或 `collectors[q_index] is None` 时 SHALL 跳过采集，不中断评分。
+- **子代理隔离**：`SkillExecutor._run_fork` 切到子 `current_request_ctx` 时，同时 `current_evidence.set(None)`，`finally` 恢复；子代理的 `retrieve_kb` 不得写进父题证据。
 - 采集器只接受 dict/list/基本类型；`ChunkResult` 由调用方转成 dict 后写入，避免 core 依赖 infra。
 - 归因/探针/写盘放在 `src/cli/eval_evidence_report.py`（CLI 专用，可 import `ChunkResult`/`VectorStore`）。
 - 理由：`rag` 只能 import `core`，不能反向依赖 `cli`；把“采集”和“报告”拆开，避免循环与职责混杂。
@@ -88,9 +90,12 @@ class EvidenceRun:
 5. **rerank 后（dedup 前）**：`chunk_id` / `rank_after` / `score` / `score_kind="rerank"`（降级时 `"fallback"`）
 6. **dedup**：`dropped_chunk_ids` / `kept_chunk_ids`，两者都按 `parent_key` 去重口径
 7. **top-k 截断**：`dropped_chunk_ids` / `kept_chunk_ids` / `rank_before_topk` / `rank_after_topk`
-8. **最终 contexts**：`chunk_id` / `parent_key` / `source` / `page` / `score` / `order_in_prompt`（1-based，全局引用编号）
+8. **每次调用的最终 contexts**：`tool_calls[i].final_contexts`（该次 `retrieve_kb` 的 `chunk_id` / `parent_key` / `source` / `page` / `score` / `order_in_prompt`，1-based 全局引用编号）
+9. **顶层合并 contexts**：`retrieval.final_contexts` 为多次 `retrieve_kb` 合并后的 prompt 顺序视图；与每 call 视图同时存在，分别回答“哪次找到的”和“模型实际看到什么”
 
 每阶段记录 `count` / `total_count` / `truncated` / `failed`；dense/lexical 单路失败必须可见。候选列表上限默认 50 条/阶段。
+
+**web 样本**：`sample_class=web` 没有 KB 检索链；`retrieval.status="not_applicable"`，dense/lexical/RRF/rerank 列表为空，`fact_in_corpus/candidates/reranked/final=null`。不得把 web contexts 当 KB 候选做归因。
 
 **RRF 分数来源**：`rrf_fusion` 当前只返回 `ChunkResult`，分数在局部变量里丢失。给 `ChunkResult` 增加 `rrf_score: float | None = None`，`rrf_fusion` / `rrf_fusion_multi` 回填；`row_to_chunk_result` 默认 None，不影响现有消费者。
 
@@ -142,7 +147,7 @@ class EvidenceRun:
 **testset_conflict**：
 
 - `numeric_conflict`：`true` 当参考答案有数值 token、语料中完全找不到、且题集 `numeric_risk=true`；`false` 当找到；`null` 当没有数值 token 或语料不可用。它是“数值存在性”判断，不是“谁对”的语义判断。
-- `unit_missing`：数值 token 后 4 个字符内没有单位（元/万元/亿元/%/百分点）→ `true`；有单位 → `false`；无数值 token 或语料不可用 → `null`。
+- `unit_missing`：数值 token 后 4 个字符内没有单位（元/万元/亿元/%/百分点）→ `true`；有单位 → `false`；无数值 token 或语料不可用 → `null`。**`unit_missing` 只做信号，不触发 `testset_error`**：表格单位常在表头，参考答案省略单位是正常表述；只有 `numeric_conflict` 进入 `testset_conflict`。
 - `period_conflict`：v1 **恒为 null**；不做期间/季度语义判断（见 Non-Goals）。
 
 ### D6：裁判、评分与行为证据
@@ -178,6 +183,8 @@ class EvidenceRun:
 
 `--evidence` 只写这些题；`--evidence-all` 写全部。
 
+**web 样本**：`--evidence` 仅在 `tool_correctness < 1.0` 或行为分 `< 0.5`/缺失时选；`--evidence-all` 写全部。web 题的主分归因写 `inconclusive`，`retrieval.status="not_applicable"`，`fact_in_* = null`，不得按 KB 链归因。
+
 **`--deepeval-only`**：没有四主分与 `masked_df`，只按行为分 `< 0.5` 或缺失选；不把“主分缺失”当成低分。
 
 **落盘**：
@@ -197,7 +204,7 @@ data/deepeval/evidence/<run_id>/
 | 枚举 | 含义 |
 |---|---|
 | `judge_failure` | 裁判失败/NaN/JSON 解析失败 |
-| `testset_error` | 参考答案的数值在语料中不存在（硬匹配），或单位缺失 |
+| `testset_error` | 参考答案的数值在语料中不存在（硬匹配；`unit_missing` 单独不触发） |
 | `parsing_or_chunking` | 语料里没有该事实：解析/分块/文档缺失 |
 | `retrieval_miss` | chunk 存在，但没进 dense/lexical/RRF 候选 |
 | `rerank_or_topk` | 进了候选，但被 rerank/dedup/top-k 挤掉或排序差 |
@@ -212,14 +219,15 @@ data/deepeval/evidence/<run_id>/
 
 先算事实标记：
 
-- `fact_in_corpus`：探针在语料中找到 gold 事实；
-- `fact_in_candidates`：gold 的 `chunk_id` 或 `parent_key` 与 dense/lexical/RRF 候选有交集；
-- `fact_in_reranked`：与 rerank 后（dedup 前）有交集；
-- `fact_in_final`：与最终 contexts 有交集（`chunk_id` 或 `parent_key`）；
+- `fact_tokens`：参考答案归一化后的数值 token 列表；
+- `fact_hit_tokens`：`{corpus, candidates, reranked, final}` 各阶段命中的 token；
+- `fact_coverage`：`{corpus, candidates, reranked, final}` 各阶段的 `命中数 / fact_tokens 总数`；
+- `missing_fact_tokens`：未在 final 命中的 token；
+- `fact_in_corpus` / `fact_in_candidates` / `fact_in_reranked` / `fact_in_final`：各阶段是否**至少命中一个** token（bool）；具体根因要求 `fact_coverage.<stage> == 1.0`，部分命中写 `inconclusive`；
 - `answer_mentions_fact`：answer 中出现 gold 的数值/文本 token（同一归一化规则）；无 token 时 null；
 - `metric_attempted` / `skipped_reason`：指标是否真的调用过 measure；空样本/跑图失败为 false；
 - `judge_failed`：`metric_attempted=true` 且（score 为 NaN 或 `error` 非空）；`metric_attempted=false` 时恒为 false；
-- `testset_conflict`：`numeric_conflict` / `unit_missing` 任一为 true；`period_conflict` v1 恒 null；
+- `testset_conflict`：仅 `numeric_conflict` 为 true；`unit_missing` 只做信号；`period_conflict` v1 恒 null；
 - `tool_called` / `call_count`：顶层轨迹。
 
 规则（按顺序，首个命中即停）：
@@ -227,6 +235,7 @@ data/deepeval/evidence/<run_id>/
 | 指标 | 规则 |
 |---|---|
 | 任意主分/裁判诊断 | `metric_attempted=false` → `inconclusive`，`evidence` 写 `skipped:<sample_class=empty|failed>`；SHALL NOT 归 `judge_failure` |
+| 事实类指标 | `testset_conflict` → `testset_error`；`fact_coverage.<stage> < 1.0` → `inconclusive`，`evidence` 写 `partial_fact_coverage` + `missing_fact_tokens`；SHALL NOT 用部分覆盖断言具体层 |
 | `faithfulness` | judge_failed → `judge_failure`；`fact_in_final=false` → 事实阶段根因（从 `fact_in_corpus` 起，不用 testset_conflict）；`fact_in_final=true` 且 `answer_mentions_fact=false` → `prompt_or_generation`；否则 `inconclusive` |
 | `answer_relevancy` | judge_failed → `judge_failure`；answer 为空/failed → `prompt_or_generation`；否则 `inconclusive` |
 | `context_precision` | judge_failed → `judge_failure`；gold 不在 candidates → `retrieval_miss`；gold 在 candidates 但不在 final → `rerank_or_topk`；gold 在 final 但分数低 → `rerank_or_topk`（排序/噪声）；否则 `inconclusive` |
@@ -253,10 +262,10 @@ testset_conflict           → testset_error
 
 | 置信度 | 条件 |
 |---|---|
-| `high` | judge_failed 明确；或 gold 来自 testset 且阶段交集明确；或 testset 数值硬冲突 |
-| `medium` | gold 来自探针文本匹配；或事实阶段只能推断到层；或 testset 单位缺失 |
+| `high` | judge_failed 明确；或 gold 来自 testset 且 `match_scope="exact"`、阶段 `fact_coverage=1.0`；或 testset 数值硬冲突 |
+| `medium` | gold 来自探针；或 `match_scope="group"/"partial"`；或事实阶段只能推断到层；或 `unit_missing` 仅作信号 |
 | `low` | 只有间接证据（如 answer 未出现 token 但 reference 是抽象表述） |
-| `inconclusive` | 无规则命中，或关键事实标记为 null |
+| `inconclusive` | 无规则命中，或关键事实标记为 null，或 `fact_coverage < 1.0` |
 
 不把 `low` 自动升级为 `high`；`inconclusive` 是合法结果。
 

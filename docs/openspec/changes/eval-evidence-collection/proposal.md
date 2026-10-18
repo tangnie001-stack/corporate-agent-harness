@@ -69,6 +69,7 @@
   - `src/rag/fusion.py`（RRF 分数回填）；
   - `src/rag/retrieval.py`（dense/lexical/RRF/rerank/dedup/top-k 证据）；
   - `src/agents/tools/rag_tools.py`（工具调用与最终 contexts 证据）；
+  - `src/agents/skills/executor.py`（子代理执行时清空 `current_evidence`，父题不采集子代理检索）；
   - `src/core/eval_evidence.py`（`EvidenceRun` / `QuestionEvidence` / `current_evidence`，不 import rag）；
   - `src/cli/eval_evidence_report.py`（探针 / 归因 / 原子写）；
   - `src/cli/eval_deepeval.py`（CLI 开关、编排、评分后 drain、门禁前写盘）；

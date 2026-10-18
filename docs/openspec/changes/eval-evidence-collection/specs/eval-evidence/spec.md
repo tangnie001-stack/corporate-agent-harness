@@ -41,6 +41,31 @@
 - **WHEN** 用户传 `--gate` 且门禁失败
 - **THEN** 已选中的证据文件 SHALL 已完整落盘；`sys.exit(1)` SHALL NOT 留下半截文件
 
+### Requirement: Evidence collection is scoped to the main agent and one run
+
+证据采集 SHALL 绑定同一轮的 `EvidenceRun`，且 SHALL NOT 把子代理的检索混入父题证据。
+
+- `run_evaluation` / `score_rows` SHALL 通过显式 `evidence_run` 参数消费同一轮 collectors；SHALL NOT 依赖第二个全局 run ContextVar。
+- `score_rows` 每行 SHALL 按 `q_index` 选中对应 collector，并把 `HookEvidence.measures` 拷入该题；不得归到别的题。`evidence_run=None` 或 collector 不存在时 SHALL 跳过采集，不中断评分。
+- 子代理执行（`SkillExecutor._run_fork`）SHALL 临时将 `current_evidence` 置为 null，并在 `finally` 恢复；子代理的 `retrieve_kb` SHALL NOT 写入父题证据。
+- `sample_class=web` 的题 SHALL 记 `retrieval.status="not_applicable"`，`fact_in_corpus/candidates/reranked/final=null`；主分归因 SHALL 为 `inconclusive`，SHALL NOT 按 KB 链归因。
+- `--evidence` 对 web 题 SHALL 只在 `tool_correctness < 1.0` 或行为分 `< 0.5`/缺失时选；`--evidence-all` SHALL 写全部 web 题。
+
+#### Scenario: Subagent retrieval is not captured
+
+- **WHEN** 某题调用 `delegate_task`，子代理内部再调用 `retrieve_kb`
+- **THEN** 父题证据 SHALL 只记录顶层 `delegate_task`；子代理的 `retrieve_kb` / contexts SHALL NOT 出现在父题 `retrieval` 或 `tool_calls` 中
+
+#### Scenario: Scoring attaches judge measures to the right question
+
+- **WHEN** 同一轮连续评分两题
+- **THEN** 第 1 题的 `HookEvidence.measures` SHALL 只进入 `collectors[0]`，第 2 题进入 `collectors[1]`
+
+#### Scenario: Web sample is not KB attribution
+
+- **WHEN** `sample_class=web`
+- **THEN** `retrieval.status` SHALL 为 `not_applicable`，`fact_in_*` SHALL 为 null，主分 `root_cause` SHALL 为 `inconclusive`
+
 ### Requirement: Each evidence file covers the attribution chain
 
 每题证据 SHALL 是一个带 `schema_version` 的 JSON，覆盖从题集到裁判的链路；取不到的值 SHALL 写 `null`，SHALL NOT 省略键或伪造值。
@@ -48,12 +73,13 @@
 - `testset` SHALL 含 `reference`、`reference_contexts`、`source_file`、`expected_tools`、`numeric_risk`，可选 `source_chunk_ids` / `match_scope` / `chunking_version`。
 - `query` SHALL 含 `original` 与 `tool_queries`；可用的 `rewritten` / `sub_queries` / `intent_route` 有则记录，无则 null。
 - `retrieval` SHALL 含 dense / lexical / RRF / rerank before / rerank after / dedup / top-k / final contexts 的快照与各阶段 `count`、`total_count`、`failed`、`truncated`。
+- 多次 `retrieve_kb` 时，`tool_calls[i].final_contexts` SHALL 记录该次调用的 contexts，`retrieval.final_contexts` SHALL 记录合并后的全局 prompt 顺序；两者都带 `order_in_prompt`（1-based）。
 - `tool_calls` SHALL 含工具名、参数、结果数、迭代数、`call_index`；`delegate_task` 只记顶层。
 - `judge` SHALL 含每个指标的 `score`、`error`、`reason`；行为轴 SHALL 含逐题分数与 reason。
 - `trace` SHALL 含 `run_trace_id`、`sut_trace_id`、`judge_measures[]`（`judge_measure_id` / metric / attempt / model / latency_ms / request_count / response_count / statuses / tokens_in / tokens_out / reason / error）、嵌套 `judge_calls[]`（`judge_call_id` / call_index / status / finish_reasons / tokens / latency / json_ok / error）与行为轴 `trace_id`/`link_method`；`judge_calls` SHALL 能通过 `judge_measure_id` 归到对应 measure。
 - `trace` 的 ID 与 measure 记录 SHALL 直接消费 `eval-trace-correlation` 的进程内接口（`HookEvidence.measures` / `EvalTraceContext` / `link_behavior_traces`），SHALL NOT 重解析日志或重新生成；缺失时写 null。
 - 行为轴 judge 的内部调用不在 v1 范围：SHALL NOT 伪造缺失的 `judge_calls`；只记行为分与 `trace_id` 映射。
-- `facts` SHALL 含 `fact_in_corpus`、`fact_in_candidates`、`fact_in_reranked`、`fact_in_final`、`answer_mentions_fact`、`testset_conflict`、`judge_failed`、`metric_attempted`、`skipped_reason`、`tool_called`；无法判定时写 null。
+- `facts` SHALL 含 `fact_in_corpus`、`fact_in_candidates`、`fact_in_reranked`、`fact_in_final`、`fact_tokens`、`fact_hit_tokens`、`fact_coverage`、`missing_fact_tokens`、`answer_mentions_fact`、`testset_conflict`、`judge_failed`、`metric_attempted`、`skipped_reason`、`tool_called`；无法判定时写 null。
 - `attribution` SHALL 按指标输出 `root_cause` / `confidence` / `evidence`。
 
 #### Scenario: Evidence includes retrieval stage snapshots
@@ -125,7 +151,7 @@
 - 全量分块 SHALL 复用 `main()` 空库检查已读取的 chunks；一次评测 run 内 SHALL NOT 二次读库。
 - 命中数 SHALL 有上限（默认 20），截断时记 `truncated=true`。
 - `numeric_conflict` SHALL 为 `true` 当参考答案有数值 token、语料中完全找不到、且题集 `numeric_risk=true`；找到时为 `false`；无数值 token 或语料不可用时为 `null`。
-- `unit_missing` SHALL 检查数值 token 后 4 个字符内是否有单位（元/万元/亿元/%/百分点）；有单位 `false`、无单位 `true`、无数值/语料不可用 `null`。`period_conflict` 在 v1 SHALL 恒为 `null`。
+- `unit_missing` SHALL 检查数值 token 后 4 个字符内是否有单位（元/万元/亿元/%/百分点）；有单位 `false`、无单位 `true`、无数值/语料不可用 `null`。`unit_missing` 只做信号，SHALL NOT 单独触发 `testset_error`；`testset_conflict` SHALL 只由 `numeric_conflict` 触发。`period_conflict` 在 v1 SHALL 恒为 `null`。
 
 #### Scenario: Fact exists in corpus but was not retrieved
 
@@ -176,6 +202,7 @@
 - 归因规则 SHALL 先处理 `metric_attempted=false`（空样本/失败样本）与 `judge_failed`、`testset_conflict`，再按事实阶段（corpus → candidates → rerank → final）定位；无法判定时 SHALL 写 `inconclusive`。
 - `metric_attempted=false` 的主分/裁判诊断指标 SHALL 归为 `inconclusive`，`evidence` 写 `skipped:<sample_class=empty|failed>`；SHALL NOT 归为 `judge_failure`。
 - `judge_failed` SHALL 仅在 `metric_attempted=true` 且（score 为 NaN 或 error 非空）时为 true；`metric_attempted=false` 时 SHALL 为 false。
+- 事实类指标 SHALL 要求对应阶段 `fact_coverage == 1.0` 才给具体根因；`fact_coverage < 1.0` 时 SHALL 写 `inconclusive`，`evidence` 含 `partial_fact_coverage` 与 `missing_fact_tokens`，SHALL NOT 用部分命中断言 `retrieval_miss` / `rerank_or_topk`。
 - `tool_correctness` 的 `reason=="failed"`（跑图失败）SHALL 归为 `inconclusive`，SHALL NOT 归为 `tool_routing`；只有跑图成功且有标签、期望工具缺失才 SHALL 归为 `tool_routing`。
 - `contextual_relevancy` 在 `fact_in_corpus=false` 时 SHALL 优先归为 `parsing_or_chunking` 或 `testset_error`，SHALL NOT 归为 `retrieval_miss`。
 - `confidence` SHALL 取 `high` / `medium` / `low`；`inconclusive` 时 SHALL 为 `inconclusive`。
@@ -185,8 +212,13 @@
 
 #### Scenario: Fact exists but is missing from candidates
 
-- **WHEN** `fact_in_corpus=true` 且 `fact_in_candidates=false`
+- **WHEN** `fact_in_corpus=true`、`fact_coverage.corpus=1.0` 且 `fact_in_candidates=false`
 - **THEN** 相关指标的 `root_cause` SHALL 为 `retrieval_miss`，`confidence` SHALL 为 `high`（gold 来自 testset 且 `match_scope="exact"`）或 `medium`（其余情况）
+
+#### Scenario: Partial fact coverage is inconclusive
+
+- **WHEN** `fact_coverage.<stage> < 1.0`（只命中部分参考数值）
+- **THEN** 相关指标 SHALL 为 `inconclusive`，`evidence` SHALL 含 `partial_fact_coverage` 与 `missing_fact_tokens`，SHALL NOT 断言具体层
 
 #### Scenario: Candidate exists but is dropped before final
 
