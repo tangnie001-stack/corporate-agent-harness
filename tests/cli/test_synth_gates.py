@@ -28,7 +28,8 @@ def _sample(
         "hop_type": hop,
         "evolutions": ["Multi-context"] if hop == "multi_hop" else ["Concretizing"],
         "_company": "东软集团股份有限公司",
-        "_entities": {"SAP SE", "Tencent", "东软集团股份有限公司"},
+        "_period": "2025年第一季度",
+        "_entities": {"SAP SE", "Tencent", "东软集团股份有限公司", "东软集团"},
         "_original_user_input": question,
     }
 
@@ -65,6 +66,42 @@ def test_zero_letter_reference_is_rejected():
     assert not check_language("东软集团2025年营业收入？", "18.5%。", set())
 
 
+def test_wrong_year_is_not_grounded():
+    sample = _sample(
+        "东软集团2024年第一季度净利润下降原因是什么？",
+        "东软集团2025年第一季度归属于上市公司股东的净利润同比下降330.18%。",
+    )
+    kept, stats = run_gates(
+        [sample], {"东软集团股份有限公司": {"东软集团股份有限公司", "东软集团"}}
+    )
+    assert kept == []
+    assert stats["dropped"]["grounding"] == 1
+
+
+def test_foreign_company_before_year_is_not_grounded():
+    sample = _sample(
+        "腾讯控股有限公司2024年年度，贵州茅台2024年年报中税前利润如何？",
+        "腾讯控股有限公司2024年年度报告披露了税前利润。",
+    )
+    kept, stats = run_gates(
+        [sample], {"东软集团股份有限公司": {"东软集团股份有限公司", "东软集团"}}
+    )
+    assert kept == []
+    assert stats["dropped"]["grounding"] == 1
+
+
+def test_grounded_question_passes():
+    sample = _sample(
+        "东软集团2025年第一季度营业收入是多少？",
+        "东软集团2025年第一季度营业收入为人民币18.5亿元。",
+    )
+    kept, stats = run_gates(
+        [sample], {"东软集团股份有限公司": {"东软集团股份有限公司", "东软集团"}}
+    )
+    assert len(kept) == 1
+    assert stats["dropped"]["grounding"] == 0
+
+
 def test_year_is_not_the_numeric_fact():
     assert check_complete_sentence(
         "腾讯2024年营业收入为人民币18.5亿元。",
@@ -85,7 +122,9 @@ def test_metric_without_subject_is_rejected():
 
 def test_bare_number_is_rejected_and_attributed_to_sentence_gate():
     samples = [_sample("东软集团2025年营业收入？", "1,234,567.89")]
-    kept, stats = run_gates(samples, {"东软集团股份有限公司": {"东软集团股份有限公司"}})
+    kept, stats = run_gates(
+        samples, {"东软集团股份有限公司": {"东软集团股份有限公司", "东软集团"}}
+    )
     assert kept == []
     assert stats["dropped"]["not_complete_sentence"] == 1
     assert stats["dropped"]["language"] == 0
@@ -101,7 +140,9 @@ def test_duplicate_is_dropped():
         _sample("东软集团2025年营业收入？", "东软集团2025年营业收入为18.5亿元。"),
         _sample("东软集团2025年营业收入?", "东软集团2025年营业收入为18.5亿元。"),
     ]
-    kept, stats = run_gates(samples, {"东软集团股份有限公司": {"东软集团股份有限公司"}})
+    kept, stats = run_gates(
+        samples, {"东软集团股份有限公司": {"东软集团股份有限公司", "东软集团"}}
+    )
     assert len(kept) == 1
     assert stats["dropped"]["duplicate"] == 1
 
@@ -118,7 +159,9 @@ def test_hop_ratio_is_enforced_by_hash_not_order():
         _sample(f"东软集团2025年单跳{i}？", f"东软集团2025年净利润为{i}亿元。")
         for i in range(2)
     ]
-    kept, stats = run_gates(samples, {"东软集团股份有限公司": {"东软集团股份有限公司"}})
+    kept, stats = run_gates(
+        samples, {"东软集团股份有限公司": {"东软集团股份有限公司", "东软集团"}}
+    )
     multi = [s for s in kept if s["hop_type"] == "multi_hop"]
     assert len(multi) <= 2
     assert stats["dropped"]["hop_ratio"] == 2
@@ -131,7 +174,9 @@ def test_self_contained_rewrite_is_counted():
             "东软集团2025年第一季度营业收入为18.5亿元。",
         )
     ]
-    kept, stats = run_gates(samples, {"东软集团股份有限公司": {"东软集团股份有限公司"}})
+    kept, stats = run_gates(
+        samples, {"东软集团股份有限公司": {"东软集团股份有限公司", "东软集团"}}
+    )
     assert stats["self_contained_rewritten"] == 1
     assert kept[0]["user_input"].startswith("东软集团股份有限公司")
 
@@ -161,5 +206,7 @@ def test_run_gates_reconciles_generated_and_dropped():
         _sample("东软集团2025年营业收入？", "东软集团2025年营业收入为18.5亿元。"),
         _sample("东软集团2025年净利润？", "1,234,567.89"),
     ]
-    kept, stats = run_gates(samples, {"东软集团股份有限公司": {"东软集团股份有限公司"}})
+    kept, stats = run_gates(
+        samples, {"东软集团股份有限公司": {"东软集团股份有限公司", "东软集团"}}
+    )
     assert stats["generated"] - sum(stats["dropped"].values()) == len(kept)

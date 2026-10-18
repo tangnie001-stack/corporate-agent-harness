@@ -107,6 +107,29 @@
 - **WHEN** 自足门给题面加上了中文公司名前缀
 - **THEN** 改写后的题面 SHALL 重新过语言门，且改写前原文 SHALL 也过语言门，SHALL NOT 因为改写而绕过检查
 
+### Requirement: Questions are grounded in their context
+
+每道题 SHALL 锚定在其 `reference_contexts` 上，SHALL NOT 出现上下文里不存在的公司或错误报告期。
+
+- 题面 SHALL 包含该上下文报告期的年份（从 `【公司 · 报告期】` 头解析）。
+- 题面中「实体 + 年份」的实体部分 SHALL 出现在 `reference_contexts` 或公司别名中。
+- 不满足者 SHALL 被丢弃，计数记入 `metadata.gate_stats.dropped.grounding`。
+
+#### Scenario: Wrong year is rejected
+
+- **WHEN** 上下文报告期为 `2025年第一季度`，题面写「东软集团2024年第一季度…」
+- **THEN** 该条 SHALL 因缺少 `2025` 被丢弃
+
+#### Scenario: Foreign company is rejected
+
+- **WHEN** 上下文只含腾讯，题面写「…贵州茅台2024年年报…」
+- **THEN** `贵州茅台` SHALL 不在上下文/别名中，该条 SHALL 被丢弃
+
+#### Scenario: Grounded question is kept
+
+- **WHEN** 题面为「腾讯控股2024年营业收入与毛利润的同比增长率分别是多少？」且上下文含腾讯 2024 年报
+- **THEN** 该条 SHALL 通过锚定门
+
 ### Requirement: Reference answers are self-contained complete sentences
 
 参考答案 SHALL 是可直接比对的自包含完整句，SHALL NOT 为裸数值或残句。

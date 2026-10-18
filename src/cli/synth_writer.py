@@ -58,6 +58,7 @@ def golden_to_sample(golden: Any, group: ContextGroup) -> dict:
         "numeric_risk": compute_numeric_risk(reference),
         "synth_quality": metadata.get("synthetic_input_quality"),
         "_company": group.company,
+        "_period": group.period,
         "_entities": set(group.aliases) | extract_context_entities(contexts),
         "_original_user_input": golden.input,
     }

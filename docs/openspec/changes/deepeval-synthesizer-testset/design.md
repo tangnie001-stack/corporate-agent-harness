@@ -129,6 +129,7 @@
                    "language_checked": 23, "self_contained_rewritten": 2,
                    "failed_contexts": 1,
                    "dropped": {"language": 1, "self_contained": 0,
+                               "grounding": 0,
                                "not_complete_sentence": 1, "duplicate": 1,
                                "hop_ratio": 0}}
   },
@@ -150,9 +151,10 @@
 - 不写 `ragas_version`；`llm_model` 记录裁判/出题模型名。
 - `kb_name` 由 `--kb-name` 可选参数提供，默认空串；**不**调 `AppService` 私有 repo 反查（`kb_name` 只是可读性字段，不值得引入跨层依赖）。
 
-### D9 质量门顺序：自足 → 完整句 → 语言 → 去重 → 多跳比例
+### D9 质量门顺序：自足 → 锚定 → 完整句 → 语言 → 去重 → 多跳比例
 
-- 顺序：自足改写会改题面，必须排在语言门之前，改写结果才会被语言门复查；完整句排在语言前，使裸数字答案被正确归因为 `not_complete_sentence` 而不是 `language`。
+- 顺序：自足改写会改题面，必须排在语言门之前，改写结果才会被语言门复查；锚定门紧随其后，防止改写掩盖错误年份/外来公司；完整句排在语言前，使裸数字答案被正确归因为 `not_complete_sentence` 而不是 `language`。
+- **锚定门（实测补充）**：题面 SHALL 包含该上下文报告期的年份；题面中「实体 + 年份」的实体部分 SHALL 出现在 `reference_contexts` 或公司别名中。否则记为 `dropped.grounding`。依据：v6 首轮出现「东软集团2024年…」（上下文是 2025 Q1）与「腾讯…贵州茅台2024年…」（外来公司）两类题，语言/自足门都放行。
 - **计数语义：首次失败即归类**。一条样本只记一个 `dropped` 键（第一个未通过的门），保证 `generated - sum(dropped) == testset_size` 可对账；复合失败分布不追求。
 - 去重：题面去标点/空白后小写，完全相同即丢弃（只做精确去重，不做语义相似度）。
 - 完整句判定：`len >= 8`、以 `。！？.!?` 结尾（接受 ASCII 标点，使英文答案落到语言门而不是被误记为残句）、且非纯数字/标点串；`expected_output_format` 显式要求"以句号结尾"。

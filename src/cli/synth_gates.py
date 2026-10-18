@@ -22,6 +22,8 @@ _PAREN_RE = re.compile(r"[（(][^）)]*[）)]")
 _MONEY_RE = re.compile(r"(?:元|万元|亿元|%|个百分点|倍)")
 _NUMBER_RE = re.compile(r"\d[\d,.]*")
 _DATE_NUMBER_RE = re.compile(r"(?:19|20)\d{2}(?=年)|\d{1,2}(?=[月日])")
+_YEAR_TOKEN_RE = re.compile(r"(?:19|20)\d{2}")
+_ENTITY_BEFORE_YEAR_RE = re.compile(r"([\u4e00-\u9fff]{2,10})(?=(?:19|20)\d{2})")
 
 
 def _ratio(text: str) -> tuple[float, int]:
@@ -123,6 +125,45 @@ def check_language(question: str, reference: str, entities: set[str]) -> bool:
     return True
 
 
+def check_grounding(
+    question: str,
+    period: str,
+    contexts: list[str],
+    aliases: set[str],
+) -> bool:
+    """判定题面是否锚定在给定上下文（年份 + 实体）。
+
+    规则：
+      1. 题面必须包含该上下文报告期的年份；
+      2. 题面里「实体 + 年份」的实体部分必须出现在上下文或公司别名中，
+         防止「贵州茅台2024年…」这类上下文里不存在的公司被写成题。
+
+    Args:
+        question: 题面
+        period: 该上下文的报告期（如 `2025年第一季度`）
+        contexts: 该样本的 `reference_contexts`
+        aliases: 公司别名集合
+
+    Returns:
+        True 表示通过
+    """
+    period_year = _YEAR_TOKEN_RE.search(period)
+    if period_year is None:
+        return True
+    if period_year.group(0) not in _YEAR_TOKEN_RE.findall(question):
+        return False
+
+    text = " ".join(contexts)
+    for match in _ENTITY_BEFORE_YEAR_RE.finditer(question):
+        token = match.group(1)
+        if token in text:
+            continue
+        if any(token in alias or alias in token for alias in aliases):
+            continue
+        return False
+    return True
+
+
 def compute_numeric_risk(reference: str) -> bool:
     """判断参考答案是否含需要单位/口径判定的数值事实。"""
     return bool(_NUMBER_RE.search(reference)) and bool(_MONEY_RE.search(reference))
@@ -212,7 +253,7 @@ def enforce_hop_ratio(samples: list[dict]) -> tuple[list[dict], int]:
 def run_gates(
     samples: list[dict], aliases_by_company: dict[str, set[str]]
 ) -> tuple[list[dict], dict[str, Any]]:
-    """按「自足 → 完整句 → 语言 → 去重 → 多跳」执行质量门。
+    """按「自足 → 锚定 → 完整句 → 语言 → 去重 → 多跳」执行质量门。
 
     Args:
         samples: `golden_to_sample` 产出的样本
@@ -229,6 +270,7 @@ def run_gates(
         "failed_contexts": 0,
         "dropped": {
             "self_contained": 0,
+            "grounding": 0,
             "not_complete_sentence": 0,
             "language": 0,
             "duplicate": 0,
@@ -245,8 +287,20 @@ def run_gates(
         1 for s in kept if s["user_input"] != s["_original_user_input"]
     )
 
-    after_sentence: list[dict] = []
+    after_grounding: list[dict] = []
     for sample in kept:
+        if not check_grounding(
+            sample["user_input"],
+            str(sample.get("_period") or ""),
+            list(sample.get("reference_contexts") or []),
+            set(sample.get("_entities") or ()),
+        ):
+            stats["dropped"]["grounding"] += 1
+            continue
+        after_grounding.append(sample)
+
+    after_sentence: list[dict] = []
+    for sample in after_grounding:
         if not check_complete_sentence(
             sample["reference"],
             bool(sample.get("numeric_risk")),

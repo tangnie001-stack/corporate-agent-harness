@@ -2971,3 +2971,28 @@ git commit -m "docs(eval): record v6 baseline and acceptance"
 - `golden_to_sample` 返回 dict；`run_gates` 与 `_synthesize` 使用同一 dict 形状。
 - `run_gates` 的 `stats` 键与 `build_metadata` 读取的键一致。
 - `resolve_testset_version` / `next_testset_version` 分别用于评测与出题，不混用。
+
+---
+
+## 执行偏差（2026-10-18）
+
+### 1. Task 3 返回 `(Golden, ContextGroup)` 而非 sample
+
+`_synthesize` 返回 pairs，转换留给 Task 6 的 `_run`。原因：Task 3 若直接 import Task 5 的 `golden_to_sample` 会形成循环依赖。
+
+### 2. 新增锚定门（Task 4）
+
+v6 首轮实测发现两类题穿过了语言/自足门：
+
+- 「东软集团**2024年**第一季度…」但上下文是 2025 Q1；
+- 「腾讯…**贵州茅台2024年**年报…」上下文里没有贵州茅台。
+
+因此 Task 4 增加 `check_grounding`，门顺序变为「自足 → 锚定 → 完整句 → 语言 → 去重 → 多跳」，`gate_stats.dropped` 增加 `grounding`。已回写 `design.md` D9 与 `specs/testset-generation-deepeval/spec.md`。
+
+### 3. CLI 参数拆出 `testset_synth_args.py`
+
+`testset_synth.py` 原为 405 行（>400 红线），`parse_args` 拆到独立模块后为 380 行。
+
+### 4. Worktree 链接 gitignored 资源
+
+执行环境中 worktree 缺少 `.env` / `data` / `.venv`，已创建软链；否则 DB、报告目录与 pre-commit 不可用。

@@ -40,6 +40,7 @@
 - [ ] 4.8 `compute_numeric_risk(reference) -> bool`：含数字且含单位/百分号/金额词即为 true；由 `golden_to_sample` 与 `check_complete_sentence` 共用，避免两处各算一套。
 - [ ] 4.9 测试 `tests/cli/test_synth_gates.py`：纯英文题被丢；中英拼接句被丢；括号英文名与 `SAP SE` 被容忍；`tencent`/`Tencent` 大小写不敏感；CJK 紧邻 `SAP SE` 能剔除；英文句所有词都在上下文时仍被丢；`为18.5亿元。` 与 `营业收入18.5亿元。` 被丢；`腾讯2024年营业收入为人民币18.5亿元。`、`2024年12月31日，公司实现营业收入18.5亿元。`、`2024年Q1营业收入为18.5亿元。` 通过；裸数字记为 `not_complete_sentence`；重复题只留一条；多跳 0.42 按哈希截到 ≤1/3；0 字母输入被丢。
 - [ ] 4.10 测试 `numeric_risk`：含「人民币18.5亿元」为 true，不含数字为 false；`compute_numeric_risk` 与 writer 的字段一致。
+- [ ] 4.11 **锚定门**：`check_grounding(question, period, contexts, aliases)`——题面必须含上下文报告期年份；题面「实体 + 年份」的实体必须在上下文/别名中；在自足门之后、完整句之前执行，失败记 `dropped.grounding`。补三条测试：错误年份、外来公司（贵州茅台）、正常题通过。
 
 ## 5. 落盘与元数据
 
