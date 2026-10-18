@@ -145,12 +145,6 @@ def make_rag_tools(
             ctx.temporal_parsed = True
 
         start = time.monotonic()
-        # 证据旁路：调用序号取自已记录的工具调用数（1-based，同一题内跨次递增）；
-        # 未开启采集时 collector 为 None，只多一次 get() 判断
-        collector = current_evidence.get()
-        call_index = 0
-        if collector is not None:
-            call_index = len(collector.tool_calls) + 1
         # kb_id 非空 → 检索该库；kb_id 为空（未绑定 KB）→ 不检索
         # （KB=RAG 开关硬保证：即便被调也返回空，废弃 _semantic_select_kb 语义选库 = 隐式跨库）
         if kb_id:
@@ -289,8 +283,13 @@ def make_rag_tools(
             iteration = 0
 
         # 证据旁路：本次调用进入 prompt 的最终上下文。order_in_prompt 接续同一请求
-        # 已累积的 tool_contexts 长度（全局 1-based 引用编号），故须在追加之前写
+        # 已累积的 tool_contexts 长度（全局 1-based 引用编号），故须在追加之前写。
+        # call_index 同样在此刻按已记录条数取号：本块无 await，取号与两次追加构成原子段，
+        # 并行工具调用不会读到同一长度而重号（1-based，同一题内跨调用递增）；
+        # 未开启采集时 collector 为 None，只多一次 get() 判断
+        collector = current_evidence.get()
         if collector is not None:
+            call_index = len(collector.tool_calls) + 1
             prompt_offset = 0
             if ctx is not None:
                 prompt_offset = len(ctx.tool_contexts)

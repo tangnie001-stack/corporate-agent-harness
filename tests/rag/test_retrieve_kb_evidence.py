@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from typing import cast
 
@@ -102,6 +103,58 @@ async def test_retrieve_kb_order_and_call_index_continue_across_calls(monkeypatc
         assert orders == [1, 2]
         chunk_ids = [c["chunk_id"] for c in collector.retrieval["final_contexts"]]
         assert chunk_ids == ["d1:q1", "d1:q2"]
+    finally:
+        current_request_ctx.reset(ctx_token)
+        current_evidence.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_retrieve_kb_parallel_calls_keep_distinct_call_index(monkeypatch):
+    """并行工具调用：call_index 在追加前原子取号，两次调用不会记录同一个序号。"""
+    from src.agents.tools import rag_tools
+
+    run = EvidenceRun(run_id="r1", run_trace_id=None, enabled=True)
+    collector = run.new_question(0)
+    token = current_evidence.set(collector)
+    request_ctx = RequestContext(session_id="s1", kb_id="kb1")
+    ctx_token = current_request_ctx.set(request_ctx)
+
+    async def fake_search(query, kb_id, vector_store):
+        await asyncio.sleep(0)
+        return [SimpleNamespace(id=f"raw:{query}")]
+
+    def fake_rerank(query, results, reranker):
+        return [
+            RAGContext(
+                content=f"c-{query}",
+                source="a.pdf",
+                page=1,
+                doc_id="d1",
+                chunk_id=f"d1:{query}",
+                score=0.9,
+            )
+        ]
+
+    monkeypatch.setattr(rag_tools.retrieval, "search", fake_search)
+    monkeypatch.setattr(rag_tools.retrieval, "rerank_results", fake_rerank)
+    tools = rag_tools.make_rag_tools(
+        vector_store=cast(VectorStore, None),
+        reranker=None,
+        prompt_manager=None,
+        include_ask_user=False,
+    )
+    retrieve = next(t for t in tools if t.name == "retrieve_kb")
+    try:
+        await asyncio.gather(
+            retrieve.ainvoke({"query": "q1", "top_k": 1}),
+            retrieve.ainvoke({"query": "q2", "top_k": 1}),
+        )
+        assert sorted(c["call_index"] for c in collector.tool_calls) == [1, 2]
+        assert sorted(q["call_index"] for q in collector.query["tool_queries"]) == [
+            1,
+            2,
+        ]
+        assert {q["query"] for q in collector.query["tool_queries"]} == {"q1", "q2"}
     finally:
         current_request_ctx.reset(ctx_token)
         current_evidence.reset(token)
