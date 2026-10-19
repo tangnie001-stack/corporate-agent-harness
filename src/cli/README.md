@@ -222,6 +222,19 @@ python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 6 --ev
 
 字段契约见 `docs/agents/api_contract.md` §8.7，按证据链排查的顺序见 `docs/agents/eval-metrics-troubleshooting.md` §8.5。
 
+### 单条 trace 回放（eval_trace，原型）
+
+```bash
+python -m src.cli.eval_trace \
+  --trace-id <langfuse_trace_id> \
+  --langfuse-host http://localhost:3000 \
+  --metrics faithfulness,answer_relevancy,contextual_relevancy
+```
+
+- 从 Langfuse 取一条 trace，还原 `query` / `answer` / `contexts` / 工具调用 / 模型轮次，默认跑 reference-free 三项指标；传 `--reference` 才追加 `context_precision` / `context_recall`。
+- `--inspect-only` 只解析字段、不调用裁判；输出 `data/deepeval/traces/<trace_id>/trace.json`。
+- 边界：`contexts` 从 `retrieve_kb` 的工具输出文本解析，属于近似还原；生产 trace 不含 dense/lexical/rerank/dedup 阶段，也不含 gold，因此查不出“检索哪一层丢的”，只能查答案/上下文层问题。
+
 ## 第三步：质量门禁（怎么判定达标）
 
 ```bash
