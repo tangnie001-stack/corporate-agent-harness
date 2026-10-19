@@ -169,6 +169,7 @@ def parse_trace(trace: Any) -> dict:
         "query": query,
         "answer": answer,
         "contexts": deduped,
+        "retrieval_trace": (trace.metadata or {}).get("retrieval_contexts") or [],
         "tool_calls": tool_calls,
         "generations": generations,
     }
@@ -276,6 +277,7 @@ def _summary(parsed: dict, metrics: dict | None) -> dict:
         "answer_chars": len(parsed["answer"]),
         "answer_preview": parsed["answer"][:120],
         "contexts_count": len(contexts),
+        "structured_retrieval_calls": len(parsed.get("retrieval_trace") or []),
         "context_sources": [
             {"source": item["source"], "page": item["page"], "chars": len(item["text"])}
             for item in contexts

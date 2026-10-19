@@ -321,6 +321,35 @@ def make_rag_tools(
             )
             collector.retrieval.setdefault("final_contexts", []).extend(final_contexts)
 
+        # 生产 trace 旁路：把本次调用的结构化上下文写入请求上下文，收尾时由
+        # `_run_generation` 并入 Langfuse trace metadata。只记 id/实体/位置，
+        # 不记正文；子代理由 `RequestContext.child()` 持有独立列表，不污染父轮。
+        if ctx is not None:
+            prompt_offset = len(ctx.tool_contexts)
+            ctx.retrieval_trace.append(
+                {
+                    "call_index": ctx.retrieve_call_seq,
+                    "query": query,
+                    "top_k": top_k,
+                    "iteration": iteration,
+                    "contexts": [
+                        {
+                            "chunk_id": c.chunk_id,
+                            "doc_id": c.doc_id,
+                            "parent_key": list(
+                                parent_key(c.doc_id, c.chunk_id, c.parent_content)
+                            ),
+                            "source": c.source,
+                            "page": c.page,
+                            "score": c.score,
+                            "order_in_prompt": prompt_offset + i + 1,
+                            "entities": dict(c.entities or {}),
+                        }
+                        for i, c in enumerate(contexts)
+                    ],
+                }
+            )
+
         # 检索重放上下文（L1）：query/kb 为重放输入，其余参数为"当时值"供 drift 对照；
         # 态 A（kb_id 空）不检索、不落 replay 行
         if kb_id:

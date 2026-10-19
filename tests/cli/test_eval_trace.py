@@ -75,3 +75,23 @@ def test_parse_trace_splits_contexts_and_dedupes():
     ]
     assert parsed["generations"][0]["model"] == "qwen3.7-flash"
     assert parsed["generations"][0]["latency_ms"] == 1528
+
+
+def test_parse_trace_reads_structured_contexts_from_metadata():
+    trace = _trace([])
+    trace.metadata = {
+        "retrieval_contexts": [
+            {
+                "call_index": 1,
+                "query": "腾讯2024年营收",
+                "contexts": [{"chunk_id": "d1:0", "entities": {"company": "tencent"}}],
+            }
+        ]
+    }
+
+    parsed = parse_trace(trace)
+
+    assert parsed["retrieval_trace"][0]["contexts"][0]["chunk_id"] == "d1:0"
+    assert parsed["retrieval_trace"][0]["contexts"][0]["entities"] == {
+        "company": "tencent"
+    }

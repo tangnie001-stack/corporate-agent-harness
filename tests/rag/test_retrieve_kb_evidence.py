@@ -51,6 +51,9 @@ async def test_retrieve_kb_records_call_and_global_order(monkeypatch):
         assert collector.tool_calls[0]["context_count"] == 1
         assert collector.retrieval["final_contexts"][0]["chunk_id"] == "d1:0"
         assert collector.retrieval["final_contexts"][0]["order_in_prompt"] == 1
+        assert request_ctx.retrieval_trace[0]["call_index"] == 1
+        assert request_ctx.retrieval_trace[0]["contexts"][0]["chunk_id"] == "d1:0"
+        assert request_ctx.retrieval_trace[0]["contexts"][0]["order_in_prompt"] == 1
     finally:
         current_request_ctx.reset(ctx_token)
         current_evidence.reset(token)

@@ -72,6 +72,44 @@ def test_run_generation_is_observed_without_input_capture():
     )
 
 
+@pytest.mark.asyncio
+async def test_run_generation_writes_structured_retrieval_contexts(monkeypatch):
+    """收尾把结构化检索上下文并入 trace metadata，供 eval_trace 回放。"""
+    captured: dict = {}
+
+    class _SpyContext:
+        def update_current_trace(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(agent_service, "langfuse_context", _SpyContext())
+
+    mgr = StreamingRunManager()
+    fake_graph = Mock()
+    fake_graph.astream_events = _fake_astream
+    ctx = RequestContext(session_id="s1")
+    ctx.retrieval_trace = [
+        {
+            "call_index": 1,
+            "query": "q",
+            "contexts": [{"chunk_id": "d1:0", "entities": {"company": "tencent"}}],
+        }
+    ]
+
+    await _run_generation(
+        "s1",
+        "kb1",
+        "q",
+        [],
+        False,
+        ctx,
+        mgr,
+        graph=fake_graph,
+        langfuse_observation_id="trace_unit_root",  # type: ignore[reportCallIssue]
+    )
+
+    assert captured["metadata"]["retrieval_contexts"] == ctx.retrieval_trace
+
+
 def test_answer_builder_passes_observation_id():
     """调用方必须把当前 trace_id 作为根 observation id 传入。"""
     from src.services import turn_runner

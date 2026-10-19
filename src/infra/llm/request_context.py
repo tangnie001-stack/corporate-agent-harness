@@ -37,6 +37,9 @@ class RequestContext:
     tool_contexts: list[RAGContext] = field(
         default_factory=list
     )  # retrieve_kb / search_web 共享累积上下文，范围：请求内累积，用途：按编号顺序拼装引用（编号顺序即引用顺序）
+    retrieval_trace: list[dict] = field(
+        default_factory=list
+    )  # 每次 retrieve_kb 的结构化上下文快照（chunk_id/doc_id/entities/order），范围：请求内累积；用途：写入 Langfuse trace metadata 供单条 trace 回放
     ask_count: int = (
         0  # 澄清提问计数，范围：请求内累积，用途：限制单次请求的澄清轮数上限
     )

@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import logging
 import re
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
@@ -69,6 +70,8 @@ from src.utils.sse import (
     SSEStatusEvent,
     SSETokenEvent,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _EndMarker:
@@ -692,6 +695,28 @@ async def _drain_clarify_channel(
             )
 
 
+def _write_retrieval_trace(ctx: RequestContext, trace_metadata: dict) -> None:
+    """把结构化检索上下文并入当前 Langfuse trace。
+
+    Args:
+        ctx: 本轮请求上下文（含 `retrieval_trace`）
+        trace_metadata: 已在 trace 上设置的元数据；合并后再写，避免覆盖既有键
+
+    失败属观测旁路，只告警，不影响生成结果。
+    """
+    if not ctx.retrieval_trace:
+        return
+    try:
+        langfuse_context.update_current_trace(
+            metadata={
+                **trace_metadata,
+                "retrieval_contexts": ctx.retrieval_trace,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001  # 观测失败不得影响对话
+        logger.warning("[agent] retrieval trace metadata failed err=%s", exc)
+
+
 @observe(name="chat_turn", capture_input=False)
 async def _run_generation(
     session_id: str,
@@ -883,6 +908,7 @@ async def _run_generation(
         idle_task.cancel()  # 生成结束/异常/取消后停止静默守护
         # 取消 / 异常路径同样走到这里 —— 不关的 span 会永远悬空
         tool_trace.close()
+        _write_retrieval_trace(ctx, trace_metadata)
         await asyncio.gather(drain_task, idle_task, return_exceptions=True)
         if partial_holder is not None:
             partial_holder["model_name"] = capture.model_used
