@@ -16,11 +16,19 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from langfuse import Langfuse
-
+from src.cli.eval_trace_analysis import analyze_trace, summarize_batch
+from src.cli.eval_trace_io import (
+    as_text,
+    fetch_recent,
+    fetch_trace,
+    latency_ms,
+    parse_since,
+)
+from src.cli.eval_trace_metrics import run_metrics
 from src.config import settings
 
 _DEFAULT_METRICS = (
@@ -31,44 +39,6 @@ _DEFAULT_METRICS = (
 _REFERENCE_METRICS = ("context_precision", "context_recall")
 _CITATION_RE = re.compile(r"\[(\d+)\]\s*来源:\s*(.+?)\s*\(第(\d+)页")
 _BLOCK_SPLIT_RE = re.compile(r"\n(?=\[\d+\]\s*来源:)")
-
-
-def _as_text(value: Any) -> str:
-    """把 trace 字段归一成文本；None 返回空串。"""
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        for key in ("content", "text", "output", "message"):
-            if isinstance(value.get(key), str):
-                return value[key]
-    return json.dumps(value, ensure_ascii=False)
-
-
-def _latency_ms(value: Any) -> int | None:
-    """Langfuse 的 latency 单位是秒；统一转成毫秒。"""
-    if value is None:
-        return None
-    return int(float(value) * 1000)
-
-
-def _fetch_trace(trace_id: str, host: str) -> Any:
-    """按 trace id 拉取完整 trace（含 observations）。
-
-    Args:
-        trace_id: Langfuse trace ID
-        host: Langfuse 地址（本机调试通常传 http://localhost:3000）
-
-    Returns:
-        `TraceWithFullDetails`
-    """
-    client = Langfuse(
-        host=host,
-        public_key=settings.LANGFUSE_PUBLIC_KEY,
-        secret_key=settings.LANGFUSE_SECRET_KEY,
-    )
-    return client.fetch_trace(trace_id).data
 
 
 def _split_contexts(content: str) -> list[dict]:
@@ -110,7 +80,7 @@ def parse_trace(trace: Any) -> dict:
     """
     trace_input = trace.input if isinstance(trace.input, dict) else {}
     query = str(trace_input.get("query") or "")
-    answer = _as_text(trace.output)
+    answer = as_text(trace.output)
 
     contexts: list[dict] = []
     tool_calls: list[dict] = []
@@ -118,14 +88,14 @@ def parse_trace(trace: Any) -> dict:
     for obs in trace.observations or []:
         name = obs.name or ""
         if name == "retrieve_kb":
-            content = _as_text(obs.output)
+            content = as_text(obs.output)
             contexts.extend(_split_contexts(content))
             tool_calls.append(
                 {
                     "name": name,
                     "args": obs.input,
                     "result_chars": len(content),
-                    "latency_ms": _latency_ms(obs.latency),
+                    "latency_ms": latency_ms(obs.latency),
                 }
             )
             continue
@@ -134,8 +104,8 @@ def parse_trace(trace: Any) -> dict:
                 {
                     "name": name,
                     "args": obs.input,
-                    "result_chars": len(_as_text(obs.output)),
-                    "latency_ms": _latency_ms(obs.latency),
+                    "result_chars": len(as_text(obs.output)),
+                    "latency_ms": latency_ms(obs.latency),
                 }
             )
             continue
@@ -148,7 +118,7 @@ def parse_trace(trace: Any) -> dict:
                     if isinstance(obs.input, list)
                     else None,
                     "output_type": type(obs.output).__name__,
-                    "latency_ms": _latency_ms(obs.latency),
+                    "latency_ms": latency_ms(obs.latency),
                 }
             )
 
@@ -175,84 +145,16 @@ def parse_trace(trace: Any) -> dict:
     }
 
 
-def _metric_instances(judge: Any, names: list[str]) -> dict:
-    """按名称构造 DeepEval 指标。
-
-    Args:
-        judge: `BridgeDeepEvalLLM`
-        names: 指标名列表
-
-    Returns:
-        指标名 -> 度量实例
-    """
-    # 确保 DEEPEVAL_* 环境兜底先于 deepeval import（与 eval_scoring 同序）
-    # isort: off
-    import src.config.settings  # noqa: F401
-    from deepeval.metrics import (
-        AnswerRelevancyMetric,
-        ContextualPrecisionMetric,
-        ContextualRecallMetric,
-        ContextualRelevancyMetric,
-        FaithfulnessMetric,
-    )
-    # isort: on
-
-    builders = {
-        "faithfulness": lambda: FaithfulnessMetric(model=judge),
-        "answer_relevancy": lambda: AnswerRelevancyMetric(model=judge),
-        "contextual_relevancy": lambda: ContextualRelevancyMetric(model=judge),
-        "context_precision": lambda: ContextualPrecisionMetric(model=judge),
-        "context_recall": lambda: ContextualRecallMetric(model=judge),
-    }
-    return {name: builders[name]() for name in names if name in builders}
-
-
-def _run_metrics(parsed: dict, names: list[str]) -> dict:
-    """跑选中指标；单指标失败只记 error，不中断其余指标。
-
-    Args:
-        parsed: `parse_trace` 产物
-        names: 指标名列表
-
-    Returns:
-        指标名 -> {score, reason, error}
-    """
-    from deepeval.test_case import LLMTestCase
-
-    from src.infra.llm.provider.deepeval_llm import BridgeDeepEvalLLM
-    from src.infra.llm.provider.factory import build_bridge_judge
-    from src.infra.llm.provider.http_observability import HookEvidence
-
-    judge = BridgeDeepEvalLLM(build_bridge_judge(evidence=HookEvidence()))
-    contexts = [item["text"] for item in parsed["contexts"]]
-    test_case = LLMTestCase(
-        input=parsed["query"],
-        actual_output=parsed["answer"],
-        retrieval_context=contexts,
-        expected_output=parsed.get("reference") or None,
-    )
-    out: dict[str, dict] = {}
-    for name, metric in _metric_instances(judge, names).items():
-        try:
-            score = metric.measure(test_case)
-            reason = getattr(metric, "reason", None)
-            out[name] = {"score": score, "reason": reason, "error": None}
-        except Exception as exc:  # noqa: BLE001  # 单指标失败不阻断其余指标
-            out[name] = {
-                "score": None,
-                "reason": None,
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-    return out
-
-
-def _write_report(parsed: dict, output_dir: str, metrics: dict | None) -> Path:
-    """把解析结果（与可选指标）写成 JSON。
+def _write_report(
+    parsed: dict, output_dir: str, metrics: dict | None, analysis: dict
+) -> Path:
+    """把解析结果、指标与归因写成 JSON。
 
     Args:
         parsed: `parse_trace` 产物
         output_dir: 输出目录
         metrics: 指标结果；None 表示 inspect-only
+        analysis: `analyze_trace` 产物
 
     Returns:
         实际写入的文件路径
@@ -262,12 +164,13 @@ def _write_report(parsed: dict, output_dir: str, metrics: dict | None) -> Path:
     payload = dict(parsed)
     if metrics is not None:
         payload["metrics"] = metrics
+    payload["analysis"] = analysis
     path = target / "trace.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
 
-def _summary(parsed: dict, metrics: dict | None) -> dict:
+def _summary(parsed: dict, metrics: dict | None, analysis: dict) -> dict:
     """构造 stdout 摘要，避免把上下文正文打进终端。"""
     contexts = parsed["contexts"]
     return {
@@ -285,13 +188,32 @@ def _summary(parsed: dict, metrics: dict | None) -> dict:
         "tool_calls": parsed["tool_calls"],
         "generations": parsed["generations"],
         "metrics": metrics,
+        "analysis": analysis,
     }
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """解析命令行参数。"""
-    parser = argparse.ArgumentParser(description="单条 Langfuse trace 回放与评分")
-    parser.add_argument("--trace-id", required=True, help="Langfuse trace ID")
+    parser = argparse.ArgumentParser(
+        description="Langfuse 线上 trace 回放、评分与确定性归因"
+    )
+    parser.add_argument("--trace-id", default="", help="指定单条 trace ID")
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="只列出最近的 chat trace，不评分",
+    )
+    parser.add_argument(
+        "--since",
+        default="",
+        help="起始时间（ISO 或 YYYY-MM-DD）；仅批量模式使用",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=3,
+        help="批量模式最多处理/列出的 trace 数（默认 3）",
+    )
     parser.add_argument(
         "--langfuse-host",
         default=settings.LANGFUSE_HOST,
@@ -300,7 +222,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--inspect-only",
         action="store_true",
-        help="只解析字段，不调用裁判",
+        help="只解析字段与归因，不调用裁判",
     )
     parser.add_argument(
         "--metrics",
@@ -308,7 +230,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="逗号分隔的指标名（默认 reference-free 三项）",
     )
     parser.add_argument(
-        "--reference", default="", help="可选参考答案；提供后追加 CP/CR"
+        "--reference", default="", help="可选参考答案；提供后追加 CP/CR（仅单条）"
     )
     parser.add_argument(
         "--output-dir",
@@ -318,20 +240,91 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _list_recent(args: argparse.Namespace) -> None:
+    """列出最近 chat trace 的摘要。"""
+    traces = fetch_recent(
+        args.langfuse_host, since=parse_since(args.since), limit=args.limit
+    )
+    for trace in traces:
+        trace_input = trace.input if isinstance(trace.input, dict) else {}
+        query = str(trace_input.get("query") or "")
+        answer = as_text(trace.output)
+        print(
+            json.dumps(
+                {
+                    "trace_id": trace.id,
+                    "timestamp": str(trace.timestamp),
+                    "query": query[:160],
+                    "answer_chars": len(answer),
+                    "tags": trace.tags,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+
+def _trace_ids(args: argparse.Namespace) -> list[str]:
+    """解析本次要处理的 trace ID 列表。"""
+    if args.trace_id:
+        return [args.trace_id]
+    traces = fetch_recent(
+        args.langfuse_host, since=parse_since(args.since), limit=args.limit
+    )
+    return [trace.id for trace in traces]
+
+
+def _run_one(
+    trace_id: str, args: argparse.Namespace, names: list[str], *, single: bool
+) -> dict:
+    """处理单条 trace，返回批量汇总条目。"""
+    trace = fetch_trace(trace_id, args.langfuse_host)
+    parsed = parse_trace(trace)
+    parsed["reference"] = args.reference if single else ""
+    metrics = None if args.inspect_only else run_metrics(parsed, names)
+    analysis = analyze_trace(parsed, metrics)
+    path = _write_report(parsed, args.output_dir, metrics, analysis)
+    print(json.dumps(_summary(parsed, metrics, analysis), ensure_ascii=False, indent=2))
+    print(f"\nreport: {path}")
+    return {
+        "trace_id": trace_id,
+        "query": parsed["query"],
+        "report": str(path),
+        "metrics": metrics,
+        "analysis": analysis,
+    }
+
+
 def main(argv: list[str] | None = None) -> None:
     """CLI 入口。"""
     args = parse_args(argv)
-    trace = _fetch_trace(args.trace_id, args.langfuse_host)
-    parsed = parse_trace(trace)
-    parsed["reference"] = args.reference
+    if args.list:
+        _list_recent(args)
+        return
 
+    ids = _trace_ids(args)
+    if not ids:
+        print("no chat traces found")
+        return
     names = [name.strip() for name in args.metrics.split(",") if name.strip()]
-    if args.reference:
+    if args.reference and len(ids) == 1:
         names.extend(name for name in _REFERENCE_METRICS if name not in names)
-    metrics = None if args.inspect_only else _run_metrics(parsed, names)
-    path = _write_report(parsed, args.output_dir, metrics)
-    print(json.dumps(_summary(parsed, metrics), ensure_ascii=False, indent=2))
-    print(f"\nreport: {path}")
+
+    results: list[dict] = []
+    for trace_id in ids:
+        results.append(_run_one(trace_id, args, names, single=len(ids) == 1))
+    if len(results) <= 1:
+        return
+
+    summary = summarize_batch(results)
+    summary["generated_at"] = datetime.now(UTC).isoformat()
+    summary_path = Path(args.output_dir) / (
+        f"batch_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.json"
+    )
+    summary_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print(f"\nsummary: {summary_path}")
 
 
 if __name__ == "__main__":
