@@ -50,24 +50,49 @@ def test_probe_text_only_hits_content():
     chunks = [_chunk("d1:0", "公司的主营业务为智能制造装备")]
     result = probe_reference_chunks("主营业务为智能制造装备", chunks)
     assert result["numeric_tokens"] == []
+    assert result["text_tokens"] == ["主营业务为智能制造装备"]
+    assert result["probe_tokens"] == result["text_tokens"]
     assert result["probe_tokens"] == ["主营业务为智能制造装备"]
     assert result["fact_in_corpus"] is True
     assert result["gold_chunk_ids"] == ["d1:0"]
 
 
-def test_probe_mixes_numeric_and_text_tokens():
+def test_probe_prefers_numeric_tokens():
     chunks = [_chunk("d1:0", "营业收入 80,348 万元")]
     result = probe_reference_chunks("营业收入 80,348 万元，同比增长", chunks)
     assert result["numeric_tokens"] == ["80348万元"]
-    assert result["probe_tokens"] == ["80348万元", "营业收入"]
+    assert result["text_tokens"] == ["营业收入"]
+    assert result["probe_tokens"] == result["numeric_tokens"]
+    assert result["probe_tokens"] == ["80348万元"]
     assert result["fact_coverage"]["corpus"] == 1.0
+    assert result["missing_fact_tokens"] == []
 
 
-def test_probe_coverage_counts_text_tokens():
+def test_probe_long_text_fragment_does_not_depress_coverage():
+    chunks = [_chunk("d1:0", "腾讯 2024年 非控制性权益 80,348")]
+    result = probe_reference_chunks("腾讯2024年非控制性权益金额为80,348。", chunks)
+    assert result["numeric_tokens"] == ["2024", "80348"]
+    assert result["probe_tokens"] == result["numeric_tokens"]
+    assert "年非控制性权益金额为" in result["text_tokens"]
+    assert result["fact_coverage"]["corpus"] == 1.0
+    assert result["missing_fact_tokens"] == []
+
+
+def test_probe_q21_reference_full_coverage():
+    chunks = [_chunk("d1:0", "腾讯2024年 非控制性权益 80,348")]
+    result = probe_reference_chunks("腾讯2024年非控制性权益金额为80,348。", chunks)
+    assert result["probe_tokens"] == ["2024", "80348"]
+    assert result["fact_coverage"]["corpus"] == 1.0
+    assert result["fact_hit_tokens"]["corpus"] == ["2024", "80348"]
+    assert result["missing_fact_tokens"] == []
+    assert result["fact_in_corpus"] is True
+
+
+def test_probe_coverage_counts_numeric_tokens():
     chunks = [_chunk("d1:0", "营业收入 80,348")]
     result = probe_reference_chunks("营业收入 80,348 42%", chunks)
-    assert result["probe_tokens"] == ["80348", "42%", "营业收入"]
-    assert result["fact_coverage"]["corpus"] == 2 / 3
+    assert result["probe_tokens"] == ["80348", "42%"]
+    assert result["fact_coverage"]["corpus"] == 1 / 2
     assert result["missing_fact_tokens"] == ["42%"]
 
 

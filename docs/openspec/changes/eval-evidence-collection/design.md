@@ -128,7 +128,7 @@ class EvidenceRun:
 1. 取 `reference` 的 token（各自去重保序）：
    - 数值 token：键为 `数字+单位`（含负号、千分位、百分号、万元/亿元等）；负号前不得是数字或百分号，故 `2023-2024` / `30%-50%` 抽出 `2023` / `2024`、`30%` / `50%`，不产生 `-2024` / `-50%`。
    - 文本 token：先经 `normalize_text`（NFKC、去 `【...】` 头、压缩空白、小写），删除数值 token 后按 `，。；、：:,.!?！？（）()[]【】|/` 与空白切分；保留含 2–12 个汉字的片段或 4–30 个 ASCII 字符的片段；丢弃纯数字/标点片段、停用词（`公司`/`报告期`/`年度`/`本期`/`上年同期`/`同比`/`增长`/`下降`/`的`/`了`/`和`/`与`/`及`/`为`/`是`/`在`/`有`/`元`/`万元`/`亿元`/`%`/`百分点`）以及完全由停用词组成的片段；文本 token 上限 20。
-   - `probe_tokens` = 数值 token + 文本 token；`numeric_tokens` 单独返回数值子集，`numeric_conflict` / `unit_missing` 只看数值子集。
+   - 选取：有数值 token 时 `probe_tokens` 只取数值 token，文本 token 仅在纯文本参考答案（无数值 token）时作为回退参与匹配；命中、覆盖率、`fact_in_*`、`token_hits`、`token_parent_keys`、`missing_fact_tokens` 一律基于 `probe_tokens`。原因是文本片段常是参考答案的叙述骨架，未必在 chunk 中逐字出现（如 `年非控制性权益金额为` 被表格排版拆开），与数值并列计数会压低覆盖率、把本可归因的数值题误判为 `inconclusive`。`numeric_tokens`（`numeric_conflict` / `unit_missing` 只看它）与 `text_tokens` 仍各自返回供审计。
 2. 从 `EvidenceRun.corpus_chunks` 取全量分块；该列表由 `main()` 的空库检查 `get_all_chunks` 复用，**不再二次读库**。
 3. 在 `content` 与 `parent_content` 中做归一化匹配，记录命中的 `doc_id/chunk_id/source/page/parent_key`：
    - 文本 token 直接子串匹配；
@@ -136,7 +136,7 @@ class EvidenceRun:
 4. 输出：
    - `gold_chunk_ids`：命中 chunk（去重，上限 20）；题集与探针都没有时 SHALL 为 `null`（不是 `[]`）；
    - `gold_parent_keys`：命中 parent 键（去重，上限 20）；无 gold 时为 `null`；
-   - `probe_tokens` / `numeric_tokens`：本次实际使用的全部 token / 数值 token 子集；
+   - `probe_tokens` / `numeric_tokens` / `text_tokens`：本次实际用于匹配的 token / 数值 token / 文本 token；
    - `fact_in_corpus`：`true` / `false` / `null`；
    - `fact_coverage.corpus`：命中 token 数 / `len(probe_tokens)`；无 token 或语料不可用时为 `null`；
    - `truncated`：命中超过上限时为 `true`。

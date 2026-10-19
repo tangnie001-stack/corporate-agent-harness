@@ -239,12 +239,15 @@ def _chunk_detail(chunk: ChunkResult) -> dict[str, Any]:
     }
 
 
-def _null_probe(tokens: list[str], numeric_tokens: list[str]) -> dict[str, Any]:
+def _null_probe(
+    tokens: list[str], numeric_tokens: list[str], text_tokens: list[str]
+) -> dict[str, Any]:
     """构造“无法判定/无 gold”的探针结果。
 
     Args:
-        tokens: 已抽取的全部 token（数值 + 文本）
-        numeric_tokens: 已抽取的数值 token 子集
+        tokens: 实际参与匹配的 `probe_tokens`
+        numeric_tokens: 已抽取的数值 token
+        text_tokens: 已抽取的文本片段 token
 
     Returns:
         `fact_in_corpus` / `fact_coverage` 为 None、gold 字段为 None、
@@ -262,6 +265,7 @@ def _null_probe(tokens: list[str], numeric_tokens: list[str]) -> dict[str, Any]:
         "missing_fact_tokens": [],
         "probe_tokens": tokens,
         "numeric_tokens": numeric_tokens,
+        "text_tokens": text_tokens,
         "truncated": False,
     }
 
@@ -312,6 +316,10 @@ def probe_reference_chunks(
 ) -> dict[str, Any]:
     """在分块 content 与 parent_content 中定位参考数值/文本片段。
 
+    匹配口径为 `probe_tokens`：有数值 token 时只用数值（数值是财务类参考答案
+    的可核事实，文本片段常是叙述骨架、未必逐字出现在 chunk）；参考答案没有
+    数值时才退回文本片段。
+
     Args:
         reference: 参考答案原文
         chunks: 本轮知识库全量分块（`EvidenceRun.corpus_chunks`）
@@ -320,16 +328,20 @@ def probe_reference_chunks(
     Returns:
         探针结果：`gold_chunk_ids` / `gold_parent_keys` / `gold_chunks`、
         `fact_in_corpus`、`fact_coverage`、`probe_tokens`、`numeric_tokens`、
-        token 命中与缺失、`truncated`；无 token 或语料为空时
+        `text_tokens`、token 命中与缺失、`truncated`；无 token 或语料为空时
         `fact_in_corpus` 为 None、gold 字段为 None
     """
     numeric_tokens = extract_numeric_tokens(reference)
-    tokens = list(dict.fromkeys(numeric_tokens + extract_text_tokens(reference)))
+    text_tokens = extract_text_tokens(reference)
+    if numeric_tokens:
+        tokens = list(numeric_tokens)
+    else:
+        tokens = list(text_tokens)
     if not tokens:
-        return _null_probe(tokens, numeric_tokens)
+        return _null_probe(tokens, numeric_tokens, text_tokens)
     if not chunks:
         logger.warning("[cli] evidence probe corpus unavailable")
-        return _null_probe(tokens, numeric_tokens)
+        return _null_probe(tokens, numeric_tokens, text_tokens)
 
     details = {chunk.id: _chunk_detail(chunk) for chunk in chunks}
     token_hits: dict[str, list[str]] = {token: [] for token in tokens}
@@ -374,6 +386,7 @@ def probe_reference_chunks(
         "missing_fact_tokens": [token for token in tokens if not unique_hits[token]],
         "probe_tokens": tokens,
         "numeric_tokens": numeric_tokens,
+        "text_tokens": text_tokens,
         "truncated": truncated,
     }
 
