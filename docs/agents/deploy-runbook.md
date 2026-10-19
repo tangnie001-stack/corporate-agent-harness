@@ -75,7 +75,7 @@
 | 2 | **登录 ACR 镜像凭证**（**仅首次上机**，之后一律跳过） | 目标机 | `docker login --username=hi31383397@aliyun.com crpi-u3ezxc1o5hirfddw.cn-shanghai.personal.cr.aliyuncs.com`（密码从**团队渠道**取，**不入库**）。登录成功后凭据落 `/root/.docker/config.json`，**后续发布不再需要密码**（`deploy.sh` 先 `docker manifest inspect`，过了就跳过登录）。仅当需要在**无 TTY** 环境自动登录时，才以**环境变量** `ACR_USER`/`ACR_PASSWORD` 提供（`deploy.sh` **不读 `.env`**，须由部署槽位注入） |
 | 3 | **前置检查**：工作区干净 + 本地 `dev-wsl` 已推送、未落后 | 开发机 | `git fetch && git status -sb`（**说"开始部署"时由助手代查**）|
 | 4 | **推代码** | 开发机 | `git push origin dev-wsl` |
-| 5 | **GitHub → Codeup 同步代码**（当前**手动**）| 云效网页 | `https://deploytest-cn-shanghai.devops.aliyuncs.com/codeup/deploytest/tangnie001-stack/corporate_rag/settings/mirror_sync` |
+| 5 | **GitHub → Codeup 同步代码**（当前**手动**）| 云效网页 | `https://deploytest-cn-shanghai.devops.aliyuncs.com/codeup/deploytest/tangnie001-stack/corporate-agent-harness/settings/mirror_sync` |
 | 6 | **流水线自动开始**（Codeup 有提交 → 钩子触发：构建推镜像 → 打包制品 → **部署**）| 云效网页 | `https://deploytest-cn-shanghai.devops.aliyuncs.com/flow/my?page=1` |
 | 7 | **人工创建发布单**（**仅"匹配不到发布单"时**需要：流水线最后一步会挂起等你；匹配到则**跳过此步、直接发布**）| 云效网页 | 同上（流水线页）|
 | 8 | **主机部署执行**（四槽位 `preflight → start → health_check → clean`；由流水线最后一步触发）| 目标机 | 自动；日志在部署页 |
@@ -95,7 +95,7 @@
 
 #### 2.0.2 常用入口（速查 / 可点击）
 
-- **代码同步**（GitHub → Codeup，第 5 步）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/codeup/deploytest/tangnie001-stack/corporate_rag/settings/mirror_sync`
+- **代码同步**（GitHub → Codeup，第 5 步）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/codeup/deploytest/tangnie001-stack/corporate-agent-harness/settings/mirror_sync`
 - **流水线**（看进度 / 第 7 步在此创建发布单）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/flow/my?page=1`
 - **版本 / 回滚**（第 10 步）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/appstack/app/deploy-app/versions`
 - **生产入口**：站点 `http://8.133.218.201/` ｜ Langfuse `http://8.133.218.201:3000` ｜ 目标机 `root@8.133.218.201`（发布路径 `/opt/www/corporate_rag`）

@@ -18,9 +18,19 @@
 | ① 需求 / bug 提出 | 对话 + `docs/agents/requirements_pool.md` | — | 无 issue tracker，输入面即对话与需求池；不引入分诊类 skill |
 | ② 完善需求 | `openspec-explore` | `grilling`；`/grill-with-docs`（边拷问边产 ADR / 术语） | 需求模糊需要逼问；要在拷问同时产出 ADR 或术语时改用后者 |
 | ③ 出方案 | `openspec-propose` | `codebase-design`、`domain-modeling` | 需要定模块边界 / 领域模型时 |
-| ④ 验证可行性 | `architecture-review` | `prototype`（跑起来证伪）；`research` 或 `firecrawl-deep-research`（补外部事实） | **必配**；数值或状态类假设纸上推不准时加 `prototype` |
+| ④ 验证可行性 | `architecture-review` | `prototype`（跑起来证伪）；`research` 或 `firecrawl-deep-research`（补外部事实） | **必配**；数值或状态类假设纸上推不准时加 `prototype`；评审前先 `openspec validate`，未决问题显式列为 Open Question（含糊或 schema 错会判 `Blocked`） |
 | ⑤ 生成文件 | `writing-plans`（落 `docs/superpowers/plans/`）**和/或** `openspec-propose` 的 tasks | **worktree 前置**（进入本环节前先问，见下节） | **步骤单一真源**：plan 与 `tasks.md` 不得含**同一套可执行步骤**（通常 plan 承载步骤、`tasks.md` 退化为范围 / 验收索引） |
 | ⑥ 执行 | `executing-plans` 或 `openspec-apply-change` | `verification-before-completion` → `requesting-code-review`；收尾 `finishing-a-development-branch`（worktree 已在 ⑤ 前定） | 两道闸门必走 |
+
+## ② 与 ③ 的交错：change 文档已存在时怎么 grill
+
+默认顺序是 ②→③，但 change 已由 `openspec-propose` 生成时，允许后置 grill：
+**propose → grill → 回写 → ④ architecture-review**。有初稿才有靶子，grilling 才能逐分支拷问。
+
+- **允许推翻，不是只做补充**。回写后如果 design 的结构没变、只是多了几段解释，多半是没真被拷问过。
+- **结论必须回写** `proposal.md`（范围 / 成功标准）、`design.md`（决策与被否方案）、`specs/`（SHALL 与验收），否则等于没问。ADR 单独落 `docs/adr/`，design 里链接不复制。
+- **默认 `grill-me`**。它是 `/grilling` 的斜杠别名且 `disable-model-invocation`，只能由人调用；`/grill-with-docs` 只在有 ADR 级决策或新术语时用 —— ADR 只追加不可改，产多了是债。
+- **评审后可能还要一轮定点 grill**：把 Blocking 问题回写，只对暴露歧义的那一条重问，不要整轮重跑。
 
 ## ⑤ 开工前置：进入「生成文件」前问「要不要建 worktree」
 

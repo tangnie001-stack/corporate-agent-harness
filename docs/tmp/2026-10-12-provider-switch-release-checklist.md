@@ -35,7 +35,7 @@ ssh root@8.133.218.201 'chmod 600 /opt/www/corporate_rag/.env'
 | 2 | ACR 登录（仅首次） | `docker login --username=hi31383397@aliyun.com crpi-u3ezxc1o5hirfddw.cn-shanghai.personal.cr.aliyuncs.com` | ☐（通常跳过）|
 | 3 | 前置检查 | `git fetch && git status -sb` | ☑ 已代查：工作区干净、ahead/behind = 0 |
 | 4 | 推代码 | `git push origin dev-wsl` | ☑ `68a6d09` |
-| 5 | **Codeup 同步** | `https://deploytest-cn-shanghai.devops.aliyuncs.com/codeup/deploytest/tangnie001-stack/corporate_rag/settings/mirror_sync` → 「立即同步」 | ☐ |
+| 5 | **Codeup 同步** | `https://deploytest-cn-shanghai.devops.aliyuncs.com/codeup/deploytest/tangnie001-stack/corporate-agent-harness/settings/mirror_sync` → 「立即同步」 | ☐ |
 | 6 | **流水线** | `https://deploytest-cn-shanghai.devops.aliyuncs.com/flow/my?page=1` | ☐ |
 | 7 | 创建发布单（仅"匹配不到"时） | 同第 6 条页面 | ☐ |
 | 8 | 主机部署执行 | 自动（`preflight→start→health_check→clean`） | ☐ |
