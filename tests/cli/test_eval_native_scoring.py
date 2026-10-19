@@ -87,7 +87,6 @@ def test_diagnostics_run_serially_after_main_metrics_in_question_order():
     metrics = {"faithfulness": _NamedMetric("faithfulness")}
     diagnostics = {
         "contextual_relevancy": _NamedMetric("contextual_relevancy"),
-        "non_advice": _NamedMetric("non_advice"),
     }
 
     out = score_rows(_rows(), metrics, diagnostic_metrics=diagnostics)
@@ -95,10 +94,7 @@ def test_diagnostics_run_serially_after_main_metrics_in_question_order():
     assert calls == [
         "q0:faithfulness",
         "q0:contextual_relevancy",
-        "q0:non_advice",
         "q1:faithfulness",
         "q1:contextual_relevancy",
-        "q1:non_advice",
     ]
     assert [r["contextual_relevancy"] for r in out] == [0.5, 0.5]
-    assert [r["non_advice"] for r in out] == [0.5, 0.5]

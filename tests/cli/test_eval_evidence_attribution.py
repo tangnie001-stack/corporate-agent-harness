@@ -593,13 +593,6 @@ def test_every_emitted_root_cause_is_in_enum():
             if item["root_cause"] == "inconclusive":
                 assert item["confidence"] == "inconclusive", (metric, item)
 
-    non_advice = _collector(
-        {"metric_attempted": True, "judge_failed": False},
-        judge={"non_advice": {"score": 0.0, "error": ""}},
-    )
-    out = attribute_question(non_advice, sample_class="pure_kb", sample_failed=False)
-    assert out["non_advice"]["root_cause"] == "prompt_or_generation"
-
 
 def test_summary_counts_root_causes_and_skipped_separately():
     scored = _collector({"metric_attempted": True, "judge_failed": False})

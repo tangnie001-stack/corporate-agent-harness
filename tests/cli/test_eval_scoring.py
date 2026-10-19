@@ -125,12 +125,10 @@ def test_masks_diagnostics_for_empty_samples():
         {
             "faithfulness": [0.9, 0.1],
             "contextual_relevancy": [0.5, 0.2],
-            "non_advice": [1.0, 1.0],
         }
     )
     out = apply_sample_masks(df, [SAMPLE_CLASS_PURE_KB, SAMPLE_CLASS_EMPTY])
     assert pd.isna(out.loc[1, "contextual_relevancy"])
-    assert pd.isna(out.loc[1, "non_advice"])
     assert "contextual_relevancy" in out.loc[1, "skipped"]
 
 

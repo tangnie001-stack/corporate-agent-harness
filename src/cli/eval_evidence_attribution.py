@@ -15,7 +15,6 @@ _METRICS: tuple[str, ...] = (
     "context_precision",
     "context_recall",
     "contextual_relevancy",
-    "non_advice",
     "tool_correctness",
 )
 _BEHAVIOR_ALIASES: dict[str, str] = {
@@ -244,21 +243,6 @@ def _tool_result(facts: dict, *, sample_class: str) -> dict:
     return _result(_INCONCLUSIVE, "no routing signal", _INCONCLUSIVE)
 
 
-def _non_advice_result(item: dict) -> dict:
-    """non_advice 的归因：仅低分视为不合规。
-
-    Args:
-        item: 该指标的 judge 条目
-
-    Returns:
-        归因结果
-    """
-    score = item.get("score")
-    if score is not None and float(score) < 1.0:
-        return _result("prompt_or_generation", "advice detected", "medium")
-    return _result(_INCONCLUSIVE, "no violation", _INCONCLUSIVE)
-
-
 def _fact_metric_result(
     facts: dict, *, metric: str, item: dict, sample_class: str
 ) -> dict:
@@ -385,9 +369,6 @@ def attribute_question(
             continue
         if metric == "tool_correctness":
             out[metric] = _tool_result(facts, sample_class=sample_class)
-            continue
-        if metric == "non_advice":
-            out[metric] = _non_advice_result(item)
             continue
         out[metric] = _fact_metric_result(
             facts, metric=metric, item=item, sample_class=sample_class

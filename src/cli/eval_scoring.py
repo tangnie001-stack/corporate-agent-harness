@@ -63,10 +63,10 @@ def build_metrics(judge: Any) -> dict:
 
 
 def build_diagnostic_metrics(judge: Any) -> dict:
-    """构造三项诊断指标（不进主分/门禁）。
+    """构造两项诊断指标（不进主分/门禁）。
 
-    `ContextualRelevancy` 不需要 reference；`NonAdvice` 只判 input/actual_output。
-    两者都必须显式传 `model=judge`，否则会初始化 DeepEval 默认的 gpt-3.5-turbo。
+    `ContextualRelevancy` 不需要 reference，必须显式传 `model=judge`，
+    否则会初始化 DeepEval 默认的 gpt-3.5-turbo。
 
     `ToolCorrectness` 是确定性指标，不调裁判；仍需显式 model 与
     `async_mode=False`（默认异步分支的 measure 返回 None）、`eval_mode="llm"`。
@@ -81,14 +81,12 @@ def build_diagnostic_metrics(judge: Any) -> dict:
     import src.config.settings  # noqa: F401
     from deepeval.metrics import (
         ContextualRelevancyMetric,
-        NonAdviceMetric,
         ToolCorrectnessMetric,
     )
     # isort: on
 
     return {
         "contextual_relevancy": ContextualRelevancyMetric(model=judge),
-        "non_advice": NonAdviceMetric(advice_types=["financial"], model=judge),
         "tool_correctness": ToolCorrectnessMetric(
             model=judge, async_mode=False, eval_mode="llm"
         ),

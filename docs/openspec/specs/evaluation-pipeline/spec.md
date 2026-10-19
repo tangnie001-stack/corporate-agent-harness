@@ -186,16 +186,16 @@ system prompt SHALL 在**生产路径与评估路径**下都包含当前日期�
 
 **两类 `NaN`（只分「掩码」与「非掩码」；SHALL NOT 设计可归因的子分类）**：
 
-- **(a) 掩码跳过型**：`empty` 样本的四指标与两项裁判诊断（`contextual_relevancy` / `non_advice`）被项目主动掩码为 `NaN`/`null`。`tool_correctness` 不属于掩码集合，按自身要求评分。天然不在纯 KB 分母里。
+- **(a) 掩码跳过型**：`empty` 样本的四指标与裁判诊断（`contextual_relevancy`）被项目主动掩码为 `NaN`/`null`。`tool_correctness` 不属于掩码集合，按自身要求评分。天然不在纯 KB 分母里。
 - **(b) 非掩码型**：仅表示**裁判异常/解析失败/超时**等失败。DeepEval 4.2.9 的原生指标在"无 verdict / 无可校验陈述"时**不返回 `NaN`**——`Faithfulness` / `AnswerRelevancy` 返回 **1.0**（`score_qag_verdicts(empty_score=1)`），`ContextualPrecision` / `ContextualRecall` / `ContextualRelevancy` 返回 **0**。因此 SHALL NOT 再把"合法缺值"当作 `NaN` 的来源，也 SHALL NOT 依据请求级日志做子分类（该分类不可实现）。
 
 因此评测 SHALL：① 让 `NaN` 显式可见、且**掩码 / 非掩码在报告中标记不同**（SHALL NOT 静默计入均分）；② **单独统计非掩码 `NaN` 计数**并在报告中呈现；③ **以「非掩码 `NaN`」为判据执行有界重试**（`EVAL_METRIC_MAX_ATTEMPTS`）；**限流类（HTTP 429 / `openai.RateLimitError`）SHALL 与其它失败一样由外层有界重试**，退避 SHALL 为指数 + jitter 并优先采用 `Retry-After`；裁判 SDK 重试 SHALL 固定为 0（`max_retries=0`），避免与外层叠乘；④ 失败留证 SHALL 由**框架内部请求级日志**承载（见「Framework-internal LLM calls…」）；**该日志只做留证，SHALL NOT 被当作分类依据**；⑤ 若该日志完全不可用，报告 SHALL **显式标注"请求级日志不可用"**。
 
 **失败预检**：
 
-- **跑图失败**（异常、`[ERROR]` 回答、空回答/纯空白）的样本在进入指标评分前 SHALL 把四指标与两项裁判诊断记 `NaN`/`null`，`tool_correctness` 记 `null`；SHALL NOT 触发无意义的多次重试。
-- **未检索到材料但跑图成功**（`sample_class == empty`）的样本 SHALL 把四指标与两项裁判诊断记 `NaN`/`null`；`tool_correctness` SHALL 照常评分（未调用期望工具记 `0.0`，显式空标签且无调用记 `1.0`）。
-- 两种路径 SHALL NOT 让 `[ERROR]` 文本进入 `NonAdvice`。
+- **跑图失败**（异常、`[ERROR]` 回答、空回答/纯空白）的样本在进入指标评分前 SHALL 把四指标与裁判诊断记 `NaN`/`null`，`tool_correctness` 记 `null`；SHALL NOT 触发无意义的多次重试。
+- **未检索到材料但跑图成功**（`sample_class == empty`）的样本 SHALL 把四指标与裁判诊断记 `NaN`/`null`；`tool_correctness` SHALL 照常评分（未调用期望工具记 `0.0`，显式空标签且无调用记 `1.0`）。
+- 两种路径 SHALL NOT 让 `[ERROR]` 文本进入裁判诊断。
 
 **错误信息可见**：`score_rows` 的 `error` SHALL 同时写入 Markdown 表格与 `detail_json` 条目；仅写 CSV 不满足"样本行携带失败信息"。
 
@@ -246,7 +246,7 @@ system prompt SHALL 在**生产路径与评估路径**下都包含当前日期�
 #### Scenario: Failed generation skips scoring without retries
 
 - **WHEN** 某题跑图失败（异常、`[ERROR]`、空回答/纯空白）
-- **THEN** 该题四指标与两项裁判诊断 SHALL 直接记 `NaN`/`null`，`tool_correctness` SHALL 记 `null`，SHALL NOT 触发重试，`[ERROR]` 文本 SHALL NOT 进入 `NonAdvice`
+- **THEN** 该题四指标与裁判诊断 SHALL 直接记 `NaN`/`null`，`tool_correctness` SHALL 记 `null`，SHALL NOT 触发重试，`[ERROR]` 文本 SHALL NOT 进入裁判诊断
 
 #### Scenario: Empty material still scores tool correctness
 
@@ -659,21 +659,20 @@ NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提�
 
 ### Requirement: Diagnostic metrics do not affect the main score
 
-评测 SHALL 提供三项**诊断指标**，仅作观测，SHALL NOT 进入主分、门禁或 `eval_report` 的四指标列：
+评测 SHALL 提供两项**诊断指标**，仅作观测，SHALL NOT 进入主分、门禁或 `eval_report` 的四指标列：
 
 - `ContextualRelevancyMetric(model=judge)`：不需要 `expected_output`；评分层 SHALL 只对**前 8 条** `retrieval_context` 判定（常量 `EVAL_RELEVANCY_MAX_CONTEXTS`），SHALL NOT 原地修改共享 test case；报告 SHALL 标注"仅判前 8 条（并集顺序，非最相关 8 条）"。
-- `NonAdviceMetric(advice_types=["financial"], model=judge)`：财务合规口径。
 - 每个诊断指标 SHALL 显式传 `model=judge`，SHALL NOT 使用 DeepEval 的默认模型（`gpt-3.5-turbo` 已停服）。
 - `ToolCorrectnessMetric`：有 `expected_tools` 时 SHALL 按「Tool correctness is scored per sample as a diagnostic」评分；无该字段时记 `N/A`。构造 SHALL 使用 `async_mode=False`、`eval_mode="llm"`。
 
-诊断指标的 `NaN` SHALL 与四指标的 `NaN` 分开计数，SHALL NOT 影响 NaN 率门禁。诊断指标失败 SHALL 直接记 `NaN`/`null`，SHALL NOT 重试。`sample_class == empty` 或跑图失败的样本：`contextual_relevancy` / `non_advice` SHALL 写 `NaN`/`null`；`tool_correctness` SHALL 按工具正确性要求处理（空样本可评分，跑图失败/空回答记 N/A）。SHALL NOT 让 `[ERROR]` 文本进入 `non_advice`，也 SHALL NOT 让空 context 的 `0.0` 进入诊断均值。
+诊断指标的 `NaN` SHALL 与四指标的 `NaN` 分开计数，SHALL NOT 影响 NaN 率门禁。诊断指标失败 SHALL 直接记 `NaN`/`null`，SHALL NOT 重试。`sample_class == empty` 或跑图失败的样本：`contextual_relevancy` SHALL 写 `NaN`/`null`；`tool_correctness` SHALL 按工具正确性要求处理（空样本可评分，跑图失败/空回答记 N/A）。SHALL NOT 让 `[ERROR]` 文本进入 `contextual_relevancy`，也 SHALL NOT 让空 context 的 `0.0` 进入诊断均值。
 
-诊断指标的逐题值 SHALL 写入 `eval_report.detail_json`，键名使用**裸指标名**（`contextual_relevancy` / `non_advice` / `tool_correctness`），与四指标同级；`tool_correctness` 有标签时为 `0.0`–`1.0`、无标签或失败时为 `null`，并附 `tool_correctness_reason` 字符串。`kb_eval` API SHALL NOT 返回这些键（只存不读）。"不进主分"SHALL 由 `EVAL_METRIC_COLUMNS` 白名单保证，SHALL NOT 依赖键名前缀。
+诊断指标的逐题值 SHALL 写入 `eval_report.detail_json`，键名使用**裸指标名**（`contextual_relevancy` / `tool_correctness`），与四指标同级；`tool_correctness` 有标签时为 `0.0`–`1.0`、无标签或失败时为 `null`，并附 `tool_correctness_reason` 字符串。`kb_eval` API SHALL NOT 返回这些键（只存不读）。"不进主分"SHALL 由 `EVAL_METRIC_COLUMNS` 白名单保证，SHALL NOT 依赖键名前缀。
 
 #### Scenario: Diagnostic metrics are not part of the main score
 
 - **WHEN** 审阅主分聚合与门禁
-- **THEN** `contextual_relevancy` / `non_advice` / `tool_correctness` SHALL NOT 出现在 `EVAL_METRIC_COLUMNS` 或门禁判据中
+- **THEN** `contextual_relevancy` / `tool_correctness` SHALL NOT 出现在 `EVAL_METRIC_COLUMNS` 或门禁判据中
 
 #### Scenario: Diagnostics use the project judge
 
@@ -683,7 +682,7 @@ NaN 率超阈值时，报告 SHALL 给出「**建议启用逃生门**」的提�
 #### Scenario: Empty samples mask only judge diagnostics
 
 - **WHEN** 某样本 `sample_class == empty` 或跑图失败
-- **THEN** `contextual_relevancy` / `non_advice` SHALL 写 `NaN`/`null`，`tool_correctness` SHALL 按其评分要求处理（空样本可评分、跑图失败/空回答为 N/A），且 `non_advice` SHALL NOT 对 `[ERROR] ...` 文本评分
+- **THEN** `contextual_relevancy` SHALL 写 `NaN`/`null`，`tool_correctness` SHALL 按其评分要求处理（空样本可评分、跑图失败/空回答为 N/A），且 `contextual_relevancy` SHALL NOT 对 `[ERROR] ...` 文本评分
 
 #### Scenario: Diagnostic failures are not retried
 

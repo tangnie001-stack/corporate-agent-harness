@@ -20,7 +20,6 @@ def test_detail_includes_tool_correctness_score_reason_and_null_na():
             "context_precision": [0.6, 0.5],
             "context_recall": [0.5, 0.4],
             "contextual_relevancy": [0.4, float("nan")],
-            "non_advice": [1.0, 1.0],
             "tool_correctness": [1.0, float("nan")],
             "tool_correctness_reason": ["", "failed"],
             "error": ["", "sample_class=empty"],
@@ -47,7 +46,6 @@ def test_report_tool_section_counts_and_fully_matched(tmp_path):
             "context_precision": [0.9, 0.8, 0.7],
             "context_recall": [0.9, 0.8, 0.7],
             "contextual_relevancy": [0.5, 0.5, 0.5],
-            "non_advice": [1.0, 1.0, 1.0],
             "tool_correctness": [1.0, 0.0, float("nan")],
             "tool_correctness_reason": ["", "missing search_web", ""],
         }
@@ -88,7 +86,6 @@ def test_report_diagnostic_section_uses_const_and_counts_nan(tmp_path):
             "context_precision": [0.7, 0.5, 0.4],
             "context_recall": [0.6, 0.4, 0.2],
             "contextual_relevancy": [0.5, float("nan"), 0.2],
-            "non_advice": [1.0, 1.0, 0.0],
         }
     )
     mock_result = MagicMock()
@@ -114,11 +111,8 @@ def test_report_diagnostic_section_uses_const_and_counts_nan(tmp_path):
         f"> ContextualRelevancy 仅判前 {EVAL_RELEVANCY_MAX_CONTEXTS} 条 context"
         in content
     )
-    # 纯 KB 两行：contextual_relevancy 一例 NaN、non_advice 无 NaN
-    assert (
-        "**Diagnostic NaN (pure-KB):** contextual_relevancy=1/2, non_advice=0/2"
-        in content
-    )
+    # 纯 KB 两行：contextual_relevancy 一例 NaN
+    assert "**Diagnostic NaN (pure-KB):** contextual_relevancy=1/2" in content
     # 诊断不进主分行
     main_line = next(
         line
@@ -126,7 +120,6 @@ def test_report_diagnostic_section_uses_const_and_counts_nan(tmp_path):
         if line.startswith("**Main scores (pure-KB):**")
     )
     assert "contextual_relevancy" not in main_line
-    assert "non_advice" not in main_line
 
 
 def test_detail_entries_carry_testset_version():
@@ -142,7 +135,6 @@ def test_detail_entries_carry_testset_version():
                 "context_precision": 1.0,
                 "context_recall": 1.0,
                 "contextual_relevancy": 1.0,
-                "non_advice": 1.0,
             }
         ]
     )

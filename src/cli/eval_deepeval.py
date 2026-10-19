@@ -892,7 +892,6 @@ def _snapshot_judge(
             "context_precision",
             "context_recall",
             "contextual_relevancy",
-            "non_advice",
             "tool_correctness",
         )
         if name in scored
@@ -1059,20 +1058,6 @@ def score_rows(
                     if err:
                         errors.append(err)
                         metric_errors["contextual_relevancy"] = err
-                non_advice = diagnostic_metrics.get("non_advice")
-                if non_advice is not None:
-                    value, err = _score_metric_with_retry(
-                        "non_advice",
-                        non_advice,
-                        test_case,
-                        row,
-                        evidence,
-                        max_attempts=1,
-                    )
-                    scored["non_advice"] = value
-                    if err:
-                        errors.append(err)
-                        metric_errors["non_advice"] = err
 
             scored["error"] = ";".join(errors)
             _capture_evidence(scored, evidence_run, evidence, metric_errors)

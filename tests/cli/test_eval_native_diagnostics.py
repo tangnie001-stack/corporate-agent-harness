@@ -31,7 +31,7 @@ def test_diagnostic_metrics_use_project_judge():
     judge = _FakeJudge()
     metrics = build_diagnostic_metrics(judge)
 
-    assert list(metrics) == ["contextual_relevancy", "non_advice", "tool_correctness"]
+    assert list(metrics) == ["contextual_relevancy", "tool_correctness"]
     for name, metric in metrics.items():
         assert metric.model is judge, f"{name} 必须显式收裁判"
 
@@ -87,12 +87,11 @@ def test_empty_sample_skips_all_metrics_and_diagnostics():
     out = score_rows(
         [row],
         {"faithfulness": _Bomb()},
-        diagnostic_metrics={"contextual_relevancy": _Bomb(), "non_advice": _Bomb()},
+        diagnostic_metrics={"contextual_relevancy": _Bomb()},
     )
 
     assert math.isnan(out[0]["faithfulness"])
     assert math.isnan(out[0]["contextual_relevancy"])
-    assert math.isnan(out[0]["non_advice"])
     assert out[0]["tool_correctness"] is None
     assert out[0]["tool_correctness_reason"] == "failed"
     assert out[0]["error"] == "sample_class=empty"

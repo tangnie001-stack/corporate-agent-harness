@@ -251,7 +251,6 @@ data/deepeval/evidence/<run_id>/
 | `context_precision` | judge_failed → `judge_failure`；gold 不在 candidates → `retrieval_miss`；gold 在 candidates 但不在 final → `rerank_or_topk`；gold 在 final 但分数低 → `rerank_or_topk`（排序/噪声）；否则 `inconclusive` |
 | `context_recall` | judge_failed → `judge_failure`；testset_conflict → `testset_error`；`fact_in_corpus=false` → `parsing_or_chunking`；`fact_in_final=false` → 事实阶段根因；否则 `inconclusive` |
 | `contextual_relevancy` | judge_failed → `judge_failure`；`fact_in_corpus=false` → `parsing_or_chunking` / `testset_error`；gold 不在 candidates → `retrieval_miss`；gold 在 candidates 但不在 final → `rerank_or_topk`；否则 `inconclusive` |
-| `non_advice` | judge_failed → `judge_failure`；低分 → `prompt_or_generation`（合规建议） |
 | `tool_correctness` | `tool_correctness_reason=="failed"`（跑图失败）→ `inconclusive`；只有 `delegate_task` → `inconclusive`；跑图成功且期望工具缺失 → `tool_routing` |
 | `TaskCompletion` | failed/空回答 → `prompt_or_generation`；低分 → `inconclusive` |
 | `StepEfficiency` | 低分 → `agent_orchestration` |

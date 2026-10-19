@@ -28,7 +28,6 @@ _JUDGE_METRICS = (
     "context_precision",
     "context_recall",
     "contextual_relevancy",
-    "non_advice",
 )
 
 

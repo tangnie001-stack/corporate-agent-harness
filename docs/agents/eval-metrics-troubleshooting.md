@@ -24,7 +24,7 @@
 | 层 | 指标 | 进主分 | 进门禁 | 进 Langfuse | 说明 |
 |---|---|---|---|---|---|
 | 主分 | faithfulness / answer_relevancy / context_precision / context_recall | 是 | 是 | 是 | 只统计 `sample_class=pure_kb` 的样本 |
-| 诊断 | contextual_relevancy / non_advice / tool_correctness | 否 | 否 | 否 | 只写 `detail_json` 与 Markdown |
+| 诊断 | contextual_relevancy / tool_correctness | 否 | 否 | 否 | 只写 `detail_json` 与 Markdown |
 | 行为轴 | TaskCompletion / StepEfficiency / AgentLoopDetection | 否 | 否 | 是 | 从 `test_run_*.json` 回读；threshold=0.5 只影响 `success` 字段 |
 
 主分门禁阈值（`GATE_THRESHOLDS`）：
@@ -82,15 +82,7 @@
 - **先查**：前 8 条 context 的噪声比例、chunk 长度、top-k 配置。
 - **注意**：只判**前 8 条**（并集顺序，不是最相关 8 条）；长财报 chunk 很容易被判“部分不相关”。v6 基线只有 **0.3128**，这是诊断信号，不是门禁失败，不要和主分横比。
 
-### 4.2 non_advice — 是否给了投资建议
-
-- **度量**：裁判从回答抽“建议型表述”，判断是否属于 financial advice；通过条件是 **NO**。
-- **低分说明**：回答包含“建议买入/卖出/持有”“推荐配置”等投资建议——合规风险，不是回答质量。
-- **常见根因**：问题本身在诱导建议；prompt 没限制；模型自由发挥。
-- **先查**：回答中是否出现建议性动词/配置建议；`advice_types=["financial"]` 是否覆盖了该表述。
-- **注意**：没有建议时返回 1.0；它不看事实正确性。
-
-### 4.3 tool_correctness — 期望工具是否被调用
+### 4.2 tool_correctness — 期望工具是否被调用
 
 - **度量**：`expected_tools` 与实际**顶层**轨迹工具名对比；分数 = 命中的期望工具数 / 去重后的期望数。
 - **低分说明**：该调的工具没调——直接参数化作答、只用了 `search_web`、只委派了 `delegate_task`、或跑图失败。
@@ -134,7 +126,6 @@
 | context_precision | 相关块在 retrieved 列表中的位置；rerank/top-k | 相关块排在后面、噪声块太多 |
 | context_recall | 参考答案的事实是否在语料/检索结果中 | 题集参考答案错、期间错标、检索漏召 |
 | contextual_relevancy | 前 8 条 context 的噪声比例 | chunk 太大、query 太宽、top-k 太大 |
-| non_advice | 回答是否出现投资建议 | 合规问题，不是质量分 |
 | tool_correctness | 顶层轨迹是否调了 expected_tools | 参数化作答、只联网、只委派、跑图失败 |
 | TaskCompletion | 最终回答是否完成任务 | 拒答、空回答、迭代触顶、只给过程 |
 | StepEfficiency | 迭代数、重复工具调用、多余节点 | Agent 打转、verify 循环、过度格式化 |
@@ -151,7 +142,6 @@
 | 主分 | context_precision | 0.7913（低于 0.80 门禁） |
 | 主分 | context_recall | 0.8413 |
 | 诊断 | contextual_relevancy | 0.3128（诊断常态，不是门禁） |
-| 诊断 | non_advice | 1.0000 |
 | 诊断 | tool_correctness | 22/22 = 1.0000 |
 | 行为 | TaskCompletion | 0.9818 |
 | 行为 | StepEfficiency | 0.7455 |
@@ -200,7 +190,7 @@ PGPASSWORD="$POSTGRES_PASSWORD" psql -h localhost -U corporate_rag -d corporate_
 
 - `q_index`、`question`、`testset_version`
 - 四主分：`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`
-- 诊断：`contextual_relevancy` / `non_advice` / `tool_correctness` / `tool_correctness_reason`
+- 诊断：`contextual_relevancy` / `tool_correctness` / `tool_correctness_reason`
 - `error`、`retrieval_details`（source / score / kind）
 
 ### 8.3 报告与 trace
@@ -261,7 +251,7 @@ PGPASSWORD="$POSTGRES_PASSWORD" psql -h localhost -U corporate_rag -d corporate_
 
 ## 10. 常见误判
 
-- **1.0 不等于完美**：faithfulness / answer_relevancy / non_advice 在“没 claim / 没 statement / 没 advice”时原生返回 1.0。
+- **1.0 不等于完美**：faithfulness / answer_relevancy 在“没 claim / 没 statement”时原生返回 1.0。
 - **CP/CR 低不一定是检索的锅**：参考答案臆造、期间错标、单位不一致都会让 CR 变 0。
 - **contextual_relevancy 低是常态**：只判前 8 条，长财报 chunk 很容易被判部分不相关；它不是门禁。
 - **StepEfficiency 低不等于答案错**：它惩罚的是过程冗余/格式化，不是事实正确性。

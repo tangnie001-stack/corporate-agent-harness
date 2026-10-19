@@ -744,7 +744,7 @@ Success:
 
 `pass_threshold` 下发常量 `EVAL_PASS_THRESHOLD`（见 §3.6），前端据此判定通过，**不得硬编码 `0.7`**。
 
-该接口**不返回 `detail_json`**：逐题明细只落库，供 CLI / 报告下钻。诊断指标（`contextual_relevancy` / `non_advice`）仅以**裸键**存在于 `detail_json` 的逐题条目中，既不是接口顶层字段，也不参与 `overall_score` 与门禁。
+该接口**不返回 `detail_json`**：逐题明细只落库，供 CLI / 报告下钻。诊断指标（`contextual_relevancy` / `tool_correctness`）仅以**裸键**存在于 `detail_json` 的逐题条目中，既不是接口顶层字段，也不参与 `overall_score` 与门禁。历史行可能仍带已退役的 `non_advice` 键，新行不再写入。
 
 ### 2.6 健康检查
 
@@ -912,7 +912,7 @@ CASCADE 级联删除：知识库 → 文档 → 对话历史。
 | `report.overall_score` | float | **纯 KB 掩码后的四项指标均值**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`），与报告**主分**同口径 |
 | `report.passed` | bool | 是否达标（`overall_score >= EVAL_PASS_THRESHOLD`，`src/config/const.py`）；`run_type=baseline` 时**强制 `False`（不写 NULL）**，接口层再按 `run_type` 归一为 `null` |
 | `report.report_path` | str\|null | CSV 报告路径 |
-| `report.detail_json` | list\|null | 逐条 QA 得分；每条含 `q_index`、**全部 `EVAL_METRIC_COLUMNS`**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`）、**诊断指标裸键**（`contextual_relevancy` / `non_advice` / `tool_correctness`，不进主分与门禁）、`error`（评分失败摘要，无失败为空串）与可选 `retrieval_details`（该 query 精排后 `[{source, score, kind}, ...]`）。`tool_correctness` 按该题 `expected_tools` 逐题评分为 `0.0`–`1.0`，无标签、跑图失败/空回答、工具指标自身失败（抛错 / 返回 `None` / 不可用）三类为 `null`；其逐题原因 `tool_correctness_reason` **只落 `detail_json`**，Markdown 报告展示、不进 CSV（完全命中为空串）。诊断键只存在于 `detail_json`，**不出现于接口顶层响应**。明细保留**全部样本行**：`empty` 样本只掩码四指标与 `contextual_relevancy` / `non_advice`（记 `NaN`），`tool_correctness` **照常评分**。`NaN` 亦在裁判对该题该指标失败（如超时/额度耗尽）时出现。注意 `NaN` 是 Python `json.dumps` 的非标准扩展，**严格 JSON 解析器（如浏览器 `JSON.parse`）会拒绝**；见 §8.4 |
+| `report.detail_json` | list\|null | 逐条 QA 得分；每条含 `q_index`、**全部 `EVAL_METRIC_COLUMNS`**（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`）、**诊断指标裸键**（`contextual_relevancy` / `tool_correctness`，不进主分与门禁）、`error`（评分失败摘要，无失败为空串）与可选 `retrieval_details`（该 query 精排后 `[{source, score, kind}, ...]`）。`tool_correctness` 按该题 `expected_tools` 逐题评分为 `0.0`–`1.0`，无标签、跑图失败/空回答、工具指标自身失败（抛错 / 返回 `None` / 不可用）三类为 `null`；其逐题原因 `tool_correctness_reason` **只落 `detail_json`**，Markdown 报告展示、不进 CSV（完全命中为空串）。诊断键只存在于 `detail_json`，**不出现于接口顶层响应**。明细保留**全部样本行**：`empty` 样本只掩码四指标与 `contextual_relevancy`（记 `NaN`），`tool_correctness` **照常评分**。`NaN` 亦在裁判对该题该指标失败（如超时/额度耗尽）时出现。注意 `NaN` 是 Python `json.dumps` 的非标准扩展，**严格 JSON 解析器（如浏览器 `JSON.parse`）会拒绝**；见 §8.4 |
 
 > **口径注（主分）**：落库路径先按样本类别掩码（`apply_sample_masks`），
 > `overall_score` 取**仅 `pure_kb` 样本**的四项指标均值（`main_score_means` 后求均），
@@ -1410,10 +1410,9 @@ python -m src.cli.eval_deepeval --list-kbs
 | `web` | 材料中含联网块（降级联网） | ❌ 不进（但 context 指标不置空） |
 | `empty` | 未检索到任何材料 | ❌ 不进；四项主分指标值均为 `NaN`，`skipped` 只记 5 个被掩码列（不含 `answer_relevancy`，见下注） |
 
-> `empty` 样本掩码口径：评分阶段先把四项主分指标与两项裁判诊断逐项写 `NaN`，
+> `empty` 样本掩码口径：评分阶段先把四项主分指标与 `contextual_relevancy` 逐项写 `NaN`，
 > 随后 `apply_sample_masks` 把 `CONTEXT_METRIC_COLUMNS + DIAGNOSTIC_METRIC_COLUMNS`
-> （`faithfulness` / `context_precision` / `context_recall` / `contextual_relevancy` /
-> `non_advice`）置 `NaN` 并记入 `skipped`；`answer_relevancy` 同样为 `NaN`，但**不在**
+> （`faithfulness` / `context_precision` / `context_recall` / `contextual_relevancy`）置 `NaN` 并记入 `skipped`；`answer_relevancy` 同样为 `NaN`，但**不在**
 > `skipped` 内。
 
 **CSV**（`--output`，默认 `{EVAL_REPORT_DIR}/deepeval_eval_<timestamp>.csv`）实际表头
@@ -1421,7 +1420,7 @@ python -m src.cli.eval_deepeval --list-kbs
 空白 pandas 索引列**，按列名消费、勿按位解析）：
 
 ```text
-,question,ground_truth,trace_id,q_index,error,faithfulness,answer_relevancy,context_precision,context_recall,contextual_relevancy,non_advice,tool_correctness,sample_class,skipped,trajectory
+,question,ground_truth,trace_id,q_index,error,faithfulness,answer_relevancy,context_precision,context_recall,contextual_relevancy,tool_correctness,sample_class,skipped,trajectory
 ```
 
 | 列 | 说明 |
@@ -1431,7 +1430,7 @@ python -m src.cli.eval_deepeval --list-kbs
 | `q_index` | 题号（0 起） |
 | `error` | 本题任一指标（含诊断指标）最终失败的错误摘要；主指标成功但诊断失败时也非空，无失败为空串。**例外**：`tool_correctness` 自身失败不追加到本列，只体现在 `tool_correctness_reason` 的 `tool_correctness:*` / `metric_unavailable`（该原因不进 CSV，见下行） |
 | 四个指标列 | `faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`，按 `EVAL_METRIC_COLUMNS` 顺序 |
-| `contextual_relevancy` / `non_advice` | **诊断指标**：写 CSV 但不进主分与门禁（`--deepeval-only` 不产出） |
+| `contextual_relevancy` | **诊断指标**：写 CSV 但不进主分与门禁（`--deepeval-only` 不产出） |
 | `tool_correctness` | **诊断指标**：有 `expected_tools` 标签且非失败时 `0.0`–`1.0`；为空有三种原因——无标签、跑图失败/空回答、工具指标自身失败（抛错 / 返回 `None` / 不可用）。其中**只有工具指标自身失败不写入 `error` 列**；跑图失败/空回答的行仍会写 `error`（`empty` 样本固定为 `sample_class=empty`）。CSV **不含** `tool_correctness_reason`（原因只落 `detail_json`，Markdown 报告展示，不进 CSV） |
 | `sample_class` | 该题样本类别（上表三类之一） |
 | `skipped` | 被掩码跳过的指标名，`;` 分隔；未跳过为空串 |

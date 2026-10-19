@@ -540,10 +540,7 @@ EVAL_METRIC_COLUMNS: tuple[str, ...] = (
     "context_recall",
 )
 # 诊断指标（不进主分/门禁）：逐题写入 detail_json，NaN 单独统计。
-DIAGNOSTIC_METRIC_COLUMNS: tuple[str, ...] = (
-    "contextual_relevancy",
-    "non_advice",
-)
+DIAGNOSTIC_METRIC_COLUMNS: tuple[str, ...] = ("contextual_relevancy",)
 # ContextualRelevancy 每条 context 单独调一次裁判；截断到前 8 条以控制成本与
 # gather 的失败面。报告必须标注"仅判前 8 条（并集顺序，非最相关 8 条）"。
 EVAL_RELEVANCY_MAX_CONTEXTS: int = 8

@@ -109,7 +109,7 @@ python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 5 --de
 1. 加载测试集 JSON（取出 `questions`、`ground_truth` 与 `expected_tools`）
 2. 构建生产同款 LangGraph（检索 → rerank → 生成）
 3. 逐题让 RAG 系统生成回答 `answer` 与检索上下文 `contexts`
-4. 用 DeepEval 原生四指标打分（`AnswerRelevancyMetric` / `FaithfulnessMetric` / `ContextualPrecisionMetric` / `ContextualRecallMetric`）；诊断指标（`contextual_relevancy` / `non_advice` / `tool_correctness`）另行记录，不进主分与门禁
+4. 用 DeepEval 原生四指标打分（`AnswerRelevancyMetric` / `FaithfulnessMetric` / `ContextualPrecisionMetric` / `ContextualRecallMetric`）；诊断指标（`contextual_relevancy` / `tool_correctness`）另行记录，不进主分与门禁
 
 > **上下文含实体锚点**：评估收集的 `contexts` 与生产 prompt 共用 `RAGContext.to_prompt_text()` 渲染格式（`src/rag/context.py`）。当分块 metadata 带实体（`company`/`report_period`/`sec_code` 等，标签为 `公司`/`期间`/`代码`）时，上下文会多出一行 `实体标签: 值` 锚点，再跟 `内容:` 正文；无实体时保持 `来源 → 内容` 原格式。这保证评测裁判看到的上下文与线上生成模型完全一致（实体锚点用于增强忠实度）。评估脚本入口见 `src/cli/eval_deepeval.py:157`。
 
@@ -129,10 +129,10 @@ python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 5 --de
 CSV 每行结构（`question`、`ground_truth` 为原测试集内容，`trace_id` 为该问题链路追踪 ID；指标列按 `EVAL_METRIC_COLUMNS` 顺序，诊断指标紧随其后）：
 
 ```
-index, question, ground_truth, trace_id, q_index, error, faithfulness, answer_relevancy, context_precision, context_recall, contextual_relevancy, non_advice, tool_correctness, ...
+index, question, ground_truth, trace_id, q_index, error, faithfulness, answer_relevancy, context_precision, context_recall, contextual_relevancy, tool_correctness, ...
 ```
 
-- `contextual_relevancy` / `non_advice` / `tool_correctness` 都是**诊断列**，`--deepeval-only` 不产出。
+- `contextual_relevancy` / `tool_correctness` 都是**诊断列**，`--deepeval-only` 不产出。
 - `tool_correctness` 在**有 `expected_tools` 且非失败**时为 `0.0`–`1.0`；**无标签或跑图失败/空回答**时为空。
 - 逐题原因**只进 `detail_json` 与 Markdown 报告**：CSV **不新增** `tool_correctness_reason` 列。
 
@@ -180,7 +180,6 @@ MD 摘要末尾会给出整体平均值，例如：
 | 指标 | 含义 | 口径 |
 |---|---|---|
 | `contextual_relevancy` | 检索上下文与问题的相关程度 | 只判前 8 条 context（并集顺序，非最相关 8 条） |
-| `non_advice` | 回答是否给出越界建议（`financial` 类型） | 不做金融建议；跑图失败/空样本不评分 |
 | `tool_correctness` | 工具选择是否正确 | 命中的期望工具数 / **去重后**的期望数（0.0–1.0）；只比较工具名与类型（类型固定 `FUNCTION`），不比较参数、顺序、调用次数 |
 
 `tool_correctness` 的三态：
@@ -189,7 +188,7 @@ MD 摘要末尾会给出整体平均值，例如：
 - **无标签**（字段缺失或 `null`，如 v5 题集）：N/A（`null` / CSV 空）。
 - **失败**（跑图异常、`[ERROR]` 回答、空回答或纯空白）：N/A（`null` / CSV 空），不记 `0.0`。
 
-`sample_class=empty` 只掩码四指标与 `contextual_relevancy` / `non_advice`，`tool_correctness` **照常评分**。
+`sample_class=empty` 只掩码四指标与 `contextual_relevancy`，`tool_correctness` **照常评分**。
 
 ### 解读方法
 

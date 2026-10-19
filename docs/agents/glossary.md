@@ -220,7 +220,6 @@
 | `context_precision` | 上下文精确率：召回的 chunk 有多相关 |
 | `context_recall` | 上下文召回率：相关信息有多少被召回 |
 | `contextual_relevancy` | **诊断指标**（不进主分）：检索上下文与问题的相关程度，仅判前 8 条 |
-| `non_advice` | **诊断指标**（不进主分）：回答是否给出越界建议（`financial` 类型），不做金融建议 |
 | `tool_correctness` | **诊断指标**（不进主分/门禁/Langfuse）：命中的期望工具数 / 去重后的期望工具数（0.0–1.0）。只比较工具名与类型（类型固定 `FUNCTION`），不比较参数、顺序、调用次数；`expected_tools=[]` 表示期望不调工具；字段缺失或跑图失败/空回答为 N/A |
 
 ### 出题题集字段（v6）

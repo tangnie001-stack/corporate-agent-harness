@@ -39,7 +39,7 @@ TBD - created by archiving change eval-trace-correlation. Update Purpose after a
 - 同一指标不同 attempt SHALL 使用不同的 `judge_measure_id`，且 `call_index` SHALL 从 1 重新开始。
 - 传输失败（request 已发出、无 response）SHALL 由 `end_measure()` 补一条 `JUDGE_HTTP`：`status=null`、`tokens_in/tokens_out=null`、`latency_ms=null`、`error="no_response"`。
 - 无 active measure 的请求（行为轴）SHALL 照常记录 request/response 事件，但 SHALL NOT 分配 `call_index`、SHALL NOT 产 `JUDGE_HTTP`、SHALL NOT 伪造 ID。
-- 本要求 SHALL 覆盖四主分与两项裁判诊断（`contextual_relevancy` / `non_advice`）；`tool_correctness` 不调用裁判，SHALL NOT 产生 `JUDGE_CALL` / `JUDGE_HTTP`；行为轴（`TaskCompletion` / `StepEfficiency`）SHALL NOT 被本 change 展开到 per-call。
+- 本要求 SHALL 覆盖四主分与裁判诊断（`contextual_relevancy`）；`tool_correctness` 不调用裁判，SHALL NOT 产生 `JUDGE_CALL` / `JUDGE_HTTP`；行为轴（`TaskCompletion` / `StepEfficiency`）SHALL NOT 被本 change 展开到 per-call。
 
 #### Scenario: Multi-call metric produces multiple HTTP records
 

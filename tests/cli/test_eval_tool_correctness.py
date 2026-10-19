@@ -139,7 +139,6 @@ def test_empty_sample_with_labels_scores_zero():
         {"faithfulness": _Bomb()},
         diagnostic_metrics={
             "contextual_relevancy": _Bomb(),
-            "non_advice": _Bomb(),
             "tool_correctness": metric,
         },
     )
@@ -184,7 +183,6 @@ def test_failed_run_with_materials_masks_metrics_without_scoring(trajectory):
         },
         diagnostic_metrics={
             "contextual_relevancy": _Bomb("contextual_relevancy"),
-            "non_advice": _Bomb("non_advice"),
             "tool_correctness": tool_metric,
         },
     )
@@ -195,7 +193,6 @@ def test_failed_run_with_materials_masks_metrics_without_scoring(trajectory):
         "context_precision",
         "context_recall",
         "contextual_relevancy",
-        "non_advice",
     ):
         assert math.isnan(result[name]), name
     assert result["tool_correctness"] is None
