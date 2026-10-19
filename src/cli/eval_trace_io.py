@@ -31,6 +31,15 @@ def latency_ms(value: Any) -> int | None:
     return int(float(value) * 1000)
 
 
+def _client(host: str) -> Langfuse:
+    """构造只读 Langfuse 客户端。"""
+    return Langfuse(
+        host=host,
+        public_key=settings.LANGFUSE_PUBLIC_KEY,
+        secret_key=settings.LANGFUSE_SECRET_KEY,
+    )
+
+
 def fetch_trace(trace_id: str, host: str) -> Any:
     """按 trace id 拉取完整 trace（含 observations）。
 
@@ -41,12 +50,11 @@ def fetch_trace(trace_id: str, host: str) -> Any:
     Returns:
         `TraceWithFullDetails`
     """
-    client = Langfuse(
-        host=host,
-        public_key=settings.LANGFUSE_PUBLIC_KEY,
-        secret_key=settings.LANGFUSE_SECRET_KEY,
-    )
-    return client.fetch_trace(trace_id).data
+    client = _client(host)
+    try:
+        return client.fetch_trace(trace_id).data
+    finally:
+        client.shutdown()
 
 
 def parse_since(value: str) -> datetime | None:
@@ -73,12 +81,11 @@ def fetch_recent(host: str, *, since: datetime | None, limit: int) -> list[Any]:
     Returns:
         trace 摘要列表；每条含 id / timestamp / input / output / tags
     """
-    client = Langfuse(
-        host=host,
-        public_key=settings.LANGFUSE_PUBLIC_KEY,
-        secret_key=settings.LANGFUSE_SECRET_KEY,
-    )
+    client = _client(host)
     kwargs: dict = {"limit": limit, "name": "chat_turn", "tags": ["chat"]}
     if since is not None:
         kwargs["from_timestamp"] = since
-    return list(client.fetch_traces(**kwargs).data)
+    try:
+        return list(client.fetch_traces(**kwargs).data)
+    finally:
+        client.shutdown()
