@@ -217,6 +217,9 @@ PGPASSWORD="$POSTGRES_PASSWORD" psql -h localhost -U corporate_rag -d corporate_
 - **`judge http` 的 `status=null` + `error=no_response` 是传输失败**（连接失败 / 超时），
   **不是裁判判错**；拿到了 2xx 但 `json_ok=false` 才是响应内容不可用。行为轴 judge 没有
   active measure，故在 `judge http` 中缺席（v1 已知边界）。
+- **线上单条 / 批量 trace 回放**：`python -m src.cli.eval_trace --trace-id <id>` 或
+  `--since/--limit`，拉 Langfuse trace、跑 reference-free DeepEval、输出
+  `analysis.root_causes`；命令与边界见 `src/cli/README.md`「单条 / 批量 trace 回放」。
 
 ### 8.5 用 `--evidence` 走六步证据链
 
