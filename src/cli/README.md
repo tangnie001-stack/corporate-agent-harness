@@ -214,10 +214,10 @@ python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 6 --ev
 python -m src.cli.eval_deepeval --kb-id <知识库UUID> --testset-version 6 --evidence-all
 ```
 
-- `--evidence`：只写低分 / NaN / 跑图失败 / 工具未命中 / 行为低分题（`sample_class=empty` 必写）；web 样本主分低不触发（没有 KB 事实链），但工具与行为异常仍会写。
+- `--evidence`：只写门禁指标（`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`）低分或 NaN / 跑图失败 / 工具未命中 / 行为低分题（`sample_class=empty` 必写）；诊断指标低分不触发写盘；web 样本主分低不触发（没有 KB 事实链），但工具与行为异常仍会写。
 - `--evidence-all`：写全部题（隐含 `--evidence`）。
 - 路径：`data/deepeval/evidence/<run_id>/q_<q_index>.json` + `summary.json`；`run_id` 为 UTC 时间戳 `%Y%m%d_%H%M%S`，与同轮报告同源。
-- 单题内容：`retrieval` 各阶段候选快照（`dense` / `lexical` / `rrf` / `rerank_after` / `dedup` / `topk` / `final_contexts`）、`facts` 事实链与 `attribution` 归因（`root_cause` / `confidence` / `evidence`）。`inconclusive` 是合法结果，表示证据不足以断定。
+- 单题内容：`retrieval` 各阶段证据（`dense` / `lexical` / `rrf` / `rerank_before` / `rerank_after` / `dedup` / `topk` / `final_contexts`，三种形状不同，见契约）、`facts` 事实链与 `attribution` 归因（`root_cause` / `confidence` / `evidence`）。`inconclusive` 是合法结果，表示证据不足以断定。
 - `summary.json`：本轮 `evidence_files` / `low_score_questions` / `root_cause_counts` / `skipped_metric_count` 等汇总。
 - 边界：faithfulness 在 F v1 不做 claim 级幻觉归因；多值题部分覆盖只给 `inconclusive`；web 样本不做 KB 链归因；证据是旁路观测，不改评分、门禁与 Langfuse，写盘失败只告警。
 

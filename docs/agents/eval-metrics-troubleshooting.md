@@ -237,10 +237,10 @@ PGPASSWORD="$POSTGRES_PASSWORD" psql -h localhost -U corporate_rag -d corporate_
 |---|---|---|---|
 | 1 | 分数 | CSV / `detail_json` 的该题指标 | 先分清低分 / NaN / N/A（§1），NaN 与 0 不是一回事 |
 | 2 | trace | `trace.run_trace_id` / `trace.sut_trace_id` / `trace.judge_measures` | 串起整轮、该题与裁判调用；`judge_measures` 有 error 即裁判失败 |
-| 3 | corpus | `facts.fact_in_corpus` / `facts.fact_coverage.corpus` | false 或 null → 语料没有该事实：解析/分块或题集错误（null = 语料不可用，不下结论） |
+| 3 | corpus | `facts.fact_in_corpus` / `facts.fact_coverage.corpus` | false → 语料没有该事实：解析/分块或题集错误；null → 语料不可用**或参考答案切不出探针 token**，不下结论 |
 | 4 | candidates | `facts.fact_in_candidates` / `facts.fact_coverage.candidates` | false → `retrieval_miss`：密集/词法/RRF 都没召回 |
 | 5 | rerank | `facts.fact_in_reranked` | false 且 candidates 为 true → `rerank_or_topk`：候选有、精排丢 |
-| 6 | final / answer | `facts.fact_in_final`、`facts.answer_mentions_fact`、`attribution.*` | final false → `rerank_or_topk`（top-k 截断）；final true 但指标低 → 排序或生成；**直接采信 `root_cause` / `confidence` / `evidence`，不要自行再推** |
+| 6 | final / answer | `facts.fact_in_final`、`facts.answer_mentions_fact`、`attribution.*` | final false → `rerank_or_topk`（top-k 截断）；final true 但指标低 → 先看 `attribution`，无规则命中时为 `inconclusive`；**直接采信 `root_cause` / `confidence` / `evidence`，不要自行再推** |
 
 - 归因只对实际执行的指标产出；`inconclusive` 是合法结果（证据不足），不是“没问题”。
 - 多值题在某一阶段只命中部分 token 时，归因固定为 `inconclusive`，看 `missing_fact_tokens`。

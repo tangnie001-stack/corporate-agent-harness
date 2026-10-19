@@ -1546,12 +1546,27 @@ CLI `eval_deepeval --generate` 同理报错并指向 `testset_synth`。
 | `trace` | `run_trace_id` / `sut_trace_id` / `judge_measures[]`（含 `judge_calls`）/ `behavior`（`trace_id` / `link_method`） |
 | `testset` | 该题测试集样本字段（`reference` / `expected_tools` / `numeric_risk` 等） |
 | `query` | 问题原文与改写/子查询 |
-| `retrieval` | 各阶段候选快照：`dense` / `lexical` / `rrf` / `rerank_before` / `rerank_after` / `dedup` / `topk` / `final_contexts`。阶段形如 `{items, count, total_count, truncated, failed[, reason]}`；`items[]` 含 `chunk_id` / `parent_key` / `doc_id` / `source` / `page` / `rank` / `score` / `score_kind` / `distance`。web 样本另写 `status="not_applicable"` |
+| `retrieval` | 各阶段证据，三种形状并存（见下方「`retrieval` 三种形状」）。web 样本另写 `status="not_applicable"` |
 | `tool_calls` | `name` / `args` / `result_count` / `latency_ms` / `iteration` / `call_index`；`retrieve_kb` 由工具现场记录，其余来自轨迹、缺失字段为 `null` |
 | `judge` | 逐指标 `score` / `error` / `metric_attempted` / `skipped_reason` |
 | `behavior` | `metrics` / `reasons` / `trace_id` / `link_method` |
 | `facts` | 事实链 `fact_in_corpus` / `fact_in_candidates` / `fact_in_reranked` / `fact_in_final`（true / false / null）、`fact_coverage`（同四阶段，0~1 或 null）、`fact_tokens` / `fact_hit_tokens` / `missing_fact_tokens`、`gold_chunk_ids` / `gold_chunk_source` / `gold_chunk_confidence`、`judge_failed` / `metric_attempted` / `skipped_reason`、`answer_mentions_fact`、`testset_conflict` |
 | `attribution` | 指标名 → `{root_cause, confidence, evidence}`；`root_cause` ∈ `parsing_or_chunking` / `retrieval_miss` / `rerank_or_topk` / `prompt_or_generation` / `tool_routing` / `testset_error` / `judge_failure` / `agent_orchestration` / `inconclusive`；`confidence` ∈ `high` / `medium` / `low` / `inconclusive` |
+
+**`retrieval` 三种形状**（阶段不同、结构不同，勿按同一 schema 解析）：
+
+1. **阶段快照** —— `dense` / `lexical` / `rrf` / `rerank_before` / `rerank_after`：
+   `{items, count, total_count, truncated, failed[, reason]}`；`items[]` 含 `chunk_id` /
+   `parent_key` / `doc_id` / `source` / `page` / `rank` / `score` / `score_kind` /
+   `distance`。候选按 `EVIDENCE_CANDIDATE_CAP`（50）截断，`count` 为返回条数、
+   `total_count` 为截断前总数；`score_kind` ∈ `cosine_similarity` / `lexical` / `rrf` /
+   `rerank` / `fallback`，精排降级时 `failed=true` 且带 `reason="rerank_failed"`。
+2. **ID 对** —— `dedup` 为 `{dropped_chunk_ids, kept_chunk_ids}`；`topk` 为
+   `{dropped_chunk_ids, kept_chunk_ids, rank_before_topk, rank_after_topk}`。两者只记
+   `chunk_id` 数组（`rank_*` 是条数），不含候选条目字段。
+3. **最终上下文** —— `final_contexts` 是**列表**（多次工具调用按序累积），元素为
+   `{chunk_id, parent_key, source, page, score, order_in_prompt}`；没有 `items` /
+   `doc_id` / `rank` / `score_kind` / `distance`。
 
 `summary.json` 字段：`schema_version` / `run_id` / `run_trace_id` / `qa_count` /
 `low_score_questions`（已写证据的题号）/ `evidence_files`（已写文件名）/
