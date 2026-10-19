@@ -284,6 +284,8 @@ fact_in_final is False      → rerank_or_topk（dedup/top-k）
 
 不把 `low` 自动升级为 `high`；`inconclusive` 是合法结果。
 
+例外：`rerank_or_topk` 在 `fact_coverage.candidates == 1.0` 且 `fact_in_final == false` 时即判 `high`，不看 gold 来源。
+
 ### D11：summary 根因分布
 
 `summary.json` 至少包含：

@@ -18,7 +18,7 @@ from pandas import Series
 
 from src.cli.eval_evidence_attribution import attribute_question
 from src.cli.eval_evidence_facts import build_facts
-from src.cli.eval_evidence_probe import probe_reference_chunks, resolve_gold
+from src.cli.eval_evidence_probe import resolve_gold
 from src.config.const import SAMPLE_CLASS_WEB
 from src.core.eval_evidence import QuestionEvidence
 
@@ -285,7 +285,9 @@ def write_question(
     gold: dict = {}
     if sample_class != SAMPLE_CLASS_WEB:
         gold = resolve_gold(collector.testset or {}, chunk_list, reference)
-        probe = probe_reference_chunks(reference, chunk_list)
+        # resolve_gold 各分支都以探针结果为底并原样带出全部探针字段，直接复用，
+        # 避免再扫一遍全量语料
+        probe = gold
     collector.facts = build_facts(
         collector,
         probe,

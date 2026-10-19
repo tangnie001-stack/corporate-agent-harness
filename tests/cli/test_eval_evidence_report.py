@@ -4,6 +4,7 @@ import json
 
 import pandas as pd
 
+from src.cli import eval_evidence_probe as probe
 from src.cli import eval_evidence_report as report
 from src.cli import eval_evidence_writer as writer
 from src.cli.eval_evidence_report import should_write_evidence, write_evidence_run
@@ -163,7 +164,7 @@ def test_web_guard_nulls_fact_chain_and_skips_probe(tmp_path, monkeypatch):
     def _boom(*args, **kwargs):
         raise AssertionError("web 样本不应调用探针")
 
-    monkeypatch.setattr(writer, "probe_reference_chunks", _boom)
+    monkeypatch.setattr(probe, "probe_reference_chunks", _boom)
     monkeypatch.setattr(writer, "resolve_gold", _boom)
     _write(
         tmp_path,
@@ -345,12 +346,14 @@ def test_probe_failure_is_contained(tmp_path, monkeypatch):
     second = run.new_question(1)
     second.testset = {"reference": ""}
 
+    real_probe = probe.probe_reference_chunks
+
     def _boom(reference, *args, **kwargs):
         if reference:
             raise RuntimeError("probe down")
-        return {}
+        return real_probe(reference, *args, **kwargs)
 
-    monkeypatch.setattr(writer, "probe_reference_chunks", _boom)
+    monkeypatch.setattr(probe, "probe_reference_chunks", _boom)
     _write(
         tmp_path,
         monkeypatch,
