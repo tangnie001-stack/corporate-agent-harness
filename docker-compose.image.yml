@@ -195,8 +195,11 @@ services:
     # ⚠ 自建镜像**留在私有 repo**：镜像内含 src/ + scripts/（项目源码），放公开库等于公开代码。
     # 放公开 repo 等于公开代码。若确要公开，改这一行即可（并接受源码可被任何人拉取）。
     image: crpi-u3ezxc1o5hirfddw.cn-shanghai.personal.cr.aliyuncs.com/deploy_demo/deploy_store_local:1
-    mem_limit: 512m
-    mem_reservation: 256m
+    # 2g：上传接口把整份文件读进内存（document_service 的 file.read()），年报类 PDF 解析时
+    # 峰值远超 512m —— 2026-10-20 实测 512m 下连续被 cgroup OOM 杀掉（dmesg oom-kill，
+    # task=python3.12/uvicorn），表现为上传 202 之后轮询 502、几十秒后"自己好了"。
+    mem_limit: 2g
+    mem_reservation: 1g
     container_name: corporate-rag-app
     restart: unless-stopped
     ports:

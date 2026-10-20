@@ -30,7 +30,9 @@
 
 ### 1.2 资源档位
 
-沿用 **dev 档位**（`docker-compose.image.yml` 的 `mem_limit` 合计 **≈2.28 GB**：redis 128m / postgres 1g / minio 256m / langfuse-web 256m / nginx 128m / app 512m）。
+`docker-compose.image.yml` 的 `mem_limit` 合计 **≈3.84 GB**：redis 128m / postgres 1g / minio 256m / langfuse-web 256m / nginx 128m / **app 2g**。
+
+> **app 为什么是 2g**：上传接口 `await file.read()` 把整份文件读进内存，解析器再展开（图片解码放大数倍）。2026-10-20 实测 512m 下解析年报类 PDF 连续被 cgroup OOM 杀掉（`dmesg` 有 `oom-kill ... task=python3.12`），症状是上传返回 202 之后，轮询状态的请求全部 502、几十秒后自动恢复。调大后宿主 8G 仍有富余（整栈实测约 700MB）。
 
 实测整栈占用 **≈715 MiB**（app 254 / langfuse-web 212 / minio 144 / postgres 83 / nginx 12 / redis 10）→ **2C8G 有富余**。
 
