@@ -334,6 +334,21 @@ for f in deploy/nginx/nginx.conf; do
   if [ ! -f "$f" ]; then info "✗ 缺文件: $f"; missing=1; fi
 done
 [ "$missing" = 0 ] || fail "制品不完整 —— 上述路径靠挂载供 nginx / postgres 使用，缺失会导致对应功能失效"
+
+# TLS 证书：nginx.conf 里引用的每个证书文件都必须在宿主就位。
+# 缺证书时 nginx 新容器**启动即退出**（restart 策略下反复重启），80/443 无人监听、
+# 健康检查必然失败、整站下线 —— 必须在动容器之前拦住。2026-10-20 实际踩过：
+# 制品先上机、证书没传，compose 重建 nginx 后整站不可用。
+# 清单从 nginx.conf 派生，增删域名不用改本脚本。
+CERT_ROOT="/opt/www/certs"
+missing_certs=""
+cert_refs=$(grep -oE 'ssl_certificate(_key)?[[:space:]]+/etc/nginx/certs/[^;[:space:]]+' deploy/nginx/nginx.conf 2>/dev/null | awk '{print $2}' | sort -u || true)
+for p in $cert_refs; do
+  host_p="${CERT_ROOT}/${p#/etc/nginx/certs/}"
+  if [ ! -f "$host_p" ]; then missing_certs="${missing_certs} ${host_p}"; fi
+done
+[ -z "$missing_certs" ] || fail "缺少 TLS 证书:${missing_certs} —— nginx 会启动失败、整站不可用；先按 runbook §1.4 上传证书再发布（本次未动任何容器，旧版本仍在线）"
+info "✓ TLS 证书就位（$(echo "$cert_refs" | wc -w) 个文件）"
 # 注：src/ scripts/ skills/ agents/ alembic/ 已打进 app 镜像（见 Dockerfile），宿主不再需要、也就不会再出现
 #     「空目录导致技能/预设静默清空」那类故障
 # 运行期目录；Docker 也能自建，这里显式建以固定属主。

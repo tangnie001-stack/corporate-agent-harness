@@ -69,15 +69,16 @@
 - 目标机必须存在的路径（缺任一条对应功能失效）：`.env`、`deploy/nginx/nginx.conf`、`deploy/nginx/html/`、`deploy/postgres/init/`、`data/deepeval/`。
 - **TLS 证书只放 `/opt/www/certs/<域名>/`**（`fullchain.pem` + `privkey.pem`，即阿里云下载的 nginx 版两个文件），由 compose **只读**挂到容器 `/etc/nginx/certs`。该目录在**发布目录之外** —— 重新解压制品不会覆盖，也**不进 git、不进制品**。
   - 目录名必须与 `deploy/nginx/nginx.conf` 的 `ssl_certificate` 一致，**三个都要有**：`www.tangnie.cn/`、`api.tangnie.cn/`、`langfuse.tangnie.cn/`。**通配符证书**把同一份两文件分别拷进这三个目录即可（通配符 `*.tangnie.cn` **不覆盖裸域** `tangnie.cn`，裸域只做 80→www 跳转，不需要证书）。
-  - 上传（从拿到证书的机器执行）：
+  - **文件名固定为 `fullchain.pem` + `privkey.pem`**（nginx.conf 里写死）。阿里云下载的 nginx 版是 `<域名>.pem` + `<域名>.key`，**上传后必须改名**，否则 nginx 起不来。
+  - 上传（在放证书文件的机器上执行；三组都传完再改名）：
     ```bash
-    ssh root@<ECS-IP> 'mkdir -p /opt/www/certs/www.tangnie.cn /opt/www/certs/api.tangnie.cn /opt/www/certs/langfuse.tangnie.cn && chmod 700 /opt/www/certs'
-    scp fullchain.pem privkey.pem root@<ECS-IP>:/opt/www/certs/www.tangnie.cn/
-    scp fullchain.pem privkey.pem root@<ECS-IP>:/opt/www/certs/api.tangnie.cn/       # 通配符时同理
-    scp fullchain.pem privkey.pem root@<ECS-IP>:/opt/www/certs/langfuse.tangnie.cn/  # 通配符时同理
-    ssh root@<ECS-IP> 'chmod 600 /opt/www/certs/*/privkey.pem'
+    ssh root@<ECS-IP> 'mkdir -p /opt/www/certs/{www.tangnie.cn,api.tangnie.cn,langfuse.tangnie.cn} && chmod 700 /opt/www/certs'
+    scp www.tangnie.cn.pem  www.tangnie.cn.key  root@<ECS-IP>:/opt/www/certs/www.tangnie.cn/
+    scp api.tangnie.cn.pem  api.tangnie.cn.key  root@<ECS-IP>:/opt/www/certs/api.tangnie.cn/
+    scp langfuse.tangnie.cn.pem langfuse.tangnie.cn.key root@<ECS-IP>:/opt/www/certs/langfuse.tangnie.cn/
+    ssh root@<ECS-IP> 'for d in www.tangnie.cn api.tangnie.cn langfuse.tangnie.cn; do cd /opt/www/certs/$d && mv -f $d.pem fullchain.pem && mv -f $d.key privkey.pem && chmod 600 privkey.pem; done; ls -l /opt/www/certs/*/'
     ```
-  - **缺任一个目录的证书，nginx 直接起不来（整站不可用）** —— 首次上机先放证书再发布。
+  - **缺任一个目录的证书，nginx 直接起不来（整站不可用）** —— 首次上机先放证书再发布。`deploy.sh` 第 3 步已按 nginx.conf 引用的路径做**发布前校验**：缺文件就在动容器之前 fail，旧版本保持在线（2026-10-20 踩过：证书没传就发布，nginx 重建后整站下线）。
   - ⚠️ **证书必须先于发布就位**：`deploy/nginx/nginx.conf` 走制品下发，缺证书时 nginx 起不来 ⇒ 整站不可用（含健康检查）。换证/续期只需替换文件 + `docker compose -f docker-compose.image.yml exec nginx nginx -s reload`（或 `restart nginx`），无需重新发布。
 
 ---
