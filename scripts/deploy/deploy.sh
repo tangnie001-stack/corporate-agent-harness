@@ -340,15 +340,21 @@ done
 # 健康检查必然失败、整站下线 —— 必须在动容器之前拦住。2026-10-20 实际踩过：
 # 制品先上机、证书没传，compose 重建 nginx 后整站不可用。
 # 清单从 nginx.conf 派生，增删域名不用改本脚本。
+# 本机 nginx 若不自带 TLS（拓扑：TLS 在入口机终结），nginx.conf 里没有 ssl_certificate，
+# 下面这段自动跳过；将来若改回本机终结 TLS，配置里出现证书路径就重新生效。
 CERT_ROOT="/opt/www/certs"
-missing_certs=""
 cert_refs=$(grep -oE 'ssl_certificate(_key)?[[:space:]]+/etc/nginx/certs/[^;[:space:]]+' deploy/nginx/nginx.conf 2>/dev/null | awk '{print $2}' | sort -u || true)
-for p in $cert_refs; do
-  host_p="${CERT_ROOT}/${p#/etc/nginx/certs/}"
-  if [ ! -f "$host_p" ]; then missing_certs="${missing_certs} ${host_p}"; fi
-done
-[ -z "$missing_certs" ] || fail "缺少 TLS 证书:${missing_certs} —— nginx 会启动失败、整站不可用；先按 runbook §1.4 上传证书再发布（本次未动任何容器，旧版本仍在线）"
-info "✓ TLS 证书就位（$(echo "$cert_refs" | wc -w) 个文件）"
+if [ -z "$cert_refs" ]; then
+  info "本机 nginx 不终止 TLS（见 deploy/nginx/edge.conf），跳过证书检查"
+else
+  missing_certs=""
+  for p in $cert_refs; do
+    host_p="${CERT_ROOT}/${p#/etc/nginx/certs/}"
+    if [ ! -f "$host_p" ]; then missing_certs="${missing_certs} ${host_p}"; fi
+  done
+  [ -z "$missing_certs" ] || fail "缺少 TLS 证书:${missing_certs} —— nginx 会启动失败、整站不可用；先上传证书再发布（本次未动任何容器，旧版本仍在线）"
+  info "✓ TLS 证书就位（$(echo "$cert_refs" | wc -w) 个文件）"
+fi
 # 注：src/ scripts/ skills/ agents/ alembic/ 已打进 app 镜像（见 Dockerfile），宿主不再需要、也就不会再出现
 #     「空目录导致技能/预设静默清空」那类故障
 # 运行期目录；Docker 也能自建，这里显式建以固定属主。

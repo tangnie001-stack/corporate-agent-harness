@@ -45,6 +45,7 @@ Python 3.11+ / FastAPI / LangChain 1.x + LangGraph / PostgreSQL 15 + pgvector / 
 | docs/agents/cookbook.md | 操作记录协议：什么该记、怎么记；条目按协议追加 | 遇到可复用操作流程时按协议记录；需要操作步骤时查阅 |
 | docs/agents/requirements_pool.md | 需求池（意向清单，非已确认需求） | 规划/排期时参考；不作为功能实现依据 |
 | docs/agents/reference-projects.md | 参考资源：本地 github 镜像仓库（按域分组、评分排序、何时查阅）+ 附录「本地已安装技能」（`~/.agents/skills/`） | 写对应领域代码前、选型/排期时参考；找 agent/skill 范例时 |
+| docs/agents/infra-inventory.md | 机器与网络拓扑唯一归属：入口机 / 应用机的公网·私网 IP 与规格、域名解析、安全组、证书位置、变更记录 | 换机、改 DNS 或安全组、证书迁移、排查"连不上 / 证书不对 / 请求没到应用机"时 |
 | docs/agents/deploy-runbook.md | **发布/部署流程的唯一步骤来源**：运行形态（`docker-compose.image.yml` + ACR）/ 云效流水线三段与变量（`PIP_REPO_*`）/ 首次上机 / 迁移 / 冒烟 / 日常更新 / 回滚与备份 / 待定项 | **执行发布、排查部署问题前**；改流水线配置时 |
 | docs/agents/wecom-sdk-facts.md | 企微官方 `aibot` SDK 的**实测行为唯一来源**：快照语义 / 认证等待与失败判据（`errcode=853000`）/ **被顶号机理（`disconnected_event`）** / ack 节奏 / Markdown 渲染能力 / `feedback` 承载字段路径 / 其它实测事实与 SDK 常量 | 动企微通道或投影层**前**；排障"连上了却收不到消息""回复失败""被顶后失联"时 |
 | docs/adr/ | 架构决策记录：一条决策一文件（背景/候选/决策/理由/后果/复查条件），**只追加不可变**；与 `superpowers/specs`（设计）、`openspec/changes`（执行）的分工见目录 README | 做不可逆的技术选型/取舍**前**查有无既有决策（避免重开已决问题）；写下新决策时按 README 模板 |

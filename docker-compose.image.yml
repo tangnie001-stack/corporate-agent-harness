@@ -30,13 +30,12 @@
 #
 # ⚠ 仍未处理（属另行变更的范围）：
 #   - mem_limit 复核（这里沿用 dev 档位；prod 档位合计 14.25G 在 2C8G 上会 OOM）
-# 已处理：对外只暴露 nginx 的 80/443，其余端口（redis 6379 / app 8000 / minio 9090+9091）一律绑 127.0.0.1；
-#         nginx 上传上限 12m；www / api / langfuse 三个域名的 TLS 由 nginx 终止；
-#         langfuse-web 不再发布 3000 端口（改走 nginx 的 langfuse.tangnie.cn）
+# 已处理：本机只暴露 nginx 的 80（TLS 在入口机终结，本机 80 只对入口机内网 IP 放行），
+#         其余端口（redis 6379 / app 8000 / minio 9090+9091）一律绑 127.0.0.1；
+#         nginx 上传上限 12m；langfuse-web 不再发布 3000 端口（改走 nginx 的 langfuse.tangnie.cn）
 #
 # 【目标机必须存在的路径】—— 挂载来源（缺任一条对应功能失效）：
 #   .env                              app 的运行配置（含 MINIO_ROOT_USER/PASSWORD）
-#   /opt/www/certs/<域名>/             TLS 证书（fullchain.pem + privkey.pem，**人工放置、不入制品**）
 #   deploy/nginx/nginx.conf           nginx 路由（缺 → 默认页/404）
 #   deploy/nginx/html/                前端静态文件（缺 → 404）
 #   deploy/postgres/init/             建应用库 + vector 扩展（缺 → 应用库不存在）
@@ -179,16 +178,14 @@ services:
     container_name: corporate-rag-nginx
     restart: unless-stopped
     ports:
+      # 只监听 80：TLS 由入口机（8.133.224.173）终结，见 deploy/nginx/edge.conf。
+      # 安全组必须把本机 80 只放行给入口机内网 IP 172.30.18.58，不要对公网开
       - "80:80"
-      - "443:443"
     environment:
       TZ: Asia/Shanghai
     volumes:
       - ./deploy/nginx/nginx.conf:/etc/nginx/conf.d/default.conf
       - ./deploy/nginx/html:/usr/share/nginx/html
-      # 证书放宿主 /opt/www/certs（**发布目录之外**，重新解压制品不会碰到；绝对路径挂载）
-      # 子目录名必须与 nginx.conf 里的 ssl_certificate 路径一致
-      - /opt/www/certs:/etc/nginx/certs:ro
     depends_on:
       - app
     networks:

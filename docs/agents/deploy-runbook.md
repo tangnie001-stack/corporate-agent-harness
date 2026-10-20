@@ -39,17 +39,17 @@
 
 ### 1.3 端口与安全组
 
-- **对外只开 nginx 的 80/443**（Langfuse 的 3000 已收进 nginx，见下）；安全组**放行 22、80、443**，**3000 可关闭**。
-- **对外域名**（全部由 nginx 终止 TLS，不经 SLB）：
+- **公网只到入口机**（`8.133.224.173`，机器清单与安全组见 `infra-inventory.md`）：入口机 nginx 终止 TLS、80→443、反代到应用机 `172.30.18.59:80`。**应用机只监听 80**，安全组只对入口机内网 IP `172.30.18.58` 放行，**443 不开**。
+- **对外域名**（TLS 全在入口机终结，不经 SLB；配置见 `deploy/nginx/edge.conf`）：
   - 站点 `https://www.tangnie.cn` —— 静态页 + `/api` 同源反代（前端用相对路径，不跨域）；裸域 `tangnie.cn` 301 到 www。
-  - 接口 `https://api.tangnie.cn` —— 整站反代给 app，**给外部系统 / 脚本调用**；网页不直连（直连要改 26 处前端调用并重配 CORS 与 cookie）。
+  - 接口 `https://api.tangnie.cn` —— 反代给 app，**给外部系统 / 脚本调用**；网页不直连（直连要改 26 处前端调用并重配 CORS 与 cookie）。
   - 控制台 `https://langfuse.tangnie.cn` —— 反代 `langfuse-web:3000`。
-  - 80 仅保留 `/api/health`（部署健康探测）并对其余路径 301 到 https。
-- 其余端口一律绑回环或由安全组封闭：app `127.0.0.1:8000`、redis / postgres / minio 均不对外。
+  - 80：**入口机全量 301 到 https**（健康探测不经过入口机，所以这里不需要例外）。
+- 应用机内：nginx 的 80 是唯一入口（`deploy/nginx/nginx.conf` 的 origin 模式，按 Host 分流、不做 TLS），其余端口一律绑回环或由安全组封闭：app `127.0.0.1:8000`、redis / postgres / minio 均不对外。
 - **langfuse-web 在生产不再发布端口**：`docker-compose.image.yml` 已删除 `"3000:3000"`，只经 nginx 的 `langfuse.tangnie.cn` 进来（**本地 dev 档 `docker-compose.yml` 仍对外开 3000**，方便直连调试）。nginx 对该 upstream 用**变量 + Docker 内置 DNS 延迟解析** —— 否则 langfuse 未启动时 nginx 会在启动期解析失败，连带整站起不来。
   - **对外门牌号 `NEXTAUTH_URL` 硬编码为 `https://langfuse.tangnie.cn`**（2026-10-20 由 `http://8.133.218.201:3000` 改来）—— NextAuth 用它拼绝对 URL（跳转/邮件链接/SSO 回调），填 `localhost` 会让这些链接指向用户自己的机器。**硬编码而非 `.env`**：该键是"生产独有"的值，走 `.env` 会被"从开发机拷 `.env` 上机"覆盖成 localhost（2026-10-10 实测踩中）；换域名/换机时改这一行并重新发布。
   - **自助注册已硬编码关闭**（`AUTH_DISABLE_SIGNUP: "true"`）。这两个键都**不写进 `.env`、也不进 `deploy.sh` 第 3 步的必填清单**（避免"拷 `.env` 带错误值/缺键 ⇒ 静默错或部署 fail"）。
-- 冒烟与健康检查走 `http://127.0.0.1/api/health`（经 nginx:80 → app:8000），与对外路径一致。
+- 冒烟与健康检查走应用机本机的 `http://127.0.0.1/api/health`（nginx:80 → app:8000）。
 
 ### 1.4 密钥与挂载路径
 
@@ -67,19 +67,19 @@
 - 不得依赖 compose 的 `${X:-默认值}` 兜底 —— `deploy.sh` 会按 compose 插值变量清单校验非空，缺键即失败。
 - MinIO 两对键**已同源**：`docker-compose.image.yml` 直接用 `.env` 的 `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` 供 `MINIO_ROOT_USER/PASSWORD`。**不要**改回需要人工保持相等的两对。
 - 目标机必须存在的路径（缺任一条对应功能失效）：`.env`、`deploy/nginx/nginx.conf`、`deploy/nginx/html/`、`deploy/postgres/init/`、`data/deepeval/`。
-- **TLS 证书只放 `/opt/www/certs/<域名>/`**（`fullchain.pem` + `privkey.pem`，即阿里云下载的 nginx 版两个文件），由 compose **只读**挂到容器 `/etc/nginx/certs`。该目录在**发布目录之外** —— 重新解压制品不会覆盖，也**不进 git、不进制品**。
-  - 目录名必须与 `deploy/nginx/nginx.conf` 的 `ssl_certificate` 一致，**三个都要有**：`www.tangnie.cn/`、`api.tangnie.cn/`、`langfuse.tangnie.cn/`。**通配符证书**把同一份两文件分别拷进这三个目录即可（通配符 `*.tangnie.cn` **不覆盖裸域** `tangnie.cn`，裸域只做 80→www 跳转，不需要证书）。
+- **TLS 证书只放入口机**（`8.133.224.173`）的 `/etc/nginx/certs/<域名>/`（`fullchain.pem` + `privkey.pem`）。**应用机不需要证书** —— TLS 已在入口终结（配置见 `deploy/nginx/edge.conf`）；证书**不进 git、不进制品**。
+  - 目录名必须与 `deploy/nginx/edge.conf` 的 `ssl_certificate` 一致，**三个都要有**：`www.tangnie.cn/`、`api.tangnie.cn/`、`langfuse.tangnie.cn/`。**通配符证书**把同一份两文件分别拷进这三个目录即可（通配符 `*.tangnie.cn` **不覆盖裸域** `tangnie.cn`，裸域只做 80→www 跳转，不需要证书）。
   - **文件名固定为 `fullchain.pem` + `privkey.pem`**（nginx.conf 里写死）。阿里云下载的 nginx 版是 `<域名>.pem` + `<域名>.key`，**上传后必须改名**，否则 nginx 起不来。
-  - 上传（在放证书文件的机器上执行；三组都传完再改名）：
+  - 上传（在放证书文件的机器上执行；目标机 = **入口机** `8.133.224.173`；三组都传完再改名）：
     ```bash
-    ssh root@<ECS-IP> 'mkdir -p /opt/www/certs/{www.tangnie.cn,api.tangnie.cn,langfuse.tangnie.cn} && chmod 700 /opt/www/certs'
-    scp www.tangnie.cn.pem  www.tangnie.cn.key  root@<ECS-IP>:/opt/www/certs/www.tangnie.cn/
-    scp api.tangnie.cn.pem  api.tangnie.cn.key  root@<ECS-IP>:/opt/www/certs/api.tangnie.cn/
-    scp langfuse.tangnie.cn.pem langfuse.tangnie.cn.key root@<ECS-IP>:/opt/www/certs/langfuse.tangnie.cn/
-    ssh root@<ECS-IP> 'for d in www.tangnie.cn api.tangnie.cn langfuse.tangnie.cn; do cd /opt/www/certs/$d && mv -f $d.pem fullchain.pem && mv -f $d.key privkey.pem && chmod 600 privkey.pem; done; ls -l /opt/www/certs/*/'
+    ssh root@8.133.224.173 'mkdir -p /etc/nginx/certs/{www.tangnie.cn,api.tangnie.cn,langfuse.tangnie.cn} && chmod 700 /etc/nginx/certs'
+    scp www.tangnie.cn.pem  www.tangnie.cn.key  root@8.133.224.173:/etc/nginx/certs/www.tangnie.cn/
+    scp api.tangnie.cn.pem  api.tangnie.cn.key  root@8.133.224.173:/etc/nginx/certs/api.tangnie.cn/
+    scp langfuse.tangnie.cn.pem langfuse.tangnie.cn.key root@8.133.224.173:/etc/nginx/certs/langfuse.tangnie.cn/
+    ssh root@8.133.224.173 'for d in www.tangnie.cn api.tangnie.cn langfuse.tangnie.cn; do cd /etc/nginx/certs/$d && mv -f $d.pem fullchain.pem && mv -f $d.key privkey.pem && chmod 600 privkey.pem; done; ls -l /etc/nginx/certs/*/; nginx -t && systemctl reload nginx'
     ```
-  - **缺任一个目录的证书，nginx 直接起不来（整站不可用）** —— 首次上机先放证书再发布。`deploy.sh` 第 3 步已按 nginx.conf 引用的路径做**发布前校验**：缺文件就在动容器之前 fail，旧版本保持在线（2026-10-20 踩过：证书没传就发布，nginx 重建后整站下线）。
-  - ⚠️ **证书必须先于发布就位**：`deploy/nginx/nginx.conf` 走制品下发，缺证书时 nginx 起不来 ⇒ 整站不可用（含健康检查）。换证/续期只需替换文件 + `docker compose -f docker-compose.image.yml exec nginx nginx -s reload`（或 `restart nginx`），无需重新发布。
+  - **缺任一张证书，入口机 nginx 起不来（整站不可用）** —— 首次上机先放证书再启动 nginx。续期只需替换文件 + `nginx -t && systemctl reload nginx`，**不用发布、不碰应用机**。
+  - 应用机侧：`deploy.sh` 第 3 步读 `deploy/nginx/nginx.conf`，origin 模式里没有 `ssl_certificate` ⇒ **自动跳过证书检查**，拓扑切换后不用再维护那份清单；将来若改回本机终结 TLS，配置里出现证书路径会重新生效（2026-10-20 踩过一次：证书没传就发布，nginx 重建后整站下线）。
 
 ---
 
@@ -118,7 +118,7 @@
 - **代码同步**（GitHub → Codeup，第 5 步）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/codeup/deploytest/tangnie001-stack/corporate-agent-harness/settings/mirror_sync`
 - **流水线**（看进度 / 第 7 步在此创建发布单）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/flow/my?page=1`
 - **版本 / 回滚**（第 10 步）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/appstack/app/deploy-app/versions`
-- **生产入口**：站点 `https://www.tangnie.cn/`（接口域 `https://api.tangnie.cn`）｜ Langfuse `https://langfuse.tangnie.cn`｜ 目标机 `root@8.133.218.201`（发布路径 `/opt/www/corporate_rag`，证书 `/opt/www/certs`）
+- **生产入口**：站点 `https://www.tangnie.cn/`（接口域 `https://api.tangnie.cn`）｜ Langfuse `https://langfuse.tangnie.cn`｜ **入口机** `root@8.133.224.173`（TLS 与证书在 `/etc/nginx/certs`）｜ **应用机（发布目标）** `root@8.153.17.226`（发布路径 `/opt/www/corporate_rag`）
 
 > 本节只做**链接速查**；步骤正文见上面的 §2.0 表格，不在此复述。
 
