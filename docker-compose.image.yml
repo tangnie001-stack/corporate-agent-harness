@@ -30,12 +30,13 @@
 #
 # ⚠ 仍未处理（属另行变更的范围）：
 #   - mem_limit 复核（这里沿用 dev 档位；prod 档位合计 14.25G 在 2C8G 上会 OOM）
-#   - HTTPS（nginx 只有 80）
-# 已处理：对外只暴露 nginx:80，其余端口（redis 6379 / app 8000 / minio 9090+9091）一律绑 127.0.0.1；
-#         nginx 上传上限 12m（见 deploy/nginx/nginx.conf）
+# 已处理：对外只暴露 nginx 的 80/443，其余端口（redis 6379 / app 8000 / minio 9090+9091）一律绑 127.0.0.1；
+#         nginx 上传上限 12m；www / api / langfuse 三个域名的 TLS 由 nginx 终止；
+#         langfuse-web 不再发布 3000 端口（改走 nginx 的 langfuse.tangnie.cn）
 #
 # 【目标机必须存在的路径】—— 挂载来源（缺任一条对应功能失效）：
 #   .env                              app 的运行配置（含 MINIO_ROOT_USER/PASSWORD）
+#   /opt/www/certs/<域名>/             TLS 证书（fullchain.pem + privkey.pem，**人工放置、不入制品**）
 #   deploy/nginx/nginx.conf           nginx 路由（缺 → 默认页/404）
 #   deploy/nginx/html/                前端静态文件（缺 → 404）
 #   deploy/postgres/init/             建应用库 + vector 扩展（缺 → 应用库不存在）
@@ -131,10 +132,8 @@ services:
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
-    ports:
-      # 对外暴露（原为 "127.0.0.1:3000:3000" 仅回环）。需配套：安全组放行 3000。
-      # 对外地址由下面的 NEXTAUTH_URL 提供（已硬编码）。
-      - "3000:3000"
+    # 生产**不再发布 3000 端口**：控制台经 nginx 的 langfuse.tangnie.cn 反代进来，
+    # 3000 只留在 compose 网络内（本地 dev 档 docker-compose.yml 仍对外开 3000，便于直连调试）。
     environment:
       DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASS:-langfuse_pass}@postgres:5432/langfuse
       # 对外门牌号：NextAuth 用它拼绝对 URL（跳转 / 邮件里的链接 / SSO 回调）。
@@ -143,12 +142,13 @@ services:
       # 部署成功但值仍是 localhost，因为源文件就是 localhost）。
       # 同 WECOM_BOT_ENABLED / AUTH_DISABLE_SIGNUP 的做法 —— 不进 deploy.sh 的 .env 必填清单。
       # 换域名 / 换机器时改这一行并重新发布。
-      NEXTAUTH_URL: "http://8.133.218.201:3000"
+      # 2026-10-20 起改走域名（nginx 终止 TLS）：填 https 后 NextAuth 才不会把跳转拼成 http/IP
+      NEXTAUTH_URL: "https://langfuse.tangnie.cn"
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-changeme}
       SALT: ${LANGFUSE_SALT:-changeme}
       ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
       TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-false}
-      # 关闭自助注册：:3000 对外后，防止陌生人自行开号（v2.95.11 镜像服务端运行时读该变量）。
+      # 关闭自助注册：控制台对外后，防止陌生人自行开号（v2.95.11 镜像服务端运行时读该变量）。
       # **硬编码而非变量插值**：与 app 的 WECOM_BOT_ENABLED 同款做法 —— 这是"生产独有"的值，
       # 写死在部署档里，既不进 deploy.sh 的 .env 必填清单（否则缺键即 fail），也不受 .env 漂移影响。
       # 注：本文件里不要出现形如变量占位符的字面量文本（含注释），会被 deploy.sh 的必填推导误捕。
@@ -180,11 +180,15 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      - "443:443"
     environment:
       TZ: Asia/Shanghai
     volumes:
       - ./deploy/nginx/nginx.conf:/etc/nginx/conf.d/default.conf
       - ./deploy/nginx/html:/usr/share/nginx/html
+      # 证书放宿主 /opt/www/certs（**发布目录之外**，重新解压制品不会碰到；绝对路径挂载）
+      # 子目录名必须与 nginx.conf 里的 ssl_certificate 路径一致
+      - /opt/www/certs:/etc/nginx/certs:ro
     depends_on:
       - app
     networks:

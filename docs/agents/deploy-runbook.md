@@ -39,9 +39,16 @@
 
 ### 1.3 端口与安全组
 
-- **对外开 nginx 的 80 与 Langfuse 的 3000**；安全组**放行 22、80、3000**。
+- **对外只开 nginx 的 80/443**（Langfuse 的 3000 已收进 nginx，见下）；安全组**放行 22、80、443**，**3000 可关闭**。
+- **对外域名**（全部由 nginx 终止 TLS，不经 SLB）：
+  - 站点 `https://www.tangnie.cn` —— 静态页 + `/api` 同源反代（前端用相对路径，不跨域）；裸域 `tangnie.cn` 301 到 www。
+  - 接口 `https://api.tangnie.cn` —— 整站反代给 app，**给外部系统 / 脚本调用**；网页不直连（直连要改 26 处前端调用并重配 CORS 与 cookie）。
+  - 控制台 `https://langfuse.tangnie.cn` —— 反代 `langfuse-web:3000`。
+  - 80 仅保留 `/api/health`（部署健康探测）并对其余路径 301 到 https。
 - 其余端口一律绑回环或由安全组封闭：app `127.0.0.1:8000`、redis / postgres / minio 均不对外。
-- **langfuse-web `3000:3000` 对外**（2026-10-09 由 `127.0.0.1:3000:3000` 改为对外，改的是 `docker-compose.image.yml`）。**对外门牌号 `NEXTAUTH_URL` 已在部署档里硬编码**（`"http://8.133.218.201:3000"`）—— NextAuth 用它拼绝对 URL（跳转/邮件链接/SSO 回调），填 `localhost` 会让这些链接指向用户自己的机器。**硬编码而非 `.env`**：该键是"生产独有"的值，走 `.env` 会被"从开发机拷 `.env` 上机"覆盖成 localhost（2026-10-10 实测踩中）；换域名/换机时改这一行并重新发布。**自助注册同样已硬编码关闭**（`AUTH_DISABLE_SIGNUP: "true"`）。这两个键都**不写进 `.env`、也不进 `deploy.sh` 第 3 步的必填清单**（避免"拷 `.env` 带错误值/缺键 ⇒ 静默错或部署 fail"）。
+- **langfuse-web 在生产不再发布端口**：`docker-compose.image.yml` 已删除 `"3000:3000"`，只经 nginx 的 `langfuse.tangnie.cn` 进来（**本地 dev 档 `docker-compose.yml` 仍对外开 3000**，方便直连调试）。nginx 对该 upstream 用**变量 + Docker 内置 DNS 延迟解析** —— 否则 langfuse 未启动时 nginx 会在启动期解析失败，连带整站起不来。
+  - **对外门牌号 `NEXTAUTH_URL` 硬编码为 `https://langfuse.tangnie.cn`**（2026-10-20 由 `http://8.133.218.201:3000` 改来）—— NextAuth 用它拼绝对 URL（跳转/邮件链接/SSO 回调），填 `localhost` 会让这些链接指向用户自己的机器。**硬编码而非 `.env`**：该键是"生产独有"的值，走 `.env` 会被"从开发机拷 `.env` 上机"覆盖成 localhost（2026-10-10 实测踩中）；换域名/换机时改这一行并重新发布。
+  - **自助注册已硬编码关闭**（`AUTH_DISABLE_SIGNUP: "true"`）。这两个键都**不写进 `.env`、也不进 `deploy.sh` 第 3 步的必填清单**（避免"拷 `.env` 带错误值/缺键 ⇒ 静默错或部署 fail"）。
 - 冒烟与健康检查走 `http://127.0.0.1/api/health`（经 nginx:80 → app:8000），与对外路径一致。
 
 ### 1.4 密钥与挂载路径
@@ -60,6 +67,18 @@
 - 不得依赖 compose 的 `${X:-默认值}` 兜底 —— `deploy.sh` 会按 compose 插值变量清单校验非空，缺键即失败。
 - MinIO 两对键**已同源**：`docker-compose.image.yml` 直接用 `.env` 的 `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` 供 `MINIO_ROOT_USER/PASSWORD`。**不要**改回需要人工保持相等的两对。
 - 目标机必须存在的路径（缺任一条对应功能失效）：`.env`、`deploy/nginx/nginx.conf`、`deploy/nginx/html/`、`deploy/postgres/init/`、`data/deepeval/`。
+- **TLS 证书只放 `/opt/www/certs/<域名>/`**（`fullchain.pem` + `privkey.pem`，即阿里云下载的 nginx 版两个文件），由 compose **只读**挂到容器 `/etc/nginx/certs`。该目录在**发布目录之外** —— 重新解压制品不会覆盖，也**不进 git、不进制品**。
+  - 目录名必须与 `deploy/nginx/nginx.conf` 的 `ssl_certificate` 一致，**三个都要有**：`www.tangnie.cn/`、`api.tangnie.cn/`、`langfuse.tangnie.cn/`。**通配符证书**把同一份两文件分别拷进这三个目录即可（通配符 `*.tangnie.cn` **不覆盖裸域** `tangnie.cn`，裸域只做 80→www 跳转，不需要证书）。
+  - 上传（从拿到证书的机器执行）：
+    ```bash
+    ssh root@<ECS-IP> 'mkdir -p /opt/www/certs/www.tangnie.cn /opt/www/certs/api.tangnie.cn /opt/www/certs/langfuse.tangnie.cn && chmod 700 /opt/www/certs'
+    scp fullchain.pem privkey.pem root@<ECS-IP>:/opt/www/certs/www.tangnie.cn/
+    scp fullchain.pem privkey.pem root@<ECS-IP>:/opt/www/certs/api.tangnie.cn/       # 通配符时同理
+    scp fullchain.pem privkey.pem root@<ECS-IP>:/opt/www/certs/langfuse.tangnie.cn/  # 通配符时同理
+    ssh root@<ECS-IP> 'chmod 600 /opt/www/certs/*/privkey.pem'
+    ```
+  - **缺任一个目录的证书，nginx 直接起不来（整站不可用）** —— 首次上机先放证书再发布。
+  - ⚠️ **证书必须先于发布就位**：`deploy/nginx/nginx.conf` 走制品下发，缺证书时 nginx 起不来 ⇒ 整站不可用（含健康检查）。换证/续期只需替换文件 + `docker compose -f docker-compose.image.yml exec nginx nginx -s reload`（或 `restart nginx`），无需重新发布。
 
 ---
 
@@ -98,7 +117,7 @@
 - **代码同步**（GitHub → Codeup，第 5 步）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/codeup/deploytest/tangnie001-stack/corporate-agent-harness/settings/mirror_sync`
 - **流水线**（看进度 / 第 7 步在此创建发布单）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/flow/my?page=1`
 - **版本 / 回滚**（第 10 步）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/appstack/app/deploy-app/versions`
-- **生产入口**：站点 `http://8.133.218.201/` ｜ Langfuse `http://8.133.218.201:3000` ｜ 目标机 `root@8.133.218.201`（发布路径 `/opt/www/corporate_rag`）
+- **生产入口**：站点 `https://www.tangnie.cn/`（接口域 `https://api.tangnie.cn`）｜ Langfuse `https://langfuse.tangnie.cn`｜ 目标机 `root@8.133.218.201`（发布路径 `/opt/www/corporate_rag`，证书 `/opt/www/certs`）
 
 > 本节只做**链接速查**；步骤正文见上面的 §2.0 表格，不在此复述。
 
@@ -324,11 +343,13 @@ provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定�
 
 **缺任一步都不得判定发布成功**：
 
-1. 健康检查：`curl -fsS http://127.0.0.1/api/health` → 200。
-2. 浏览器打开 `http://<ECS-IP>/` → 用测试账号登录。
-3. 建/选一个知识库 → **上传一份文档**。
-4. 等该文档状态变为 **`ready`**。
-5. 提问 → **回答里带引用来源**。
+1. 健康检查：`curl -fsS http://127.0.0.1/api/health` → 200（80 只放行该路径，其余 301）。
+2. 浏览器打开 `https://www.tangnie.cn/` → 用测试账号登录（证书需有效，不得点过警告）；`https://api.tangnie.cn/api/health` → 200。
+3. **备案号可见**：页面底部（桌面端在左下侧栏底部）显示 `沪ICP备2026054745号`，点击跳到 `https://beian.miit.gov.cn/`。四个页面都要看：`/chat.html`、`/Knowledgebase`、`/login.html`。
+4. `https://langfuse.tangnie.cn` 能打开并登录（生产 3000 已不再对外，只能走这个域名）。
+5. 建/选一个知识库 → **上传一份文档**。
+6. 等该文档状态变为 **`ready`**。
+7. 提问 → **回答里带引用来源**。
 
 > 上传步骤专治"nginx 上传上限被挡"，`ready` 专治"迁移未跑/存储凭据不匹配"，引用专治"检索链路断"。这三类正是静态检查覆盖不到、只有真实交付才暴露的。
 
@@ -395,8 +416,8 @@ provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定�
 
 | 项 | 当前口径 | 待定 |
 |---|---|---|
-| HTTPS | 纯 HTTP（nginx 只有 80） | 是否上 443 + 证书来源 / SLB 终止 TLS |
-| Langfuse | 保留在栈内，**对外暴露在 `:3000`**（2026-10-09 由绑回环改为对外，见 §1.3；`NEXTAUTH_URL` 已硬编码） | 长期去留；是否改走 nginx 反代（免开 3000 端口）或加 HTTPS |
+| ~~HTTPS~~ | **已落地**：nginx 终止 TLS，`www` / `api` / `langfuse` 三个域名，证书人工放 `/opt/www/certs`（见 §1.4）；裸域 301 到 www | 证书续期是否改自动化（certbot / 阿里云托管） |
+| ~~Langfuse 端口~~ | **已落地**：`https://langfuse.tangnie.cn`，生产不再发布 3000（见 §1.3） | 长期去留；是否纳入统一登录 |
 | `docker-compose.prod.yml` | 不参与本目标形态 | 废弃 / 删除 / 与目标形态对齐 |
 | 备份口径 | 见 §7（MinIO 必备） | 频率、保留期、是否上 OSS |
 | 托管化 | 单机自建（PG / Redis / MinIO 同机） | 是否迁 RDS / Redis / OSS / SLB |

@@ -96,6 +96,19 @@
   .sidebar-empty { padding: 16px 12px; font-size: 12px; color: var(--text-muted); text-align: center; }
 
   .sidebar-footer { padding: 12px 16px; border-top: 1px solid var(--border); position: relative; }
+  .icp-link { display: block; margin-top: 8px; font-size: 11px; color: var(--text-muted); text-decoration: none; }
+  .icp-link:hover { text-decoration: underline; color: var(--text); }
+  /* 备案号：桌面端在侧栏底部；移动端侧栏收起，改为固定底栏（.app 相应减高，避免压住输入框） */
+  .icp-mobile { display: none; }
+  @media (max-width: 767px) {
+    .app { height: calc(100vh - 18px); }
+    .icp-mobile {
+      display: block; position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+      height: 18px; line-height: 18px; text-align: center; font-size: 10px;
+      background: var(--surface); color: var(--text-muted); text-decoration: none;
+      border-top: 1px solid var(--border);
+    }
+  }
   .user-avatar {
     display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px;
     cursor: pointer; transition: background 150ms; text-decoration: none; color: inherit;
@@ -746,6 +759,7 @@
 
     <div class="sidebar-footer">
       <div id="userArea"></div>
+      <a class="icp-link" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">沪ICP备2026054745号</a>
     </div>
   </aside>
 
@@ -3638,5 +3652,6 @@ chatThread.addEventListener('scroll', onChatScroll);
 // 侧栏「新建会话」
 $('newSessionBtn').addEventListener('click', newSession);
 </script>
+<a class="icp-mobile" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">沪ICP备2026054745号</a>
 </body>
 </html>

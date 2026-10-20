@@ -120,6 +120,19 @@
   }
   .user-dropdown button:hover { background: #FEF2F2; }
   .sidebar-footer { position: relative; }
+  .icp-link { display: block; margin-top: 8px; font-size: 11px; color: var(--text-muted); text-decoration: none; }
+  .icp-link:hover { text-decoration: underline; color: var(--text); }
+  /* 备案号：桌面端在侧栏底部；移动端侧栏收起，改为固定底栏（.main 加下内边距避免遮挡内容） */
+  .icp-mobile { display: none; }
+  @media (max-width: 767px) {
+    .app .main { padding-bottom: 42px; }
+    .icp-mobile {
+      display: block; position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+      height: 18px; line-height: 18px; text-align: center; font-size: 10px;
+      background: var(--surface); color: var(--text-muted); text-decoration: none;
+      border-top: 1px solid var(--border);
+    }
+  }
 
   /* 移动端 */
   .sidebar-overlay {
@@ -399,6 +412,7 @@
 
     <div class="sidebar-footer">
       <div id="user-area"></div>
+      <a class="icp-link" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">沪ICP备2026054745号</a>
     </div>
   </aside>
 
@@ -1278,5 +1292,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     loadKBs();
 });
 </script>
+<a class="icp-mobile" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">沪ICP备2026054745号</a>
 </body>
 </html>

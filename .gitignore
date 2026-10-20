@@ -11,6 +11,9 @@ venv/
 .env
 .env.local
 
+# TLS 证书与私钥（只放目标机 /opt/www/certs，绝不入库）
+certs/
+
 # IDE
 .idea/
 
