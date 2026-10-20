@@ -229,20 +229,28 @@
 
 **规则**：阻塞调用不得放在事件循环线程上 —— 同步外网 / CPU 工作一律走 `asyncio.to_thread`。**事务内不得包含外网调用**：embedding 等慢调用必须在**进入事务之前**算好，事务只接收已算好的向量（`design.md` D7）—— 否则事务长占连接与锁，单 worker 下把连接池拖垮。
 
-### 重建上游容器后必须让 nginx 重解析
+### upstream 必须变量化，不能写死主机名
 
-**现象**：`deploy/nginx/nginx.conf` 用 `proxy_pass http://app:8000;`（**主机名**，非变量）—— nginx 在**配置加载时解析一次并缓存在 master 进程里**。`app` 容器重建后会拿到**新 IP**，nginx 仍往旧 IP 发 ⇒ `connect() failed (111: Connection refused)` ⇒ **502**，而且应用日志里**一条都没有**（请求根本没到应用）。
+**现象**：`proxy_pass http://app:8000;`（**主机名**，非变量）在**配置加载时解析一次**并缓存在 master 进程里。`app` 容器重建后拿到**新 IP**，nginx 仍往旧 IP 发 ⇒ `connect() failed (111: Connection refused)` ⇒ **502**，且应用日志里**一条都没有**（请求根本没到应用）。
 
-2026-10-12 实测：nginx 缓存 `172.18.0.3`，`app` 重建后为 `172.18.0.7`，`POST /api/auth/verify` / `POST /api/auth/login` 全部 502。⚠️ **同一天再次重建却复用了同一 IP**（未出现 502）⇒ 这个坑**间歇出现**，别因为"上次重建没事"就忽略。
+2026-10-12 实测：nginx 缓存 `172.18.0.3`，`app` 重建后为 `172.18.0.7`，`POST /api/auth/verify` / `POST /api/auth/login` 全部 502。⚠️ 同一天再次重建却**复用同一 IP**（未出现 502）⇒ 这个坑**间歇出现**，别因为"上次重建没事"就忽略。
+2026-10-20 生产复现：`app` 重建为 `172.18.0.9`，nginx 仍连 `172.18.0.5`，`/api/health` 连续 502 导致发布健康检查失败；同一时段的用户上传也吃到 502，而应用日志里那批上传全是 `202`（没进来的那些不留痕）。
 
-**规则**：任何重建 / 替换 `app` 容器的操作之后，都要让 nginx 重新加载配置：
-```bash
-docker compose exec -T nginx nginx -s reload     # 或：docker compose restart nginx
+**规则**：`deploy/nginx/nginx.conf` 的 upstream **一律写成「变量 + resolver」**，由 Docker 内置 DNS 按周期重解析：
+
+```nginx
+# http 级声明一次
+resolver 127.0.0.11 valid=10s ipv6=off;
+
+server {
+    set $app_upstream "app:8000";       # 变量形式 → 解析推迟到请求时
+    location /api/ { proxy_pass http://$app_upstream; }
+}
 ```
 
-- **走 `deploy.sh` 的路径已内置**：`scripts/deploy/deploy.sh` 在 `compose up -d` 之后固定执行 `nginx -s reload`（`6/8 启动服务` 段），所以流水线发布与 `deploy.sh start` 都有防护。
-- **手工 `docker compose up -d --force-recreate app` 不在覆盖范围内** —— 这正是本地/临时排障的常见形态，必须自己补这一句。
-- **未实测**：`nginx -s reload` 是否足以重解析静态 upstream（按 nginx 语义应当可以 —— reload 会让 master 重读配置并重解析）。当天实测到能修的是 `docker compose restart nginx`。
+- 变量形式下 `proxy_pass http://$app_upstream;` **原样转发原始 URI**，不要在后面拼路径。
+- 收益：容器重建后最多 `valid` 秒自愈，**不需要** `nginx -s reload` / `restart`；且上游没起时 nginx 仍能启动（静态写法会 `host not found in upstream` 直接失败）。
+- `deploy.sh` 在 `compose up -d` 后仍会 `nginx -s reload`（无害）；手工 `--force-recreate app` 也不再需要额外补 reload。
 
 ### compose bind mount 不写绝对路径
 
