@@ -496,7 +496,8 @@ RETRY_INITIAL_INTERVAL: float = float(os.getenv("RETRY_INITIAL_INTERVAL", "1.0")
 RETRY_BACKOFF_FACTOR: float = float(os.getenv("RETRY_BACKOFF_FACTOR", "2.0"))
 
 # ====== 文件上传 ======
-# 单文件上传大小上限（字节），默认 50MB
+# 单文件上传大小上限（字节），默认 10MB；不得大于 nginx 的 client_max_body_size（同为 10m），
+# 否则超过网关上限的文件到不了这里
 MAX_FILE_SIZE: int = int(os.getenv("MAX_FILE_SIZE", str(10 * 1024 * 1024)))
 
 # ====== MinIO ======

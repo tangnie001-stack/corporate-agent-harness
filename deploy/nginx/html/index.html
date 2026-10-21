@@ -957,7 +957,8 @@ async function handleUpload(event) {
         return;
     }
     if (file.size > window._maxUploadSize) {
-        showToast(`文件超过 ${(window._maxUploadSize / 1024 / 1024).toFixed(0)}MB 上限（当前 ${(file.size / 1024 / 1024).toFixed(1)}MB）`, 'error', 5000);
+        const limitMB = (window._maxUploadSize / 1024 / 1024).toFixed(0);
+        showToast(`文件大小超过 ${limitMB}M（当前 ${(file.size / 1024 / 1024).toFixed(1)}M），请减少文件大小到 ${limitMB}M 以内才能上传`, 'error', 5000);
         event.target.value = '';
         return;
     }
@@ -1279,11 +1280,13 @@ document.addEventListener('keydown', (e) => {
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', async () => {
+    // 前端硬上限 10MB，与 nginx client_max_body_size（10m）一致；后端配置更小时取更小值
     window._maxUploadSize = 10 * 1024 * 1024;
     try {
         const res = await fetch('/api/config', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
         const body = await res.json();
-        if (body && body.max_upload_size) window._maxUploadSize = body.max_upload_size;
+        const configured = body ? Number(body.max_upload_size) : 0;
+        if (configured > 0 && configured < window._maxUploadSize) window._maxUploadSize = configured;
     } catch (e) { /* 静默降级 */ }
 
     window.addEventListener('error', (e) => {
