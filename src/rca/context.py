@@ -16,6 +16,7 @@ from src.rca.models import AlertContext
 
 _URI_PATTERN = re.compile(r"request_uri\s*=\s*'([^']+)'")
 _RULES_PATH = "/api/prometheus/grafana/api/v1/rules"
+_HISTORY_PATH = "/api/annotations"
 
 _CACHE: dict[str, tuple[float, list[dict]]] = {}
 
@@ -128,6 +129,48 @@ async def build_alert_context(
             for_seconds=int(rule.get("duration", 0)) or None,
         )
     return AlertContext(alertname, folder, None, None, None, None, None)
+
+
+def count_active_minutes(annotations: list[dict], alertname: str) -> int:
+    """按分钟去重统计该告警出现的分钟数（annotations 是每分钟快照）。"""
+    minutes = set()
+    for item in annotations:
+        text = item.get("text")
+        if not isinstance(text, str) or alertname not in text:
+            continue
+        stamp = item.get("time")
+        if not isinstance(stamp, (int, float)):
+            continue
+        minutes.add(int(stamp) // 60000)
+    return len(minutes)
+
+
+async def fetch_history(
+    client: GrafanaClient, alertname: str, start_ms: int, end_ms: int, limit: int = 500
+) -> dict[str, int | None]:
+    """读取告警注释并统计出现分钟数。"""
+    payload = await client.get_json(
+        _HISTORY_PATH,
+        params={
+            "type": "alert",
+            "from": str(start_ms),
+            "to": str(end_ms),
+            "limit": str(limit),
+        },
+    )
+    if not isinstance(payload, list):
+        return {"minutes": 0, "last_ts": None}
+    minutes = count_active_minutes(payload, alertname)
+    stamps = [
+        item.get("time")
+        for item in payload
+        if isinstance(item.get("time"), (int, float))
+    ]
+    if stamps:
+        last_ts = int(max(stamps) // 1000)
+    else:
+        last_ts = None
+    return {"minutes": minutes, "last_ts": last_ts}
 
 
 def reset_for_test() -> None:
