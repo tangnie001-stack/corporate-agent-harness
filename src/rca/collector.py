@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -49,11 +50,25 @@ def _window_value(alert_fields: dict, key: str) -> int:
         return 0
 
 
-def _build_kwargs(params: dict[str, str], alert_fields: dict) -> dict:
-    """合并显式参数与时间窗（显式参数优先）。"""
+def _accepted_params(method: Callable) -> set[str]:
+    """取工具可接收的参数名；签名不可内省时视为空集（不注入任何窗口）。"""
+    try:
+        return set(inspect.signature(method).parameters)
+    except (TypeError, ValueError):
+        return set()
+
+
+def _build_kwargs(
+    params: dict[str, str], alert_fields: dict, accepted: set[str]
+) -> dict:
+    """合并显式参数与时间窗：窗口只注入工具签名确实声明的键（显式参数优先）。
+
+    窗口不是 skill 必须声明的参数，由编排层按告警上下文统一注入，故只在工具
+    签名接收时才补；否则会给不取窗口的工具塞多余关键字 ⇒ TypeError。
+    """
     kwargs: dict = dict(params)
     for key in _WINDOW_KEYS:
-        if key not in kwargs:
+        if key not in kwargs and key in accepted:
             kwargs[key] = _window_value(alert_fields, key)
     return kwargs
 
@@ -99,7 +114,7 @@ async def _run_one(
     """执行单条证据并归一三态。"""
     started = time.monotonic()
     try:
-        kwargs = _build_kwargs(_resolve_params(spec.params, alert_fields), alert_fields)
+        params = _resolve_params(spec.params, alert_fields)
     except KeyError as exc:
         return EvidenceResult(
             spec.id, EvidenceStatus.FAILED, None, 0, f"missing_field:{exc}"
@@ -108,6 +123,8 @@ async def _run_one(
     method = getattr(source, spec.tool, None)
     if not callable(method):
         return EvidenceResult(spec.id, EvidenceStatus.FAILED, None, 0, "unknown_tool")
+
+    kwargs = _build_kwargs(params, alert_fields, _accepted_params(method))
 
     call = cast("Callable[..., Awaitable[dict | list | None]]", method)
     timeout = min(spec.timeout, cfg.source_timeout_seconds)

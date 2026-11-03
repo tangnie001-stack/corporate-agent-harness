@@ -17,6 +17,7 @@ _DEFAULT_HISTORY_TIMEOUT_SECONDS: float = 5.0
 _DEFAULT_CONCURRENCY: int = 4
 _DEFAULT_SEVERE_LATENCY_MS: int = 3000
 _DEFAULT_CACHE_TTL_SECONDS: float = 600.0
+_DEFAULT_WINDOW_MINUTES: int = 15
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,9 @@ class RcaConfig:
     severe_latency_ms: int  # 严重阈值（独立于告警阈值）
     cache_ttl_seconds: float  # 规则反查缓存有效期
     business_uris: tuple[str, ...]  # 业务影响要看的核心接口
+    window_minutes: int = (
+        _DEFAULT_WINDOW_MINUTES  # 取证窗口（分钟）：end_ts=now，start_ts=now-窗口
+    )
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -117,6 +121,7 @@ def load_rca_config() -> RcaConfig:
             "RCA_CACHE_TTL_SECONDS", _DEFAULT_CACHE_TTL_SECONDS
         ),
         business_uris=_env_list("RCA_BUSINESS_URIS"),
+        window_minutes=_env_int("RCA_WINDOW_MINUTES", _DEFAULT_WINDOW_MINUTES),
     )
     return _CACHE
 

@@ -1,13 +1,14 @@
 import asyncio
 import time
 from dataclasses import replace
+from typing import cast
 
 import pytest
 
 from src.config.rca import RcaConfig
 from src.rca.collector import collect_evidence
 from src.rca.models import EvidenceSpec, EvidenceStatus
-from src.rca.sources.base import SourceFailedError
+from src.rca.sources.base import LogSource, SourceFailedError
 
 
 def _cfg() -> RcaConfig:
@@ -121,6 +122,76 @@ async def test_budget_exhausted_marks_failed():
     out = await collect_evidence(specs, SlowSource(), {"uri": "/x"}, cfg)
     assert out["stats"].status is EvidenceStatus.FAILED
     assert out["stats"].reason == "budget_exceeded"
+
+
+class WindowSource:
+    """记录收到的观测窗口的假源（三个工具都需要窗口）。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int]] = []
+
+    async def latency_stats(self, uri, start_ts, end_ts, slow_ms=2000):
+        self.calls.append((start_ts, end_ts))
+        return {"total": 1}
+
+    async def request_detail(self, uri, start_ts, end_ts, limit=100):
+        self.calls.append((start_ts, end_ts))
+        return [{"ts": 1}]
+
+    async def business_impact(self, start_ts, end_ts):
+        self.calls.append((start_ts, end_ts))
+        return {"endpoints": []}
+
+
+class NoWindowSource:
+    """签名不含窗口的假源：注入窗口会 TypeError。"""
+
+    async def latency_stats(self, uri):
+        return {"total": 1}
+
+    async def request_detail(self, uri):
+        return [{"ts": 1}]
+
+    async def business_impact(self):
+        return {"endpoints": []}
+
+
+@pytest.mark.asyncio
+async def test_window_injected_only_when_signature_accepts():
+    """工具签名含 start_ts/end_ts ⇒ 从 fields 注入编排层给的窗口。"""
+    src = WindowSource()
+    specs = [
+        EvidenceSpec(id="stats", tool="latency_stats", params={"uri": "${alert.uri}"}),
+        EvidenceSpec(
+            id="detail",
+            tool="request_detail",
+            params={"uri": "${alert.uri}"},
+            required=False,
+        ),
+        EvidenceSpec(id="impact", tool="business_impact", required=False),
+    ]
+    out = await collect_evidence(
+        specs, src, {"uri": "/x", "start_ts": 1000, "end_ts": 1900}, _cfg()
+    )
+    assert out["stats"].status is EvidenceStatus.OK
+    assert out["detail"].status is EvidenceStatus.OK
+    assert out["impact"].status is EvidenceStatus.OK
+    assert src.calls == [(1000, 1900)] * 3
+
+
+@pytest.mark.asyncio
+async def test_window_not_injected_when_signature_lacks_it():
+    """工具签名不含窗口 ⇒ 不得注入多余关键字（否则 TypeError ⇒ 全部 failed）。"""
+    specs = [
+        EvidenceSpec(id="stats", tool="latency_stats", params={"uri": "${alert.uri}"})
+    ]
+    out = await collect_evidence(
+        specs,
+        cast(LogSource, NoWindowSource()),
+        {"uri": "/x", "start_ts": 1, "end_ts": 2},
+        _cfg(),
+    )
+    assert out["stats"].status is EvidenceStatus.OK
 
 
 @pytest.mark.asyncio

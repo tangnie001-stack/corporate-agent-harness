@@ -41,6 +41,15 @@ def test_whitelist_accepts_fullwidth_comma(monkeypatch):
     assert cfg.alert_whitelist == ("告警甲", "告警乙")
 
 
+def test_window_minutes_default_and_override(monkeypatch):
+    """取证窗口默认 15 分钟，可被 RCA_WINDOW_MINUTES 覆盖。"""
+    monkeypatch.delenv("RCA_WINDOW_MINUTES", raising=False)
+    assert load_rca_config().window_minutes == 15
+    reset_for_test()
+    monkeypatch.setenv("RCA_WINDOW_MINUTES", "30")
+    assert load_rca_config().window_minutes == 30
+
+
 def test_float_rejects_nan(monkeypatch):
     """nan 不得通过正数校验。"""
     monkeypatch.setenv("RCA_CACHE_TTL_SECONDS", "nan")
