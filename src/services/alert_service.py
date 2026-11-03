@@ -543,7 +543,14 @@ async def _analyze_turn(
         )
         purified = ""
     final_text = choose_final_text(purified, outcome.card, outcome.verdict)
-    if outcome.verdict is None and (abnormal or final_text.strip() == ""):
+    if outcome.verdict is not None:
+        # 卡片是确定性结论，覆盖异常/空回答；但流异常本身仍要留痕
+        if abnormal:
+            logger.warning(
+                "[alert] abnormal answer overridden by verdict alarm_id={}",
+                encode_value(event.alarm_id),
+            )
+    elif abnormal or final_text.strip() == "":
         logger.warning(
             "[alert] empty or abnormal answer alarm_id={} abnormal={}",
             encode_value(event.alarm_id),
