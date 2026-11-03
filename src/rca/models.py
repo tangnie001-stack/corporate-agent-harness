@@ -28,7 +28,9 @@ class EvidenceSpec:
 
     id: str  # 证据标识，渲染与日志引用
     tool: str  # 工具名（对应 LogSource 方法）
-    params: dict[str, str] = field(default_factory=dict)  # 含 alert.* 占位符
+    params: dict[str, str] = field(  # 含 alert.* 占位符；不可 hash
+        default_factory=dict, hash=False
+    )
     required: bool = True  # 必需源失败则短路
     timeout: float = 8.0  # 单源超时（秒）
     when: str | None = None  # 简易条件，如 "stats.total < 20"

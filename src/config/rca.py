@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 
@@ -49,32 +50,39 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def _env_float(name: str, default: float) -> float:
-    """读正数浮点；非法值 fail-fast。"""
+    """读正数有限浮点；非法值 fail-fast，错误只回显键名。"""
     raw = os.getenv(name, "").strip()
     if raw == "":
         return default
-    value = float(raw)
-    if value <= 0:
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number") from None
+    if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be positive")
     return value
 
 
 def _env_int(name: str, default: int) -> int:
-    """读正整数；非法值 fail-fast。"""
+    """读正整数；非法值 fail-fast，错误只回显键名。"""
     raw = os.getenv(name, "").strip()
     if raw == "":
         return default
-    value = int(raw)
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number") from None
     if value <= 0:
         raise ValueError(f"{name} must be positive")
     return value
 
 
 def _env_list(name: str) -> tuple[str, ...]:
-    """读逗号分隔列表，去空白并丢弃空项。"""
+    """读逗号分隔列表，兼容全角逗号，去空白并丢弃空项。"""
     raw = os.getenv(name, "").strip()
     if raw == "":
         return ()
+    raw = raw.replace("，", ",")
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
