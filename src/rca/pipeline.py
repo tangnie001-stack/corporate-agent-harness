@@ -1,0 +1,109 @@
+"""报警轮的判定编排：开关 → 上下文 → 采集 → 判定 → 渲染。
+
+任何环节失败都不抛给调用方：返回原 query + 空判定，由调用方走原行为与兜底。
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from loguru import logger
+
+from src.config.const import RCA_CARD_MAX_CHARS
+from src.config.rca import RcaConfig
+from src.core.logging import encode_value
+from src.infra.grafana_client import GrafanaClient
+from src.rca.collector import collect_evidence
+from src.rca.context import build_alert_context
+from src.rca.judge import judge
+from src.rca.loader import load_skills, match_skill
+from src.rca.models import TriageVerdict
+from src.rca.render import render_card
+from src.rca.sources.grafana import GrafanaLogSource
+
+if TYPE_CHECKING:
+    from src.services.alert_service import AlertEvent
+
+SKILLS_ROOT = Path(__file__).resolve().parents[2] / "skills"
+
+
+@dataclass(frozen=True)
+class TriageOutcome:
+    """一次判定编排的产物。"""
+
+    query: str  # 喂给 Agent 的文本；未判定时为原 query
+    verdict: TriageVerdict | None  # 判定结果；未判定或失败为 None
+    card: str = ""  # 卡片文本；未判定为空串
+
+
+def should_triage(alertname: str, cfg: RcaConfig) -> bool:
+    """开关与白名单判断。"""
+    if not cfg.enabled:
+        return False
+    return alertname in cfg.alert_whitelist
+
+
+async def run_triage(
+    event: AlertEvent,
+    base_query: str,
+    cfg: RcaConfig,
+    skills_root: Path = SKILLS_ROOT,
+) -> TriageOutcome:
+    """执行判定并返回增强 query + 判定结果；未判定或失败时只回原 query。
+
+    取证窗口由本层按告警时刻统一注入（end_ts=now，start_ts=now-window），
+    与告警的实际触发时间对齐；窗口不是 skill 需要声明的参数。
+
+    Args:
+        event: 解析后的告警事件（用 alertname / folder 反查规则）
+        base_query: 原有喂给 Agent 的文本
+        cfg: 判定配置
+        skills_root: rca skill 根目录
+
+    Returns:
+        TriageOutcome；verdict 为 None 表示本次未判定（开关关闭 / 白名单不中 /
+        上下文或 skill 缺失 / 任何环节异常），调用方据此走原行为。
+    """
+    if not should_triage(event.alertname, cfg):
+        return TriageOutcome(base_query, None)
+
+    client = GrafanaClient(
+        cfg.grafana_base_url, cfg.grafana_token, cfg.source_timeout_seconds
+    )
+    try:
+        context = await build_alert_context(client, event.alertname, event.folder, cfg)
+        if context.uri is None:
+            logger.info(
+                "[rca] context unresolved alert={}", encode_value(event.alertname)
+            )
+            return TriageOutcome(base_query, None)
+
+        skill = match_skill(load_skills(skills_root), event.alertname)
+        if skill is None:
+            logger.info("[rca] no skill alert={}", encode_value(event.alertname))
+            return TriageOutcome(base_query, None)
+
+        end_ts = int(time.time())
+        start_ts = end_ts - cfg.window_minutes * 60
+        source = GrafanaLogSource(client, context, cfg)
+        fields = {
+            "uri": context.uri,
+            "alertname": context.alertname,
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+        }
+        results = await collect_evidence(skill.evidence, source, fields, cfg)
+        verdict = judge(results, cfg.severe_latency_ms)
+        card = render_card(verdict, results, {}, RCA_CARD_MAX_CHARS)
+        query = base_query + "\n\n" + skill.body + "\n\n[证据]\n" + card
+        return TriageOutcome(query, verdict, card)
+    except Exception as exc:  # noqa: BLE001  判定失败不得影响报警轮
+        logger.warning(
+            "[rca] triage failed alert={} err={}",
+            encode_value(event.alertname),
+            encode_value(type(exc).__name__),
+        )
+        return TriageOutcome(base_query, None)

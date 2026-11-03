@@ -25,9 +25,11 @@ from src.chat.process_log import serialize_process
 from src.chat.streaming import streaming_manager  # 共享单例：必须与 turn_runner 同一个
 from src.config.alert import AlertConfig, AlertTarget, load_alert_config
 from src.config.const import ALERT_USER_ID, WECOM_NS, AlertTexts, Channel
+from src.config.rca import load_rca_config
 from src.core.logging import encode_value
 from src.infra.llm.trace_context import current_channel, current_trace_id
 from src.infra.llm.tracing import new_trace_id
+from src.rca.pipeline import run_triage
 from src.services import turn_runner, wecom_service
 from src.utils.sse import SSEDoneEvent, SSEErrorEvent
 
@@ -48,6 +50,7 @@ class AlertEvent:
     details: str  # 各条告警描述的合并文本
     fingerprints: tuple[str, ...]  # 逐条告警指纹
     status: str  # 告警状态：firing / resolved（其它值原样保留）
+    folder: str = ""  # Grafana 文件夹（commonLabels.grafana_folder）；缺省空串
 
     @property
     def is_recovery(self) -> bool:
@@ -131,6 +134,7 @@ def parse_alert_payload(raw: bytes) -> AlertEvent:
         details="\n".join(p for p in details_parts if p),
         fingerprints=tuple(fingerprints),
         status=status,
+        folder=_first_text(labels.get("grafana_folder")),
     )
 
 
@@ -423,12 +427,13 @@ async def _run_analysis(
     trace_token = current_trace_id.set(new_trace_id())
     try:
         try:
+            outcome = await run_triage(event, build_query(event), load_rca_config())
             svc = await _get_service()
             handle = await turn_runner.start_turn(
                 svc,
                 session_id=session_id,
                 kb_id="",
-                query=build_query(event),
+                query=outcome.query,
                 user_id=ALERT_USER_ID,
                 title=f"[企微·{target.bot_key}] 报警 {event.alertname}",
                 clarify=False,
