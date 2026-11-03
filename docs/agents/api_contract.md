@@ -833,6 +833,7 @@ Grafana contact point **直连**本端点的告警接入入口，非前端消费
 | `status` | str | `firing` / `resolved`（可选；缺省按 `firing`，即不把触发误判成恢复） |
 | `alarmId` | str | 报警标识（**可选**：上游无此字段时回退首条 `fingerprint`） |
 | `level` | str | 告警等级：按 `level` → `commonLabels.severity` → `commonLabels._aliyun_arms_alert_level`；都无 → `-` |
+| `commonLabels.grafana_folder` | str | Grafana 文件夹（可选；判定链路据它 + alertname 反查规则、解析接口 uri；缺省空串 ⇒ 不判定，走原自由分析） |
 
 约束：**必须在 5 秒内返回**（上游 Webhook 硬超时，超时触发重试）；校验与去重通过后立即
 `asyncio.create_task` 起后台任务，**分析不在响应路径上**。

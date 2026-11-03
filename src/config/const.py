@@ -655,3 +655,9 @@ class AlertTexts:
         "告警等级：{level}\n"
         "告警内容：\n{details}"
     )
+
+
+# ── 告警三档判定（change: alert-triage） ──
+
+# 判定卡片字符上限：超出截断（与推送渠道单条消息的可读长度同量级）
+RCA_CARD_MAX_CHARS: Final[int] = 1500

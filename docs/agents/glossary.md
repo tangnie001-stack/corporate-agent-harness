@@ -268,6 +268,18 @@
 
 **`LANGFUSE_ENABLE` 开关口径**：同一开关在代码里既接 tracing（`src/infra/llm/tracing.py`），也接 `PromptManager` 的远端 prompt 读取（`PromptManager.__init__` 读它）。按 `docs/adr/0010-delist-langfuse-prompts.md`，远端名单当前已出列为空，名单为空时不发起网络请求 —— 故**当前实际只影响 trace 产出**；待名单加回并固定 label/版本（终态，见 `docs/adr/0002-prompt-carrier-yaml-two-phase.md`）后，两者同受该开关治理。
 
+## 告警判定（rca）
+
+> 代码落点 `src/rca/`；发起方是 `src/services/alert_service.py` 的报警轮。
+
+| 术语 | 定义 | 常见错误 |
+|------|------|---------|
+| `三档判定（Tier）` | 告警结论的固定三档：`无需处理` / `建议观察` / `需要处理`。**档位由代码确定性计算**（`src/rca/judge.py::judge`），模型只产解释、不改档；`无需处理` 必须同时满足样本量 ≥ 1、无 5xx、慢请求 ≤ 1、p95 < 严重阈值 | ❌ 让模型自选档位；❌ 另造第四档或改写档位文案 |
+| `证据三态（EvidenceStatus）` | 每条证据的执行结果只有三态：`ok` / `empty` / `failed`。`empty` 是"查到但无数据"，`failed` 是"查询异常或超时"，两者不可合并（必需源 failed 才短路，empty 不短路） | ❌ 把 empty 当 failed（误短路必需源）；❌ 用空数据表达失败 |
+| `证据包` | 一次判定按 skill 的 `evidence` 声明采集到的全部证据条目（`EvidenceResult` 集合）及其渲染出的卡片。模型看到的是卡片文本，不直接读裸数据；定量字段由卡片填充，模型只写定性解释 | ❌ 以为模型自行决定采哪些证据；❌ 跳过卡片直接喂原始 JSON |
+| `严重阈值（severe_latency_ms）` | 独立于告警自身阈值的第二判据，默认 3000ms（`RCA_SEVERE_LATENCY_MS`）；窗口 p95 ≥ 该值即置 `severe_hit` 并落"建议观察" | ❌ 与告警阈值混用；❌ 当成"需要处理"的门槛 |
+| `语义未知` | 规则反查未能补齐 `uri` / 阈值 / `for` 时长时的降级态，对应字段为 `None`。`uri` 为 `None` 时整轮不判定、退回原有自由分析；其余字段缺失只表现为"不可引用" | ❌ 把未知数值当 0 或照抄；❌ 在解释里引用"语义未知"的数值 |
+
 ## prompt 组装
 
 ### 六段模型

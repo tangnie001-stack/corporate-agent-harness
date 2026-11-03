@@ -64,6 +64,7 @@ agents/            LangGraph agent 循环
   ├─ skills/       主从委派运行时：loader/registry/executor/delegate_task/models/invocation/prefix(/xxx 解析与清洗纯函数) + fork 执行层 fork_stream/fork_tools/delegate_run
   └─ presets/      智能体预设：models / loader / registry
 rag/               检索与知识库路由：retrieval / fusion(RRF 纯函数) / context / prompt / temporal
+rca/               告警三档判定：loader(skill 加载与匹配) / context(规则反查补 uri·阈值·for) / collector(两波并行采集·三态归一) / judge(档位确定性计算) / render(卡片渲染) / pipeline(开关→上下文→采集→判定→渲染) / models(值对象) / sources(取数源协议 + Grafana 实现 + fixture)
 chat/              对话管理：manager(Redis) / persistence(PostgreSQL) / streaming / task_registry / process_log / summary_store(摘要读写 mixin，Redis 优先内存降级，宿主 ChatManager) / history_summary(摘要核心：提示词组装 + 调用 + 四条不变量校验)
 chunking/          分块：router(策略路由) / strategies(4 种) / validator / scorer
 parsers/           文档解析：pdf / docx / txt + base / router
@@ -71,7 +72,7 @@ core/              日志：logging / log_events / log_event_specs
 config/            settings(环境变量) / const(常量/文案/枚举) / response_codes / wecom_bots(多机器人配置解析/校验) / alert(告警配置解析/校验)
   └─ prompts/      prompt 模板包：__init__.py(7 条行为键常量 VERIFY_* / FORK_*) / loader.py(唯一读取点) / validation.py(启动期校验) / templates/*.yaml(22 条模板：段模板 `kind: section` 14 条 + 独立任务模板 `kind: task` 8 条)
                    —— 段模板(`kind: section`)与独立任务模板(`kind: task`)同处一包；改 prompt 文案改 YAML，改规则的挂载点改代码
-infra/             基础设施：db(engine/DSN + transaction 事务边界 + models + repos + vector_store + lexical_query) / llm(tracing 为 Langfuse 开关/flush/trace id 校验唯一入口；langfuse_purge 为保留期删除的 SQL 后端；token_count 为统一 token 计数入口——tiktoken 近似，encoder 缺失时降级 `len(text)//2` 并记一次 warning；**provider/ 为 provider 兼容层，见下**) / search(tokenizer 为唯一 jieba 分词入口) / auth / redis_client
+infra/             基础设施：db(engine/DSN + transaction 事务边界 + models + repos + vector_store + lexical_query) / llm(tracing 为 Langfuse 开关/flush/trace id 校验唯一入口；langfuse_purge 为保留期删除的 SQL 后端；token_count 为统一 token 计数入口——tiktoken 近似，encoder 缺失时降级 `len(text)//2` 并记一次 warning；**provider/ 为 provider 兼容层，见下**) / search(tokenizer 为唯一 jieba 分词入口) / auth / redis_client / grafana_client(Grafana HTTP 传输层：Bearer 鉴权 / 超时 / 错误归一，不做业务解析)
 middleware/        auth / trace_id / response_processor（统一响应包装）
 cli/               DeepEval 评测、v6 出题、检索对比、trace 回放/清理、症状指标、种子与防腐闸门（check_docs / check_adr）等命令行工具
 models.py          模型门面（**薄委托** `src/infra/llm/provider/`）：get_llm / get_classify_llm / get_summary_llm / get_judge_llm / get_embeddings / get_rerank
@@ -284,6 +285,7 @@ Nginx 容器把本目录挂到 `/usr/share/nginx/html` 直接托管，**无 npm 
 | 加/改工具 | `src/agents/tools/`（实现 + 在 `rag_tools.py` 注册）；工具描述文案入 `src/config/` |
 | 加/改 skill 机制 | `src/agents/skills/`（loader/registry/executor/delegate_task）；内容放 `skills/<name>/SKILL.md` |
 | 加/改智能体预设 | 内容放 `agents/<name>.md`；机制在 `src/agents/presets/`（loader/registry） |
+| 加/改告警三档判定（判定规则 / 取数源 / 卡片） | `src/rca/`（`judge.py` 档位、`collector.py` 采集、`sources/` 取数源、`render.py` 卡片）；skill 内容 `skills/rca-latency/SKILL.md`；配置 `src/config/rca.py`；接入点 `src/services/alert_service.py` |
 | 改前端对话页 | `deploy/nginx/html/chat.html`（自包含）；**勿改 `js/chat.js`** |
 | 改知识库管理页 | `deploy/nginx/html/index.html`（+ `js/api.js`） |
 | 改 Nginx 路由 / 静态托管 | `deploy/nginx/nginx.conf`、`deploy/nginx/Dockerfile` |
