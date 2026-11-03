@@ -21,6 +21,7 @@ class RAGContext:
     chunk_id: str
     parent_content: str | None = None
     score: float = 0.0
+    score_kind: str = "none"  # 分数量纲：rerank=精排相关度 / fallback=精排失败回退为 1-distance / timeout=外层超时回退 / none=无分数
     entities: dict = field(default_factory=dict)  # 业务实体，来自 chunk.metadata
     kind: str = (
         SSEInteractionTexts.CITATION_KIND_KB

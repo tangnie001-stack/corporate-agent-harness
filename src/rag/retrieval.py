@@ -383,6 +383,7 @@ def rerank_results(
                 chunk_id=r.id,
                 parent_content=pc,
                 score=score,
+                score_kind="fallback" if used_fallback else "rerank",
                 tier=resolve_source_tier(
                     r.metadata.get("source", ""),
                     SSEInteractionTexts.CITATION_KIND_KB,

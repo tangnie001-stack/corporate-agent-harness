@@ -188,6 +188,7 @@ def make_rag_tools(
                         chunk_id=r.id,
                         parent_content=pc,
                         score=1 - r.distance if r.distance is not None else 0.0,
+                        score_kind="timeout",
                         tier=resolve_source_tier(
                             r.metadata.get("source", ""),
                             SSEInteractionTexts.CITATION_KIND_KB,
@@ -332,6 +333,12 @@ def make_rag_tools(
                     "query": query,
                     "top_k": top_k,
                     "iteration": iteration,
+                    # 召回条数 / 精排后进入 prompt 的条数（来源：本次调用结果；
+                    # 用途：区分"没召回"与"召回后被精排截断"，两者 contexts 都为空）
+                    "result_count": len(results),
+                    "context_count": len(contexts),
+                    # 分数量纲：rerank / fallback / timeout（见 RAGContext.score_kind）
+                    "score_kind": contexts[0].score_kind if contexts else "none",
                     "contexts": [
                         {
                             "chunk_id": c.chunk_id,
