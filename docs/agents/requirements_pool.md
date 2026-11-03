@@ -62,7 +62,7 @@
 | 需求 | 描述 | 来源对比 | 优先级 | 预估成本 | 依赖 |
 |------|------|---------|--------|---------|------|
 | E-01 | 专用财务文档 chunker | 对财报、招股书等优化分块策略 | P2 | 低 | 无 |
-| E-03 | OCR 支持 | 扫描版 PDF 的 OCR 识别 | P3 | 高 | 无 |
+| E-03 | OCR 支持 | 扫描版 PDF 的 OCR 识别。**2026-10-30 评估**：拆成两件——①「无文字层页面整页文字 OCR」成本低（RapidOCR/onnx 一个依赖 + 解析器加一条分支 + OCR 并发限 1、单文档页数上限），能让扫描件从 `failed` 变成可用，值得做；②「表格结构识别 / 版面还原 / 图表语义描述」才是当初判「高」的原因，2C8G 单 worker 无 GPU 的机器上做不好，不做。**先决条件**：真实上传里扫描件/图片型文档占比 > 5% 才动手（判据与成本明细见 `docs/research/2026-10-30-image-upload-parsing-pipeline.md`） | P3 | 文字 OCR 低 / 结构还原高 | 无 |
 | E-05 | **Token 计数分块** | 当前 CHUNK_SIZE 按字符数设置，改为按 Token 数（接入 DashScope tokenizer）。中文 512 字符约 300-400 tokens，导致 chunk 偏小。与嵌入模型对齐后分块更准确 | **P0** | 低 | 无 |
 | E-09 | **文档后台处理重试机制** | 当前 `asyncio.create_task()` fire-and-forget，向量化失败（DashScope 超时/PostgreSQL 写入失败）直接标记 `failed`，无重试。增加指数退避重试（初始 100ms，倍数 2，最大 5s，加随机 jitter），最多重试 2-3 次后标记 `failed`。**不重试**：解析失败（文件损坏）、扫描件检测（不可恢复）。**只重试**：网络超时、API 限流（429）、向量库临时不可用等可恢复错误 | P1 | 低 | 无 |
 | E-10 | **分块质量评估的口径漂移与规格缺口** | ① **权重不一致**：归档 spec 写 `0.40 × structure_integrity.score + 0.30 × sbr.score + 0.30 × granularity_cv.score`（`docs/openspec/changes/archive/2026-07-17-retrieval-and-chunking/chunk-evaluation-system/specs/chunk-quality-scorer/spec.md:83`），代码是 `0.45 / 0.45 / 0.10`（`src/chunking/scorer.py:410-414`），且**无任何测试断言权重** —— 改哪边都会改变 `overall_score` 数值、进而影响历史「分块评分」的可比性，须先裁定以哪边为准。② **主规格缺失**：`docs/openspec/specs/` 下**没有** `chunk-quality-scorer`，该 change 归档时未把 delta 同步进主规格，所以三个模块的字段形状至今只存在于归档里（`eval_detail` 的实际形状已补进 `docs/agents/api_contract.md` §2.2.1，但那是接口契约、不是能力规格） | 2026-09-22 排查「详情」弹窗缺陷时顺带发现 | P2 | 低 | 无 |
