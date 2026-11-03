@@ -29,6 +29,7 @@ from src.config.rca import load_rca_config
 from src.core.logging import encode_value
 from src.infra.llm.trace_context import current_channel, current_trace_id
 from src.infra.llm.tracing import new_trace_id
+from src.rca.models import TriageVerdict
 from src.rca.pipeline import run_triage
 from src.services import turn_runner, wecom_service
 from src.utils.sse import SSEDoneEvent, SSEErrorEvent
@@ -207,6 +208,26 @@ def render_fallback(event: AlertEvent, max_chars: int) -> str:
     if len(body) > max_chars:
         body = body[:max_chars]
     return f"{AlertTexts.FALLBACK_PREFIX} {body}"
+
+
+def choose_final_text(
+    model_text: str, card_text: str, verdict: TriageVerdict | None
+) -> str:
+    """选定最终结论文本：有判定结果时用卡片，否则用原有净化正文。
+
+    推送与落库共用本函数的返回值，避免群里看到的结论与会话里留存的不是同一段。
+
+    Args:
+        model_text: 净化后的模型正文（无判定结果时的原行为文本）
+        card_text: 判定卡片文本（确定性结论）
+        verdict: 判定结果；None 表示本次未判定
+
+    Returns:
+        要推送/落库的正文
+    """
+    if verdict is None:
+        return model_text
+    return card_text
 
 
 class AlertDedup:
@@ -428,6 +449,10 @@ async def _run_analysis(
     try:
         try:
             outcome = await run_triage(event, build_query(event), load_rca_config())
+            # 判定成立时，落库正文直接取卡片（与下方推送同源）；未判定保持原形态
+            persist_text: str | None = None
+            if outcome.verdict is not None:
+                persist_text = outcome.card
             svc = await _get_service()
             handle = await turn_runner.start_turn(
                 svc,
@@ -437,6 +462,7 @@ async def _run_analysis(
                 user_id=ALERT_USER_ID,
                 title=f"[企微·{target.bot_key}] 报警 {event.alertname}",
                 clarify=False,
+                persist_text=persist_text,
             )
         except turn_runner.TurnBusy:
             logger.warning(
@@ -485,7 +511,8 @@ async def _run_analysis(
                 e,
             )
             purified = ""
-        if abnormal or purified.strip() == "":
+        final_text = choose_final_text(purified, outcome.card, outcome.verdict)
+        if outcome.verdict is None and (abnormal or final_text.strip() == ""):
             logger.warning(
                 "[alert] empty or abnormal answer alarm_id={} abnormal={}",
                 encode_value(event.alarm_id),
@@ -493,7 +520,7 @@ async def _run_analysis(
             )
             await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
             return
-        await _safe_send(target, purified)
+        await _safe_send(target, final_text)
     finally:
         current_trace_id.reset(trace_token)
         current_channel.reset(channel_token)

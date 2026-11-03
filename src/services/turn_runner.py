@@ -86,6 +86,7 @@ async def _run_with_finalize(
     ctx: RequestContext,
     trace_id: str = "",
     channel: str = "",
+    persist_text: str | None = None,
 ) -> None:
     """后台任务主体：跑生成，完成后按结果收尾落库，finally 释放锁并注销。
 
@@ -127,6 +128,9 @@ async def _run_with_finalize(
         channel: 请求级渠道标识（调用方启动任务前从 current_channel 捕获），
             任务入口 set 到 current_channel，供日志第 5 段与 Langfuse metadata 使用；
             空串按 CHANNEL_DEFAULT（none）占位
+        persist_text: 落库正文覆盖（None = 用净化正文）。仅正常完成分支生效，
+            供报警轮把"推送的结论"与"落库的结论"锁成同一段文本；取消/异常分支
+            仍落已产出的净化正文
     """
     task = asyncio.current_task()
     assert task is not None, (
@@ -178,6 +182,8 @@ async def _run_with_finalize(
         process_json, purified = serialize_process(
             partial_holder.get("events_log") or []
         )
+        if persist_text is not None:
+            purified = persist_text
         partial_holder["text"] = purified
         await svc.save_assistant_async(
             session_id,
@@ -387,6 +393,7 @@ def _spawn_generation_task(
     signal: asyncio.Event,
     release_lock_cb: Callable[[], None],
     ctx: RequestContext,
+    persist_text: str | None = None,
 ) -> None:
     """起后台生成任务，注册进事件缓冲表并挂两条 done 回调。
 
@@ -406,6 +413,7 @@ def _spawn_generation_task(
             ctx,
             trace_id=current_trace_id.get() or "",
             channel=current_channel.get() or "",
+            persist_text=persist_text,
         )
     )
     streaming_manager.register(launch_ctx["session_id"], task, signal)
@@ -423,6 +431,7 @@ def _spawn_from_launch_ctx(
     abort_signal: asyncio.Event | None,
     user_id: str,
     release_lock_cb: Callable[[], None],
+    persist_text: str | None = None,
 ) -> None:
     """stream_chat 之后的建任务段：接线 abort 信号、构造 answer_builder、起后台任务。
 
@@ -437,6 +446,7 @@ def _spawn_from_launch_ctx(
         user_id: 用户 ID（生成侧唯一来源）
         release_lock_cb: 幂等释放回调（仅 Redis 锁；预留由调用方在早退路径
             显式经 streaming_manager.release_reservation 释放）
+        persist_text: 落库正文覆盖（None = 用净化正文），透传给后台任务
     """
     partial_holder: dict = {"text": "", "sources": []}
     if abort_signal is not None:
@@ -453,7 +463,14 @@ def _spawn_from_launch_ctx(
         launch_ctx, ctx, partial_holder, signal, user_id
     )
     _spawn_generation_task(
-        svc, launch_ctx, partial_holder, answer_builder, signal, release_lock_cb, ctx
+        svc,
+        launch_ctx,
+        partial_holder,
+        answer_builder,
+        signal,
+        release_lock_cb,
+        ctx,
+        persist_text=persist_text,
     )
 
 
@@ -470,6 +487,7 @@ async def _launch_and_register(
     redis: object,
     lock_held: bool,
     clarify: bool,
+    persist_text: str | None = None,
 ) -> TurnHandle:
     """取订阅与启动上下文，起后台任务并注册，返回事件流句柄。
 
@@ -489,6 +507,7 @@ async def _launch_and_register(
         redis: ChatManager 的 Redis 客户端（释放锁用）
         lock_held: 是否已取得 Redis 锁
         clarify: 是否允许澄清追问（False 用于报警等非交互轮次，透传给 stream_chat）
+        persist_text: 落库正文覆盖（None = 用净化正文），透传给后台任务
 
     Returns:
         TurnHandle：其 events 为结构化 SSEEvent 流
@@ -511,7 +530,14 @@ async def _launch_and_register(
         )
 
     try:
-        _spawn_from_launch_ctx(svc, launch_ctx, abort_signal, user_id, release_lock_cb)
+        _spawn_from_launch_ctx(
+            svc,
+            launch_ctx,
+            abort_signal,
+            user_id,
+            release_lock_cb,
+            persist_text=persist_text,
+        )
     except Exception as e:  # noqa: BLE001
         # 建任务/注册段失败（任务尚未注册）：释放预留 + 锁，不抛出——改为
         # error + done 终止态
@@ -541,6 +567,7 @@ async def start_turn(
     title: str | None = None,
     clarify: bool = True,
     abort_signal: asyncio.Event | None = None,
+    persist_text: str | None = None,
 ) -> TurnHandle:
     """启动一轮生成，返回事件流句柄（站点与通道共用）。
 
@@ -560,6 +587,8 @@ async def start_turn(
         title: 会话标题（None → query[:20]；仅首次落库生效）
         clarify: 是否允许澄清追问（False 用于报警等非交互轮次，见 design D12）
         abort_signal: 取消信号（None 时内部新建）
+        persist_text: 落库正文覆盖（None = 用净化正文）。报警轮把判定卡片作为
+            落库正文，保证群里的结论与会话留存的是同一段文本；其它调用方不传
 
     Returns:
         TurnHandle：其 events 为结构化 SSEEvent 流
@@ -586,4 +615,5 @@ async def start_turn(
         redis=redis,
         lock_held=lock_held,
         clarify=clarify,
+        persist_text=persist_text,
     )

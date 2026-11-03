@@ -113,6 +113,49 @@ async def test_background_task_finalizes_assistant_on_complete():
 
 
 @pytest.mark.asyncio
+async def test_persist_text_overrides_complete_content():
+    """报警轮传 persist_text：MySQL 与 Redis 历史都用该文本（与推送同源）。"""
+    from src.chat.streaming import StreamingRunManager
+    from src.infra.llm.request_context import RequestContext
+    from src.services.turn_runner import _run_with_finalize
+
+    saved = []
+    fake_svc = MagicMock()
+    # 实参序：session_id, kb_id, 正文（a[2]）, sources, status, ...
+    fake_svc.save_assistant_async = AsyncMock(
+        side_effect=lambda *a, **k: saved.append(a[2])
+    )
+    fake_svc.chat_manager = MagicMock()
+    fake_svc.chat_manager.add_message_async = AsyncMock()
+    partial_holder = {
+        "text": "",
+        "events_log": [{"type": "token", "payload": {"token": "模型正文"}}],
+    }
+    mgr = StreamingRunManager()
+
+    async def answer_builder():
+        return "模型正文"
+
+    await _run_with_finalize(
+        fake_svc,
+        "s-persist",
+        "kb1",
+        partial_holder,
+        answer_builder,
+        mgr,
+        asyncio.Event(),
+        lambda: None,
+        RequestContext(session_id="s-persist"),
+        persist_text="卡片文本",
+    )
+
+    assert saved == ["卡片文本"]
+    fake_svc.chat_manager.add_message_async.assert_awaited_once_with(
+        "s-persist", "assistant", "卡片文本"
+    )
+
+
+@pytest.mark.asyncio
 async def test_complete_path_writes_assistant_to_redis():
     """正常结束：完整回答除落 MySQL 外，还写 Redis 对话历史（跨 turn 上下文）。
 
