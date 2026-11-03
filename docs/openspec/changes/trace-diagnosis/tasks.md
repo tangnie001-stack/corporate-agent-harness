@@ -1,6 +1,6 @@
 ## 0. 前置与排期
 
-- [ ] 0.1 **等 `alert-triage` 合并进 `dev-wsl`**：本变更复用其 `src/rca/sources/base.py`（`LogSource` 协议、`SourceEmptyError` / `SourceFailedError`）、`collector` 的分波并行与超时、`judge` 的定档、`render` 的卡片。未合并前开工会造成 `src/rca/` 双写冲突
+- [x] 0.1 `alert-triage` **已合并**（`558919ad`）。按其真实代码核对后，复用范围为 `models` / `collector` / `loader` / `sources/base` 三态 / `grafana` 解析辅助；`LogSource` 协议、`judge()`、`render_card` 均为延迟专用，不复用（见 design D2）
 - [ ] 0.2 确认 `turn-provenance-observability` 组 1+4 的落地状态；未落地时按 D11 走"字段不可用"降级，不阻塞开工
 - [ ] 0.3 建隔离 worktree（`git worktree add`），base 取合并后的 `dev-wsl`
 
@@ -17,7 +17,7 @@
 - [ ] 2.1 `src/rca/sources/trace.py`：`TraceSource`——按 `trace_id` 取观测与 `metadata.retrieval_contexts`，复用 `src/cli/eval_trace_io.py` 的 `fetch_trace`；取不到抛 `SourceFailedError`，trace 存在但无检索快照抛 `SourceEmptyError`
 - [ ] 2.2 `src/rca/sources/error_log.py`：`ErrorLogSource`——按时间窗扫 ERROR 行、按第 3 段取 `trace_id`；沿用 `grafana.py` 的 `ensure_query_ok` 经验（成功判定不看 status，看数据体）
 - [ ] 2.3 `src/rca/sources/probe.py`：`RetrievalProbe`——对原问题做确定性变体（抽实体/去年份/同义）后重检；命中且相关度过线 → "表述问题"，全空 → "覆盖缺失"。**默认不用模型改写**（不可复现），模型改写作为可选第二档并标注
-- [ ] 2.4 三个 Source 均实现 `LogSource` 协议方法名与三态约定，测试用 `FixtureLogSource` 同款替身
+- [ ] 2.4 三个 Source 实现**新窄协议** `ErrorEvidenceSource`（`trace_fetch` / `error_logs` / `retrieval_probe`），与 `LogSource` 并列、不扩展后者；三态沿用 `SourceEmptyError` / `SourceFailedError`；测试替身照 `FixtureLogSource` 的写法
 
 ## 3. 判定
 
@@ -32,7 +32,7 @@
 - [ ] 4.1 `src/rca/diagnose/report.py`：报告结构含 `tier`、`root_cause`、`evidence[]`、`assertions[]`、`next_actions[]`、`basis_rounds`（本次用到前几轮）
 - [ ] 4.2 `src/rca/diagnose/validator.py`：校验每条断言至少引用一个存在的 `evidence_id`；失败 → 降级为"证据清单 + 未判定"
 - [ ] 4.3 模板约束：禁止出现未引用的因果断言；数字必须来自证据原文，不由模型转写（沿用 `alert-triage` D6）
-- [ ] 4.4 渲染：群卡片（归属建议 + 根因 + 同类计数 + 详情链接）与详情页两套；卡片沿用企微 `button_interaction` 能力
+- [ ] 4.4 新增 `src/rca/diagnose/render.py`（**不复用** `render_card`，后者直接读 `stats`）：群卡片（归属建议 + 根因 + 同类计数 + 详情链接）与详情页两套；卡片沿用企微 `button_interaction` 能力
 
 ## 5. 人工入口
 

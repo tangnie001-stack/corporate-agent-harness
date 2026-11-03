@@ -49,12 +49,25 @@
 - **理由**：本变更的安全属性是"结论可复现"。档位（`tier`）与根因都在代码里算，模型只在最后一步把证据翻译成中文。
 - **边界**：入口解析（自然语言 → 候选 trace）可以留给模型，但一旦拿到 `trace_id`，后续禁止模型改道。
 
-### D2 证据源复用 `src/rca/` 的 Source 协议，不新建采集体系
+### D2 复用采集骨架，但判定与渲染必须另写
 
-- **选**：新增三个实现 `LogSource` 协议的数据源——`TraceSource`（Langfuse 观测 + metadata）、`ErrorLogSource`（窗口内 ERROR 行 → trace_id）、`RetrievalProbe`（改写后重检）。三态沿用 `SourceEmptyError` / `SourceFailedError`。
-- **弃**：自带一套采集与超时控制。理由：`alert-triage` 已实现分波并行、per-source 超时、`required` 短路，重复实现会导致两套语义。
-- **理由**：同一引擎配不同 skill，与 `rca-latency` 同构；错误类只是"证据清单不同"，判定与渲染不变。
-- **落点**：`src/rca/sources/{trace,error_log,probe}.py`，`skills/rca-error/SKILL.md` 用 frontmatter 声明清单。
+`alert-triage` 合并后按其真实代码核对，复用边界如下（**不是"整套复用"**）：
+
+| 组件 | 是否复用 | 依据 |
+|---|---|---|
+| `models`（`Tier` / `EvidenceStatus` / `EvidenceSpec` / `EvidenceResult` / `TriageVerdict`） | ✅ | 与延迟无关 |
+| `collector`（波次执行、per-source 超时、`required` 短路、三态） | ✅ | `collector.py:123` 按 `getattr(source, spec.tool)` 分发，新协议零改动接入 |
+| `loader`（skill frontmatter 解析） | ✅ | 只认 `tool/params/required/timeout/when` |
+| `sources/base.py` 的 `SourceEmptyError` / `SourceFailedError` | ✅ | 三态语义通用 |
+| `sources/grafana.py` 的 `ensure_query_ok` / `parse_frame_column` | ✅ | 查数解析经验（成功判定不看 status） |
+| `LogSource` 协议本身 | ❌ | 三个方法都是延迟专用：`latency_stats` / `request_detail` / `business_impact`；`request_detail` 也不含 `trace_id` |
+| `judge()` | ❌ | 入参是 `severe_latency_ms` / `stats` / `history`，判定逻辑与延迟强绑定 |
+| `render_card` | ❌ | 直接读 `results["stats"]`，卡片结构面向延迟 |
+
+- **选**：新建窄协议 `ErrorEvidenceSource`（`trace_fetch` / `error_logs` / `retrieval_probe`），与 `LogSource` 并列而非扩展——扩展会让 `fixture` / `grafana` / `mcp` 三个实现被迫实现用不到的方法。
+- **选**：另写 `diagnose/judge.py` 与 `diagnose/render.py`，只复用 `Tier` 枚举与 `TriageVerdict` 值对象，保证两边的档位语义一致。
+- **弃**：把错误类的判定塞进现有 `judge()`。理由：会引入 `if is_error: ...` 分叉，两套判定逻辑互相污染，且现有单测全部面向延迟。
+- **落点**：`src/rca/sources/{trace,error_log,probe}.py`、`src/rca/diagnose/{judge,render}.py`、`skills/rca-error/SKILL.md`。
 
 ### D3 诊断粒度：单 trace 起步 + 有界向前追溯 2 轮
 
