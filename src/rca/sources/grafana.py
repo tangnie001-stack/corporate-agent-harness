@@ -92,11 +92,19 @@ class GrafanaLogSource:
     async def latency_stats(
         self, uri: str, start_ts: int, end_ts: int, slow_ms: int = 2000
     ) -> dict:
-        """按节点返回计数、p95 与慢请求数，并给出总量。"""
+        """按节点返回计数、p95、最大耗时、5xx 数与慢请求数，并给出总量。
+
+        慢请求阈值以告警规则的阈值为准（context.threshold 非空即覆盖入参
+        默认值），避免所有接口共用 2000ms 这一与告警口径无关的默认值。
+        """
+        if self._context.threshold is not None:
+            slow_ms = int(self._context.threshold)
         sql = (
             "* | select upstream_addr, count(*) as cnt, "
             "approx_percentile(upstream_response_time, 0.95) * 1000 as p95, "
-            f"count_if(upstream_response_time * 1000 >= {slow_ms}) as slow_cnt "
+            "max(upstream_response_time) * 1000 as max_ms, "
+            f"count_if(upstream_response_time * 1000 >= {slow_ms}) as slow_cnt, "
+            "count_if(status >= 500) as c5xx "
             f"where request_uri = '{escape_sql_literal(uri)}' group by upstream_addr"
         )
         payload = await self._query(sql, start_ts, end_ts)
@@ -104,17 +112,26 @@ class GrafanaLogSource:
         if not counts:
             raise SourceEmptyError("no_rows")
         p95_values = parse_frame_column(payload, "A", "p95")
+        max_values = parse_frame_column(payload, "A", "max_ms")
         slow_values = parse_frame_column(payload, "A", "slow_cnt")
+        c5xx_values = parse_frame_column(payload, "A", "c5xx")
         addrs = parse_frame_column(payload, "A", "upstream_addr")
         p95 = 0.0
         if p95_values:
             p95 = float(max(p95_values))
+        max_ms = 0.0
+        if max_values:
+            max_ms = float(max(max_values))
         slow_count = 0
         if slow_values:
             slow_count = int(sum(slow_values))
+        c5xx = 0
+        if c5xx_values:
+            c5xx = int(sum(c5xx_values))
         return {
             "total": int(sum(counts)),
-            "latency_ms": {"p95": p95},
+            "latency_ms": {"p95": p95, "max": max_ms},
+            "errors": {"5xx": c5xx},
             "slow": {"threshold": slow_ms, "count": slow_count},
             "by_node": [
                 {"addr": addr, "cnt": int(cnt)} for addr, cnt in zip(addrs, counts)
@@ -137,6 +154,7 @@ class GrafanaLogSource:
         addrs = parse_frame_column(payload, "A", "upstream_addr")
         rt_values = parse_frame_column(payload, "A", "rt_ms")
         statuses = parse_frame_column(payload, "A", "status")
+        upstream_statuses = parse_frame_column(payload, "A", "upstream_status")
         rows = []
         for index in range(len(timestamps)):
             rows.append(
@@ -147,6 +165,9 @@ class GrafanaLogSource:
                     if index < len(rt_values)
                     else 0,
                     "status": statuses[index] if index < len(statuses) else 0,
+                    "upstream_status": upstream_statuses[index]
+                    if index < len(upstream_statuses)
+                    else None,
                 }
             )
         return rows

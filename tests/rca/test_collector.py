@@ -199,3 +199,41 @@ async def test_empty_data_marks_empty():
     specs = [EvidenceSpec(id="impact", tool="business_impact", required=False)]
     out = await collect_evidence(specs, FastSource(), {}, _cfg())
     assert out["impact"].status is EvidenceStatus.EMPTY
+
+
+class SplitSlowSource:
+    """两波各慢 0.45s：用于验证总预算只扣一次，不会按波翻倍。"""
+
+    async def latency_stats(self, uri, start_ts, end_ts, slow_ms=2000):
+        await asyncio.sleep(0.45)
+        return {"total": 1}
+
+    async def request_detail(self, uri, start_ts, end_ts, limit=100):
+        await asyncio.sleep(0.45)
+        return [{"ts": 1}]
+
+    async def business_impact(self, start_ts, end_ts):
+        return {"endpoints": []}
+
+
+@pytest.mark.asyncio
+async def test_budget_spans_both_waves():
+    """总预算跨两波共用：第二波只能花剩余时间，不能各拿一份预算。"""
+    cfg = replace(_cfg(), collect_budget_seconds=0.6)
+    specs = [
+        EvidenceSpec(id="stats", tool="latency_stats", params={"uri": "${alert.uri}"}),
+        EvidenceSpec(
+            id="detail",
+            tool="request_detail",
+            params={"uri": "${alert.uri}"},
+            required=False,
+            when="stats.total >= 1",
+        ),
+    ]
+    started = time.monotonic()
+    out = await collect_evidence(specs, SplitSlowSource(), {"uri": "/x"}, cfg)
+    elapsed = time.monotonic() - started
+    assert out["stats"].status is EvidenceStatus.OK
+    assert out["detail"].status is EvidenceStatus.FAILED
+    assert out["detail"].reason == "budget_exceeded"
+    assert elapsed < 0.9, "两波合计不得超过单轮总预算"

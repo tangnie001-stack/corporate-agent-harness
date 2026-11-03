@@ -173,17 +173,18 @@ async def _run_wave(
     alert_fields: dict,
     cfg: RcaConfig,
     semaphore: asyncio.Semaphore,
+    deadline: float,
 ) -> tuple[dict[str, EvidenceResult], bool]:
     """并行执行一波，返回（结果, 是否因必需源失败而短路）。
 
     必需源 failed 时取消同波剩余条目并立即返回，未跑完的条目不出现在结果里。
-    超出总预算的条目标记为 failed:budget_exceeded。
+    超出总预算的条目标记为 failed:budget_exceeded；deadline 由调用方按整轮
+    采集算一次，两波共用，预算不会被重复计算。
     """
     results: dict[str, EvidenceResult] = {}
     if not specs:
         return results, False
 
-    deadline = time.monotonic() + cfg.collect_budget_seconds
     running: dict[asyncio.Task, EvidenceSpec] = {
         asyncio.create_task(_run_one(spec, source, alert_fields, cfg, semaphore)): spec
         for spec in specs
@@ -233,10 +234,11 @@ async def collect_evidence(
     """按两波策略采集全部证据；必需源失败时立即返回。"""
     semaphore = asyncio.Semaphore(cfg.concurrency)
     results: dict[str, EvidenceResult] = {}
+    deadline = time.monotonic() + cfg.collect_budget_seconds
 
     first_wave = [spec for spec in specs if spec.when is None]
     first_results, short_circuit = await _run_wave(
-        first_wave, source, alert_fields, cfg, semaphore
+        first_wave, source, alert_fields, cfg, semaphore, deadline
     )
     results.update(first_results)
     if short_circuit:
@@ -248,7 +250,7 @@ async def collect_evidence(
         if spec.when is not None and _eval_when(spec.when, results)
     ]
     second_results, _ = await _run_wave(
-        second_wave, source, alert_fields, cfg, semaphore
+        second_wave, source, alert_fields, cfg, semaphore, deadline
     )
     results.update(second_results)
     return results

@@ -30,7 +30,7 @@ from src.core.logging import encode_value
 from src.infra.llm.trace_context import current_channel, current_trace_id
 from src.infra.llm.tracing import new_trace_id
 from src.rca.models import TriageVerdict
-from src.rca.pipeline import run_triage
+from src.rca.pipeline import TriageOutcome, run_triage
 from src.services import turn_runner, wecom_service
 from src.utils.sse import SSEDoneEvent, SSEErrorEvent
 
@@ -464,6 +464,26 @@ async def _run_analysis(
         current_channel.reset(channel_token)
 
 
+async def _run_triage_guarded(event: AlertEvent, query: str) -> TriageOutcome:
+    """加载判定配置并执行判定；配置非法时按关闭处理，不让坏配置拖垮报警链路。
+
+    Args:
+        event: 解析后的事件
+        query: 原有喂给 Agent 的文本
+
+    Returns:
+        TriageOutcome；配置加载失败时 verdict 为 None（走原行为）
+    """
+    try:
+        rca_cfg = load_rca_config()
+    except Exception as exc:  # noqa: BLE001  坏环境变量不得影响报警轮
+        logger.warning(
+            "[alert] rca config invalid err={}", encode_value(type(exc).__name__)
+        )
+        return TriageOutcome(query, None)
+    return await run_triage(event, query, rca_cfg)
+
+
 async def _analyze_turn(
     cfg: AlertConfig,
     event: AlertEvent,
@@ -479,7 +499,8 @@ async def _analyze_turn(
         target: 目标群
         session_id: 报警会话标识（调用方已派生）
     """
-    outcome = await run_triage(event, build_query(event), load_rca_config())
+    query = build_query(event)
+    outcome = await _run_triage_guarded(event, query)
     # 判定成立时，落库正文直接取卡片（与下方推送同源）；未判定保持原形态
     persist_text: str | None = None
     if outcome.verdict is not None:

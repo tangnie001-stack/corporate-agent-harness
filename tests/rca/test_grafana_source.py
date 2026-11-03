@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from src.config.rca import RcaConfig
@@ -26,10 +28,45 @@ _STATS_PAYLOAD = {
                             {"name": "upstream_addr"},
                             {"name": "cnt"},
                             {"name": "p95"},
+                            {"name": "max_ms"},
                             {"name": "slow_cnt"},
+                            {"name": "c5xx"},
                         ]
                     },
-                    "data": {"values": [["10.0.0.1"], [3], [100.0], [1]]},
+                    "data": {
+                        "values": [["10.0.0.1"], [3], [100.0], [4200.0], [1], [2]]
+                    },
+                }
+            ]
+        }
+    }
+}
+
+_DETAIL_PAYLOAD = {
+    "results": {
+        "A": {
+            "frames": [
+                {
+                    "schema": {
+                        "fields": [
+                            {"name": "ts"},
+                            {"name": "upstream_addr"},
+                            {"name": "rt_ms"},
+                            {"name": "urt_ms"},
+                            {"name": "status"},
+                            {"name": "upstream_status"},
+                        ]
+                    },
+                    "data": {
+                        "values": [
+                            [1000],
+                            ["10.0.0.1"],
+                            [20.0],
+                            [10.0],
+                            [200],
+                            [502],
+                        ]
+                    },
                 }
             ]
         }
@@ -114,3 +151,44 @@ async def test_uri_single_quote_escaped():
     await source.latency_stats("/a'b", 1, 2)
     query = client.bodies[0]["queries"][0]["query"]
     assert "request_uri = '/a''b'" in query
+
+
+@pytest.mark.asyncio
+async def test_stats_reads_max_latency_and_5xx_count():
+    client = _StubClient(_STATS_PAYLOAD)
+    source = GrafanaLogSource(client, _CTX, _cfg())
+    data = await source.latency_stats("/x", 1, 2)
+    assert data["latency_ms"]["max"] == 4200.0
+    assert data["errors"]["5xx"] == 2
+    query = client.bodies[0]["queries"][0]["query"]
+    assert "max(upstream_response_time) * 1000 as max_ms" in query
+    assert "count_if(status >= 500) as c5xx" in query
+
+
+@pytest.mark.asyncio
+async def test_context_threshold_overrides_default_slow_ms():
+    """规则阈值 300ms 时，慢请求口径不得退回 2000ms。"""
+    client = _StubClient(_STATS_PAYLOAD)
+    source = GrafanaLogSource(client, replace(_CTX, threshold=300.0), _cfg())
+    data = await source.latency_stats("/x", 1, 2)
+    query = client.bodies[0]["queries"][0]["query"]
+    assert "count_if(upstream_response_time * 1000 >= 300) as slow_cnt" in query
+    assert data["slow"]["threshold"] == 300
+
+
+@pytest.mark.asyncio
+async def test_missing_threshold_keeps_default_slow_ms():
+    client = _StubClient(_STATS_PAYLOAD)
+    source = GrafanaLogSource(client, replace(_CTX, threshold=None), _cfg())
+    await source.latency_stats("/x", 1, 2)
+    query = client.bodies[0]["queries"][0]["query"]
+    assert "count_if(upstream_response_time * 1000 >= 2000) as slow_cnt" in query
+
+
+@pytest.mark.asyncio
+async def test_request_detail_returns_upstream_status():
+    client = _StubClient(_DETAIL_PAYLOAD)
+    source = GrafanaLogSource(client, _CTX, _cfg())
+    rows = await source.request_detail("/x", 1, 2)
+    assert rows[0]["status"] == 200
+    assert rows[0]["upstream_status"] == 502

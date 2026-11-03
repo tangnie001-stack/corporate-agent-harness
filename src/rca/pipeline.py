@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,10 +18,10 @@ from src.config.rca import RcaConfig
 from src.core.logging import encode_value
 from src.infra.grafana_client import GrafanaClient
 from src.rca.collector import collect_evidence
-from src.rca.context import build_alert_context
+from src.rca.context import build_alert_context, fetch_history
 from src.rca.judge import judge
 from src.rca.loader import load_skills, match_skill
-from src.rca.models import TriageVerdict
+from src.rca.models import EvidenceResult, EvidenceStatus, TriageVerdict
 from src.rca.render import render_card
 from src.rca.sources.grafana import GrafanaLogSource
 
@@ -39,11 +40,61 @@ class TriageOutcome:
     card: str = ""  # 卡片文本；未判定为空串
 
 
+HISTORY_DAYS = 7
+
+
 def should_triage(alertname: str, cfg: RcaConfig) -> bool:
     """开关与白名单判断。"""
     if not cfg.enabled:
         return False
     return alertname in cfg.alert_whitelist
+
+
+async def collect_history(
+    client: GrafanaClient,
+    alertname: str,
+    end_ts: int,
+    cfg: RcaConfig,
+) -> EvidenceResult:
+    """取近 7 天同告警的出现分钟数，作为"反复出现"的正向证据。
+
+    Args:
+        client: Grafana 客户端
+        alertname: 告警名
+        end_ts: 取证结束时刻（秒）
+        cfg: 判定配置（用 history_timeout_seconds 限制耗时）
+
+    Returns:
+        EvidenceResult：取到为 OK（data={"minutes": N}），失败为 EMPTY。
+        失败不抛给调用方——history 只是正向证据之一，缺失时判定自然落观察档。
+    """
+    started = time.monotonic()
+    start_ms = (end_ts - HISTORY_DAYS * 86400) * 1000
+    try:
+        data = await asyncio.wait_for(
+            fetch_history(client, alertname, start_ms=start_ms, end_ms=end_ts * 1000),
+            timeout=cfg.history_timeout_seconds,
+        )
+    except Exception as exc:  # noqa: BLE001  历史取不到不得中断判定
+        logger.warning(
+            "[rca] history failed alert={} err={}",
+            encode_value(alertname),
+            encode_value(type(exc).__name__),
+        )
+        return EvidenceResult(
+            "history",
+            EvidenceStatus.EMPTY,
+            None,
+            int((time.monotonic() - started) * 1000),
+            f"history_failed:{type(exc).__name__}",
+        )
+    minutes = int(data.get("minutes") or 0)
+    return EvidenceResult(
+        "history",
+        EvidenceStatus.OK,
+        {"minutes": minutes},
+        int((time.monotonic() - started) * 1000),
+    )
 
 
 async def run_triage(
@@ -96,7 +147,12 @@ async def run_triage(
             "end_ts": end_ts,
         }
         results = await collect_evidence(skill.evidence, source, fields, cfg)
-        verdict = judge(results, cfg.severe_latency_ms)
+        history = await collect_history(client, event.alertname, end_ts, cfg)
+        results["history"] = history
+        history_minutes: int | None = None
+        if history.status is EvidenceStatus.OK and isinstance(history.data, dict):
+            history_minutes = int(history.data.get("minutes", 0))
+        verdict = judge(results, cfg.severe_latency_ms, history_minutes)
         card = render_card(verdict, results, {}, RCA_CARD_MAX_CHARS)
         query = base_query + "\n\n" + skill.body + "\n\n[证据]\n" + card
         return TriageOutcome(query, verdict, card)

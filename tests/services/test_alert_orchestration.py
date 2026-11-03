@@ -188,6 +188,26 @@ def test_recovery_pushes_template_without_llm(monkeypatch: pytest.MonkeyPatch) -
     assert "CPU 高" in sent[0]
 
 
+def test_invalid_rca_config_does_not_block_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RCA 配置非法 ⇒ 按关闭处理，报警轮照常出结论，不整链兜底。"""
+    sent: list[str] = []
+
+    async def _events():
+        yield SSETokenEvent(token="正文")
+        yield SSEDoneEvent()
+
+    def _boom() -> object:
+        raise ValueError("RCA_CONCURRENCY must be a number")
+
+    _install(monkeypatch, events_factory=_events, sent=sent)
+    monkeypatch.setattr(alert_service, "load_rca_config", _boom)
+    asyncio.run(alert_service._run_analysis(_cfg(), _EVENT, target=_TARGET))
+    assert len(sent) == 2
+    assert sent[1].strip() == "正文"
+
+
 def test_recovery_no_target_skips_send(monkeypatch: pytest.MonkeyPatch) -> None:
     """恢复但未配置目标群 ⇒ 不发送、不抛。"""
     sent: list[str] = []
