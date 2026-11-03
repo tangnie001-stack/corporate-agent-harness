@@ -14,6 +14,28 @@ from src.rca.sources.base import SourceEmptyError, SourceFailedError
 _QUERY_PATH = "/api/ds/query"
 
 
+def escape_sql_literal(value: str) -> str:
+    """转义 SLS SQL 单引号字面量（单引号翻倍）。"""
+    return value.replace("'", "''")
+
+
+def ensure_query_ok(payload: object) -> None:
+    """查询失败时 Grafana 在 payload 里回 error（顶层或 results.<refId>）。
+
+    frames 为空既可能是无数据也可能是查询失败，故先看 error，再由调用方判空。
+    """
+    if not isinstance(payload, dict):
+        return
+    if payload.get("error"):
+        raise SourceFailedError("grafana_error")
+    results = payload.get("results")
+    if not isinstance(results, dict):
+        return
+    for result in results.values():
+        if isinstance(result, dict) and result.get("error"):
+            raise SourceFailedError("grafana_error")
+
+
 def parse_frame_column(payload: dict, ref_id: str, field: str) -> list:
     """按字段名从列式 frames 中取值；不存在返回空列表。"""
     result = payload.get("results", {}).get(ref_id, {})
@@ -61,9 +83,11 @@ class GrafanaLogSource:
             ],
         }
         try:
-            return await self._client.post_json(_QUERY_PATH, body)
+            payload = await self._client.post_json(_QUERY_PATH, body)
         except GrafanaError as exc:
             raise SourceFailedError(f"grafana_error:{exc.status}") from exc
+        ensure_query_ok(payload)
+        return payload
 
     async def latency_stats(
         self, uri: str, start_ts: int, end_ts: int, slow_ms: int = 2000
@@ -73,7 +97,7 @@ class GrafanaLogSource:
             "* | select upstream_addr, count(*) as cnt, "
             "approx_percentile(upstream_response_time, 0.95) * 1000 as p95, "
             f"count_if(upstream_response_time * 1000 >= {slow_ms}) as slow_cnt "
-            f"where request_uri = '{uri}' group by upstream_addr"
+            f"where request_uri = '{escape_sql_literal(uri)}' group by upstream_addr"
         )
         payload = await self._query(sql, start_ts, end_ts)
         counts = parse_frame_column(payload, "A", "cnt")
@@ -104,7 +128,7 @@ class GrafanaLogSource:
         sql = (
             "* | select __time__ as ts, upstream_addr, request_time * 1000 as rt_ms, "
             "upstream_response_time * 1000 as urt_ms, status, upstream_status "
-            f"where request_uri = '{uri}' order by ts desc limit {limit}"
+            f"where request_uri = '{escape_sql_literal(uri)}' order by ts desc limit {limit}"
         )
         payload = await self._query(sql, start_ts, end_ts)
         timestamps = parse_frame_column(payload, "A", "ts")
@@ -132,7 +156,9 @@ class GrafanaLogSource:
         uris = self._cfg.business_uris
         if not uris:
             raise SourceEmptyError("no_business_uris")
-        clauses = " or ".join(f"request_uri = '{uri}'" for uri in uris)
+        clauses = " or ".join(
+            f"request_uri = '{escape_sql_literal(uri)}'" for uri in uris
+        )
         sql = f"* | select request_uri, count(*) as cnt where {clauses} group by request_uri"
         current = await self._query(sql, start_ts, end_ts)
         baseline = await self._query(sql, start_ts - 86400, end_ts - 86400)
