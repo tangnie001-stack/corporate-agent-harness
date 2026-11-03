@@ -426,6 +426,10 @@ async def _run_analysis(
 ) -> None:
     """后台编排：占位 → 跑 Agent（禁澄清）→ 结论 / 兜底。
 
+    占位发出之后整段都有兜底：判定、起轮、消费、结论推送任一环节抛出未预期
+    异常，都转发一条原始告警 —— "已受理却没有任何结论"是本功能最初要消除的
+    故障形态。
+
     Args:
         cfg: 告警配置
         event: 解析后的事件
@@ -447,83 +451,107 @@ async def _run_analysis(
     channel_token = current_channel.set(Channel.ALERT)
     trace_token = current_trace_id.set(new_trace_id())
     try:
-        try:
-            outcome = await run_triage(event, build_query(event), load_rca_config())
-            # 判定成立时，落库正文直接取卡片（与下方推送同源）；未判定保持原形态
-            persist_text: str | None = None
-            if outcome.verdict is not None:
-                persist_text = outcome.card
-            svc = await _get_service()
-            handle = await turn_runner.start_turn(
-                svc,
-                session_id=session_id,
-                kb_id="",
-                query=outcome.query,
-                user_id=ALERT_USER_ID,
-                title=f"[企微·{target.bot_key}] 报警 {event.alertname}",
-                clarify=False,
-                persist_text=persist_text,
-            )
-        except turn_runner.TurnBusy:
-            logger.warning(
-                "[alert] turn busy alarm_id={}", encode_value(event.alarm_id)
-            )
-            await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
-            return
-        except Exception as e:  # noqa: BLE001
-            logger.exception(
-                "[alert] turn start failed alarm_id={} err={}",
-                encode_value(event.alarm_id),
-                e,
-            )
-            await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
-            return
-
-        try:
-            events_log, abnormal = await asyncio.wait_for(
-                _consume_events(handle.events), timeout=cfg.turn_timeout_seconds
-            )
-        except TimeoutError:
-            logger.warning(
-                "[alert] turn timeout alarm_id={} timeout={}s",
-                encode_value(event.alarm_id),
-                cfg.turn_timeout_seconds,
-            )
-            streaming_manager.cancel(session_id)
-            await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
-            return
-        except Exception as e:  # noqa: BLE001
-            logger.exception(
-                "[alert] turn consume failed alarm_id={} err={}",
-                encode_value(event.alarm_id),
-                e,
-            )
-            await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
-            return
-
-        try:
-            _, purified = serialize_process(events_log)
-        except Exception as e:  # noqa: BLE001
-            # 净化失败 ⇒ 视作空正文，交给下方空回答分支走兜底，绝不静默丢失
-            logger.exception(
-                "[alert] serialize failed alarm_id={} err={}",
-                encode_value(event.alarm_id),
-                e,
-            )
-            purified = ""
-        final_text = choose_final_text(purified, outcome.card, outcome.verdict)
-        if outcome.verdict is None and (abnormal or final_text.strip() == ""):
-            logger.warning(
-                "[alert] empty or abnormal answer alarm_id={} abnormal={}",
-                encode_value(event.alarm_id),
-                abnormal,
-            )
-            await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
-            return
-        await _safe_send(target, final_text)
+        await _analyze_turn(cfg, event, target=target, session_id=session_id)
+    except Exception as exc:  # noqa: BLE001  占位之后不得静默丢失结论
+        logger.exception(
+            "[alert] analysis crashed alarm_id={} err={}",
+            encode_value(event.alarm_id),
+            type(exc).__name__,
+        )
+        await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
     finally:
         current_trace_id.reset(trace_token)
         current_channel.reset(channel_token)
+
+
+async def _analyze_turn(
+    cfg: AlertConfig,
+    event: AlertEvent,
+    *,
+    target: AlertTarget,
+    session_id: str,
+) -> None:
+    """判定 + 跑 Agent 并推送结论；未预期的异常向上抛给 _run_analysis 兜底。
+
+    Args:
+        cfg: 告警配置
+        event: 解析后的事件
+        target: 目标群
+        session_id: 报警会话标识（调用方已派生）
+    """
+    outcome = await run_triage(event, build_query(event), load_rca_config())
+    # 判定成立时，落库正文直接取卡片（与下方推送同源）；未判定保持原形态
+    persist_text: str | None = None
+    if outcome.verdict is not None:
+        persist_text = outcome.card
+
+    try:
+        svc = await _get_service()
+        handle = await turn_runner.start_turn(
+            svc,
+            session_id=session_id,
+            kb_id="",
+            query=outcome.query,
+            user_id=ALERT_USER_ID,
+            title=f"[企微·{target.bot_key}] 报警 {event.alertname}",
+            clarify=False,
+            persist_text=persist_text,
+        )
+    except turn_runner.TurnBusy:
+        logger.warning("[alert] turn busy alarm_id={}", encode_value(event.alarm_id))
+        await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
+        return
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "[alert] turn start failed alarm_id={} err={}",
+            encode_value(event.alarm_id),
+            e,
+        )
+        await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
+        return
+
+    try:
+        events_log, abnormal = await asyncio.wait_for(
+            _consume_events(handle.events), timeout=cfg.turn_timeout_seconds
+        )
+    except TimeoutError:
+        logger.warning(
+            "[alert] turn timeout alarm_id={} timeout={}s",
+            encode_value(event.alarm_id),
+            cfg.turn_timeout_seconds,
+        )
+        streaming_manager.cancel(session_id)
+        await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
+        return
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "[alert] turn consume failed alarm_id={} err={}",
+            encode_value(event.alarm_id),
+            e,
+        )
+        await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
+        return
+
+    try:
+        _, purified = serialize_process(events_log)
+    except Exception as e:  # noqa: BLE001
+        # 净化失败 ⇒ 视作空正文，交给下方空回答分支走兜底，绝不静默丢失
+        logger.exception(
+            "[alert] serialize failed alarm_id={} err={}",
+            encode_value(event.alarm_id),
+            e,
+        )
+        purified = ""
+    final_text = choose_final_text(purified, outcome.card, outcome.verdict)
+    if outcome.verdict is None and (abnormal or final_text.strip() == ""):
+        logger.warning(
+            "[alert] empty or abnormal answer alarm_id={} abnormal={}",
+            encode_value(event.alarm_id),
+            abnormal,
+        )
+        await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
+        return
+    await _safe_send(target, final_text)
 
 
 async def _safe_send(target: AlertTarget, content: str) -> None:
