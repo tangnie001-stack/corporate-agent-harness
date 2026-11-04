@@ -80,19 +80,24 @@ def _extract_tool_result(message: dict) -> object:
     raise SourceFailedError("no_structured_content")
 
 
-def _summary_fields(data: object) -> str:
-    """把结果压成日志用的少量计数，避免把原始数据写进日志。"""
+def _summary(data: object) -> dict[str, int]:
+    """把结果压成少量计数，供日志与 span 共用，避免原始数据外泄。"""
     if isinstance(data, dict):
         total = data.get("total")
         if isinstance(total, int) and not isinstance(total, bool):
-            return f" total={total}"
+            return {"total": total}
         endpoints = data.get("endpoints")
         if isinstance(endpoints, list):
-            return f" endpoints={len(endpoints)}"
-        return ""
+            return {"endpoints": len(endpoints)}
+        return {}
     if isinstance(data, list):
-        return f" rows={len(data)}"
-    return ""
+        return {"rows": len(data)}
+    return {}
+
+
+def _format_summary(summary: dict[str, int]) -> str:
+    """把计数拼成日志用的 k=v 片段；空字典返回空串。"""
+    return "".join(f" {key}={value}" for key, value in summary.items())
 
 
 def _open_span(tool: str, arguments: dict) -> Any | None:
@@ -232,13 +237,14 @@ class McpLogSource:
             )
             raise
         elapsed = int((time.monotonic() - started) * 1000)
+        summary = _summary(data)
         logger.info(
             "[rca] mcp call tool={} status=ok elapsed_ms={}{}",
             encode_value(tool),
             elapsed,
-            _summary_fields(data),
+            _format_summary(summary),
         )
-        _close_span(span, {"status": "ok", "elapsed_ms": elapsed})
+        _close_span(span, {"status": "ok", "elapsed_ms": elapsed, **summary})
         return data
 
     async def _call_once(self, tool: str, arguments: dict) -> object:

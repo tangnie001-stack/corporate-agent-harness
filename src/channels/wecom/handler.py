@@ -291,11 +291,12 @@ class RagChannelHandler:
             # 其异常不得再回用户一次，否则同一条流会出现两帧 finish=True。
             try:
                 logger.info(
-                    "[wecom] inbound bot_key={} msgid={} chattype={} session_id={}"
+                    "[wecom] inbound bot_key={} msgid={} chattype={} chatid={} session_id={}"
                     " user_id={} trace_id={} text_len={}",
                     encode_value(bot_key),
                     msg.msgid,
                     msg.chattype,
+                    encode_value(msg.chatid or ""),
                     encode_value(session_id),
                     encode_value(user_id),
                     encode_value(trace_id),

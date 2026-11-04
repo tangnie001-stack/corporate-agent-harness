@@ -215,3 +215,4 @@ async def test_span_opened_and_closed(monkeypatch):
     assert span.kwargs["trace_id"] == "trace_rca_test"
     assert span.kwargs["input"]["slow_ms"] == 2000
     assert span.end_kwargs["output"]["status"] == "ok"
+    assert span.end_kwargs["output"]["total"] == 2
