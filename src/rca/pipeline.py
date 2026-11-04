@@ -49,6 +49,8 @@ def should_triage(alertname: str, cfg: RcaConfig) -> bool:
     """开关与白名单判断。"""
     if not cfg.enabled:
         return False
+    if "*" in cfg.alert_whitelist:
+        return True
     return alertname in cfg.alert_whitelist
 
 

@@ -40,3 +40,8 @@ def test_whitelisted_returns_true():
         )
         is True
     )
+
+
+def test_star_matches_all():
+    """白名单里放 * 表示对全部告警开放。"""
+    assert should_triage("任意告警名", _cfg(True, ("*",))) is True
