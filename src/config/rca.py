@@ -18,6 +18,8 @@ _DEFAULT_CONCURRENCY: int = 4
 _DEFAULT_SEVERE_LATENCY_MS: int = 3000
 _DEFAULT_CACHE_TTL_SECONDS: float = 600.0
 _DEFAULT_WINDOW_MINUTES: int = 15
+_DEFAULT_BUSINESS_DROP_RATIO: float = 0.5
+_DEFAULT_BUSINESS_MIN_BASE_PV: int = 10
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,12 @@ class RcaConfig:
     explain_timeout_seconds: float = 12.0  # 解释调用超时
     window_minutes: int = (
         _DEFAULT_WINDOW_MINUTES  # 取证窗口（分钟）：end_ts=now，start_ts=now-窗口
+    )
+    business_drop_ratio: float = (
+        _DEFAULT_BUSINESS_DROP_RATIO  # 业务量跌幅阈值（对昨日同时段，0.5=跌一半即升档）
+    )
+    business_min_base_pv: int = (
+        _DEFAULT_BUSINESS_MIN_BASE_PV  # 基线最小样本量：昨日同时段低于此值不参与判定
     )
 
 
@@ -136,6 +144,12 @@ def load_rca_config() -> RcaConfig:
         mcp_datasource_id=os.getenv("MCP_DATASOURCE_ID", "").strip(),
         explain_enabled=_env_bool("RCA_EXPLAIN_ENABLED", True),
         explain_timeout_seconds=_env_float("RCA_EXPLAIN_TIMEOUT_SECONDS", 12.0),
+        business_drop_ratio=_env_float(
+            "RCA_BUSINESS_DROP_RATIO", _DEFAULT_BUSINESS_DROP_RATIO
+        ),
+        business_min_base_pv=_env_int(
+            "RCA_BUSINESS_MIN_BASE_PV", _DEFAULT_BUSINESS_MIN_BASE_PV
+        ),
     )
     return _CACHE
 

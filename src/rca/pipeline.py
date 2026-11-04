@@ -156,7 +156,13 @@ async def run_triage(
         history_minutes: int | None = None
         if history.status is EvidenceStatus.OK and isinstance(history.data, dict):
             history_minutes = int(history.data.get("minutes", 0))
-        verdict = judge(results, cfg.severe_latency_ms, history_minutes)
+        verdict = judge(
+            results,
+            cfg.severe_latency_ms,
+            history_minutes,
+            cfg.business_drop_ratio,
+            cfg.business_min_base_pv,
+        )
         explanation: dict = {}
         if cfg.explain_enabled:
             explanation = await explain(verdict, results, cfg.explain_timeout_seconds)

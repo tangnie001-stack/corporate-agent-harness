@@ -67,6 +67,55 @@ def _is_server_error(status: object) -> bool:
     return False
 
 
+def _short_uri(uri: str) -> str:
+    """取 URI 最后一段，避免定档依据里出现长路径。"""
+    segments = [part for part in uri.split("/") if part]
+    if not segments:
+        return uri
+    return segments[-1]
+
+
+def _business_drop(
+    results: dict[str, EvidenceResult],
+    ratio: float,
+    min_base_pv: int,
+) -> tuple[int, str] | None:
+    """找跌幅最大的核心接口：返回（跌幅百分比, 接口末段）；未触发返回 None。
+
+    基线是昨日同时段（由取数侧保证）；基线样本量低于 min_base_pv 时不参与判定，
+    避免小样本把随机波动当成业务骤降。
+    """
+    result = results.get("impact")
+    if result is None or result.status is not EvidenceStatus.OK:
+        return None
+    data = result.data
+    if not isinstance(data, dict):
+        return None
+    endpoints = data.get("endpoints")
+    if not isinstance(endpoints, list):
+        return None
+    worst: tuple[int, str] | None = None
+    for item in endpoints:
+        if not isinstance(item, dict):
+            continue
+        pv = item.get("pv")
+        base_pv = item.get("base_pv")
+        if isinstance(pv, bool) or isinstance(base_pv, bool):
+            continue
+        if not isinstance(pv, int) or not isinstance(base_pv, int):
+            continue
+        if base_pv < min_base_pv or base_pv <= 0:
+            continue
+        pct = (base_pv - pv) * 100 // base_pv
+        if pct < int(ratio * 100):
+            continue
+        uri = item.get("uri")
+        label = _short_uri(uri) if isinstance(uri, str) else "核心接口"
+        if worst is None or pct > worst[0]:
+            worst = (pct, label)
+    return worst
+
+
 def _has_positive_evidence(total: int, history_minutes: int | None) -> bool:
     """判无需处理前必须命中的正向证据，二者其一。"""
     if history_minutes is not None and history_minutes >= 1:
@@ -78,13 +127,17 @@ def judge(
     results: dict[str, EvidenceResult],
     severe_latency_ms: int,
     history_minutes: int | None = None,
+    business_drop_ratio: float = 0.5,
+    business_min_base_pv: int = 10,
 ) -> TriageVerdict:
     """按证据计算档位与定档依据。
 
     Args:
-        results: 证据结果（stats / detail / history）
+        results: 证据结果（stats / detail / impact / history）
         severe_latency_ms: 严重耗时阈值
         history_minutes: 近 7 天同告警出现的分钟数；None 表示未取到
+        business_drop_ratio: 业务量跌幅阈值（对昨日同时段）
+        business_min_base_pv: 基线最小样本量，低于此值不参与判定
     """
     stats = _stats(results)
     if stats is None:
@@ -121,6 +174,14 @@ def judge(
 
     if severe_hit:
         return TriageVerdict(Tier.WATCH, "耗时超过严重阈值", total, True)
+
+    drop = _business_drop(results, business_drop_ratio, business_min_base_pv)
+    if drop is not None:
+        reason = f"业务量较昨日同时段下降 {drop[0]}%（{drop[1]}）"
+        if slow_count > 1:
+            reason = f"{slow_count} 条慢请求；{reason}"
+        return TriageVerdict(Tier.WATCH, reason, total, False)
+
     if slow_count <= 1:
         if not _has_positive_evidence(total, history_minutes):
             return TriageVerdict(

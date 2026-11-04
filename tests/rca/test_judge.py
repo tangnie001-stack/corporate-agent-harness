@@ -283,3 +283,70 @@ def test_recurrence_allows_no_action():
 def test_small_sample_is_positive_evidence():
     results = {"stats": _stats(19, 1, max_ms=1200.0), "detail": _rows(200)}
     assert judge(results, 3000, history_minutes=0).tier is Tier.NO_ACTION
+
+
+def _impact(pairs) -> EvidenceResult:
+    """构造 impact 证据：(pv, base_pv) 列表。"""
+    return _ok(
+        "impact",
+        {
+            "endpoints": [
+                {"uri": "/welife-pay/pay/createOrder", "pv": pv, "base_pv": base}
+                for pv, base in pairs
+            ]
+        },
+    )
+
+
+def test_business_drop_blocks_no_action():
+    """业务量较昨日同时段腰斩时不得判无需处理。"""
+    results = {
+        "stats": _stats(7, 0, 708.0, 754.0),
+        "impact": _impact([(7, 14)]),
+    }
+    verdict = judge(results, 3000, business_min_base_pv=10)
+    assert verdict.tier is Tier.WATCH
+    assert "业务量较昨日同时段下降 50%" in verdict.reason
+    assert "createOrder" in verdict.reason
+
+
+def test_business_drop_keeps_slow_reason():
+    """同时有多条慢请求时，两条依据都保留。"""
+    results = {
+        "stats": _stats(40, 5, 900.0, 1200.0),
+        "impact": _impact([(10, 40)]),
+    }
+    verdict = judge(results, 3000, business_min_base_pv=10)
+    assert verdict.tier is Tier.WATCH
+    assert "5 条慢请求" in verdict.reason
+    assert "下降 75%" in verdict.reason
+
+
+def test_business_drop_ignored_below_min_base():
+    """基线样本量过小不算骤降（避免小样本噪声）。"""
+    results = {
+        "stats": _stats(1, 0, 300.0, 300.0),
+        "impact": _impact([(1, 3)]),
+    }
+    assert judge(results, 3000, business_min_base_pv=10).tier is Tier.NO_ACTION
+
+
+def test_business_stable_is_no_action():
+    """业务量正常时不影响原判定。"""
+    results = {
+        "stats": _stats(30, 0, 700.0, 900.0),
+        "impact": _impact([(30, 31)]),
+    }
+    assert (
+        judge(results, 3000, history_minutes=1, business_min_base_pv=10).tier
+        is Tier.NO_ACTION
+    )
+
+
+def test_business_impact_failed_does_not_block():
+    """impact 取不到时判定照旧。"""
+    results = {
+        "stats": _stats(30, 0, 700.0, 900.0),
+        "impact": EvidenceResult("impact", EvidenceStatus.FAILED, None, 5, "timeout"),
+    }
+    assert judge(results, 3000, history_minutes=1).tier is Tier.NO_ACTION
