@@ -66,10 +66,11 @@ async def _default_handler(msg: InboundMessage, sink: ReplySink) -> None:
     if msg.text:
         text_len = len(msg.text)
     logger.info(
-        "[wecom] inbound bot_key={} msgid={} chattype={} msgtype={} event_type={} text_len={}",
+        "[wecom] inbound bot_key={} msgid={} chattype={} chatid={} msgtype={} event_type={} text_len={}",
         encode_value(bot_key),
         msg.msgid,
         msg.chattype,
+        encode_value(msg.chatid or ""),
         msg.msgtype,
         msg.event_type,
         text_len,
