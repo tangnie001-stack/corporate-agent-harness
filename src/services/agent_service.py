@@ -43,6 +43,7 @@ from src.config import TOP_K_RERANK, settings
 from src.config.const import (
     CHANNEL_DEFAULT,
     SKILL_INJECTION_PREFIX,
+    Channel,
     SSEInteractionTexts,
 )
 from src.config.prompts import loader
@@ -717,6 +718,25 @@ def _write_retrieval_trace(ctx: RequestContext, trace_metadata: dict) -> None:
         logger.warning("[agent] retrieval trace metadata failed err=%s", exc)
 
 
+def _trace_tags(kb_tag: str, channel: str) -> list[str]:
+    """本轮 trace 的标签：基础两项 + 机器人渠道标签。
+
+    机器人发起的轮次（企微问答 / 告警分析）打独立渠道标签，便于在 Langfuse 里
+    与站点主流程分开筛选；站点轮次不加，保持既有标签集不变。
+
+    Args:
+        kb_tag: 知识库标签（kb / no_kb）
+        channel: 当前渠道（Channel 取值或 CHANNEL_DEFAULT）
+
+    Returns:
+        低基数、稳定的标签列表
+    """
+    tags = ["chat", kb_tag]
+    if channel in (Channel.WECOM, Channel.ALERT):
+        tags.append(channel)
+    return tags
+
+
 @observe(name="chat_turn", capture_input=False)
 async def _run_generation(
     session_id: str,
@@ -787,6 +807,9 @@ async def _run_generation(
         kb_tag = "kb"
     else:
         kb_tag = "no_kb"
+    channel = current_channel.get() or CHANNEL_DEFAULT
+    tags = _trace_tags(kb_tag, channel)
+
     trace_metadata: dict = {
         "agent": ctx.agent,
         "agent_display_name": ctx.agent_display_name,
@@ -796,7 +819,7 @@ async def _run_generation(
         "skill_action": ctx.skill_action,
         "loaded_skills": list(ctx.loaded_skills),
         "has_skills": ctx.has_skills,
-        "channel": current_channel.get() or CHANNEL_DEFAULT,
+        "channel": channel,
     }
     if direct_skill:
         trace_metadata["direct_skill"] = direct_skill
@@ -804,7 +827,7 @@ async def _run_generation(
         input={"query": query, "kb_id": kb_id, "deep_thinking": deep_thinking},
         session_id=session_id,
         # tags 只能加不能删（实测），故只放低基数稳定值；高基数一律进 metadata
-        tags=["chat", kb_tag],
+        tags=tags,
         # 空串必须转 None：SDK 的字段过滤是 `v is not None`
         user_id=user_id or None,
         metadata=trace_metadata,

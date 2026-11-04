@@ -319,3 +319,28 @@ async def test_blank_user_id_is_not_written_as_empty_string(monkeypatch):
 
     assert captured["user_id"] is None
     assert captured["tags"] == ["chat", "no_kb"]
+
+
+def test_trace_tags_for_alert_channel():
+    """告警分析轮次带 alert 标签，便于与主流程区分。"""
+    from src.config.const import Channel
+
+    assert agent_service._trace_tags("no_kb", Channel.ALERT) == [
+        "chat",
+        "no_kb",
+        "alert",
+    ]
+
+
+def test_trace_tags_for_wecom_channel():
+    """企微问答轮次带 wecom 标签。"""
+    from src.config.const import Channel
+
+    assert agent_service._trace_tags("kb", Channel.WECOM) == ["chat", "kb", "wecom"]
+
+
+def test_trace_tags_for_web_unchanged():
+    """站点轮次标签保持原样，不多打。"""
+    from src.config.const import Channel
+
+    assert agent_service._trace_tags("kb", Channel.WEB) == ["chat", "kb"]
