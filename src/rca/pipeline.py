@@ -19,6 +19,7 @@ from src.core.logging import encode_value
 from src.infra.grafana_client import GrafanaClient
 from src.rca.collector import collect_evidence
 from src.rca.context import build_alert_context, fetch_history
+from src.rca.explain import explain
 from src.rca.judge import judge
 from src.rca.loader import load_skills, match_skill
 from src.rca.models import EvidenceResult, EvidenceStatus, TriageVerdict
@@ -154,8 +155,15 @@ async def run_triage(
         if history.status is EvidenceStatus.OK and isinstance(history.data, dict):
             history_minutes = int(history.data.get("minutes", 0))
         verdict = judge(results, cfg.severe_latency_ms, history_minutes)
+        explanation: dict = {}
+        if cfg.explain_enabled:
+            explanation = await explain(verdict, results, cfg.explain_timeout_seconds)
         card = render_card(
-            verdict, results, {}, RCA_CARD_MAX_CHARS, _alert_values_line(event, context)
+            verdict,
+            results,
+            explanation,
+            RCA_CARD_MAX_CHARS,
+            _alert_values_line(event, context),
         )
         query = base_query + "\n\n" + skill.body + "\n\n[证据]\n" + card
         return TriageOutcome(query, verdict, card)

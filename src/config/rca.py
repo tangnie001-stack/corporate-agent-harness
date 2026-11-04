@@ -42,6 +42,8 @@ class RcaConfig:
     mcp_base_url: str = ""  # MCP 端点，如 https://host/welife-mcp/mcp
     mcp_token: str = ""  # MCP Bearer token；空串 = 未配置
     mcp_datasource_id: str = ""  # MCP 侧数据源 id；空串 = 用服务默认
+    explain_enabled: bool = True  # 是否调用模型生成定性解释
+    explain_timeout_seconds: float = 12.0  # 解释调用超时
     window_minutes: int = (
         _DEFAULT_WINDOW_MINUTES  # 取证窗口（分钟）：end_ts=now，start_ts=now-窗口
     )
@@ -132,6 +134,8 @@ def load_rca_config() -> RcaConfig:
         mcp_base_url=os.getenv("MCP_BASE_URL", "").strip(),
         mcp_token=os.getenv("MCP_AUTH_TOKEN", "").strip(),
         mcp_datasource_id=os.getenv("MCP_DATASOURCE_ID", "").strip(),
+        explain_enabled=_env_bool("RCA_EXPLAIN_ENABLED", True),
+        explain_timeout_seconds=_env_float("RCA_EXPLAIN_TIMEOUT_SECONDS", 12.0),
     )
     return _CACHE
 
