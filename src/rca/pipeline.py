@@ -169,11 +169,15 @@ async def run_triage(
 def _build_source(client: GrafanaClient, context, cfg):
     """按配置选择取数实现：mcp 走独立服务，其余走 Grafana 代理。"""
     if cfg.rca_source == "mcp":
+        slow_ms = 2000
+        if context.threshold is not None:
+            slow_ms = int(context.threshold)
         return McpLogSource(
             cfg.mcp_base_url,
             cfg.mcp_token,
             datasource_id=cfg.mcp_datasource_id or None,
             timeout=cfg.source_timeout_seconds,
             uris=cfg.business_uris,
+            slow_ms=slow_ms,
         )
     return GrafanaLogSource(client, context, cfg)

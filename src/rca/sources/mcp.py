@@ -79,6 +79,7 @@ class McpLogSource:
         datasource_id: str | None = None,
         timeout: float = 8.0,
         uris: tuple[str, ...] = (),
+        slow_ms: int = 2000,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._base_url = base_url
@@ -86,6 +87,7 @@ class McpLogSource:
         self._datasource_id = datasource_id
         self._timeout = timeout
         self._uris = uris
+        self._slow_ms = slow_ms
         self._transport = transport
         self._session_id: str | None = None
         self._lock = asyncio.Lock()
@@ -175,9 +177,10 @@ class McpLogSource:
         return _extract_tool_result(message)
 
     async def latency_stats(
-        self, uri: str, start_ts: int, end_ts: int, slow_ms: int = 2000
+        self, uri: str, start_ts: int, end_ts: int, slow_ms: int | None = None
     ) -> dict:
         """返回窗口样本量、分位、慢请求计数、5xx 计数与节点分布。"""
+        effective = self._slow_ms if slow_ms is None else slow_ms
         data = await self._call(
             _TOOL_LATENCY,
             self._with_datasource(
@@ -185,7 +188,7 @@ class McpLogSource:
                     "uri": uri,
                     "start_ts": start_ts,
                     "end_ts": end_ts,
-                    "slow_ms": slow_ms,
+                    "slow_ms": effective,
                 }
             ),
         )
