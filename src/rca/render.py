@@ -140,7 +140,7 @@ def render_card(
         stats_data = stats.data
 
     lines = [
-        f"[{verdict.tier.value}] 置信 {explanation.get('confidence', '-')}",
+        f"**[{verdict.tier.value}]** 置信 {explanation.get('confidence', '-')}",
         f"判定 {verdict.reason}",
     ]
     if alert_line:
@@ -170,7 +170,9 @@ def render_card(
             lines.append(f"{label} {value}")
     lines.extend(_missing_lines(results))
 
-    text = _mask("\n".join(lines))
+    # 首行为标题，其余走无序列表——企微气泡按行渲染列表项，普通换行会被折叠成一行
+    body = "\n".join(f"- {line}" for line in lines[1:])
+    text = _mask(f"{lines[0]}\n\n{body}")
     if len(text) > max_chars:
         text = text[: max_chars - 1] + "…"
     return text
