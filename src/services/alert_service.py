@@ -52,6 +52,9 @@ class AlertEvent:
     fingerprints: tuple[str, ...]  # 逐条告警指纹
     status: str  # 告警状态：firing / resolved（其它值原样保留）
     folder: str = ""  # Grafana 文件夹（commonLabels.grafana_folder）；缺省空串
+    values: tuple[
+        tuple[str, str], ...
+    ] = ()  # 告警值（refId → 值），Grafana 载荷提供时才有
 
     @property
     def is_recovery(self) -> bool:
@@ -110,6 +113,7 @@ def parse_alert_payload(raw: bytes) -> AlertEvent:
     alerts = raw_alerts if isinstance(raw_alerts, list) else []
     fingerprints: list[str] = []
     details_parts: list[str] = []
+    values: list[tuple[str, str]] = []
     for item in alerts:
         if not isinstance(item, dict):
             continue
@@ -121,6 +125,10 @@ def parse_alert_payload(raw: bytes) -> AlertEvent:
         text = _first_text(*(annotations.get(k) for k in _DETAIL_KEYS))
         if text:
             details_parts.append(text)
+        raw_values = item.get("values")
+        if not values and isinstance(raw_values, dict):
+            for ref_id, raw_value in raw_values.items():
+                values.append((str(ref_id), str(raw_value)))
     if not fingerprints:
         raise ValueError("告警载荷无有效 fingerprint")
 
@@ -134,6 +142,7 @@ def parse_alert_payload(raw: bytes) -> AlertEvent:
         level=level,
         details="\n".join(p for p in details_parts if p),
         fingerprints=tuple(fingerprints),
+        values=tuple(values),
         status=status,
         folder=_first_text(labels.get("grafana_folder")),
     )

@@ -74,6 +74,59 @@ def extract_threshold(rule: dict) -> float | None:
     return None
 
 
+def _reduce_label(model: dict, models: dict[str, dict]) -> str:
+    """给归约步骤起一个人能看懂的名字。"""
+    expression = model.get("expression")
+    source = models.get(expression) if isinstance(expression, str) else None
+    if isinstance(source, dict):
+        query = source.get("query")
+        if isinstance(query, str) and "avg(" in query.lower():
+            return "最近一分钟的平均耗时"
+    return "归约后的指标值"
+
+
+def extract_ref_labels(rule: dict) -> tuple[tuple[str, str], ...]:
+    """把 refId 翻译成人类可读含义（告警值在卡片上要看得懂）。"""
+    items = _parse_query_items(rule)
+    models: dict[str, dict] = {}
+    for item in items:
+        ref = item.get("refId")
+        model = item.get("model")
+        if isinstance(ref, str) and isinstance(model, dict):
+            models[ref] = model
+    labels: list[tuple[str, str]] = []
+    for item in items:
+        ref_id = item.get("refId")
+        if not isinstance(ref_id, str):
+            continue
+        model = item.get("model")
+        if not isinstance(model, dict):
+            labels.append((ref_id, "查询值"))
+            continue
+        kind = model.get("type")
+        if kind == "reduce":
+            labels.append((ref_id, _reduce_label(model, models)))
+            continue
+        if kind == "threshold":
+            threshold = None
+            for condition in model.get("conditions", []):
+                params = condition.get("evaluator", {}).get("params", [])
+                if params:
+                    threshold = float(params[0])
+                    break
+            if threshold is None:
+                labels.append((ref_id, "阈值判定"))
+            else:
+                labels.append((ref_id, f"阈值判定 > {threshold:g}"))
+            continue
+        query = model.get("query")
+        if isinstance(query, str) and "avg(" in query.lower():
+            labels.append((ref_id, "平均耗时"))
+            continue
+        labels.append((ref_id, "查询值"))
+    return tuple(labels)
+
+
 def extract_sls_query(rule: dict) -> str:
     """取第一条 SLS 查询语句原文；没有返回空串。"""
     for item in _parse_query_items(rule):
@@ -111,7 +164,7 @@ async def build_alert_context(
     try:
         rules = await _fetch_rules(client, cfg)
     except GrafanaError:
-        return AlertContext(alertname, folder, None, None, None, None, None)
+        return AlertContext(alertname, folder, None, None, None, None, None, ())
 
     for rule in rules:
         if rule.get("name") != alertname:
@@ -127,8 +180,9 @@ async def build_alert_context(
             datasource_uid=extract_datasource_uid(rule),
             threshold=extract_threshold(rule),
             for_seconds=int(rule.get("duration", 0)) or None,
+            ref_labels=extract_ref_labels(rule),
         )
-    return AlertContext(alertname, folder, None, None, None, None, None)
+    return AlertContext(alertname, folder, None, None, None, None, None, ())
 
 
 def count_active_minutes(annotations: list[dict], alertname: str) -> int:

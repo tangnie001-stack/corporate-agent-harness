@@ -199,3 +199,14 @@ def test_impact_missing_not_rendered():
     results = {"stats": EvidenceResult("stats", EvidenceStatus.OK, {"total": 10}, 10)}
     text = render_card(verdict, results, {}, 1500)
     assert "业务影响" not in text
+
+
+def test_alert_values_line_rendered():
+    """告警自带的 refId 值要出现在卡片上。"""
+    verdict = TriageVerdict(Tier.NO_ACTION, "x", 10, False)
+    results = {"stats": EvidenceResult("stats", EvidenceStatus.OK, {"total": 10}, 10)}
+    text = render_card(
+        verdict, results, {}, 1500, "告警值 B=1057（平均耗时）；C=1（阈值判定 > 1000）"
+    )
+    assert "告警值 B=1057" in text
+    assert "阈值判定 > 1000" in text

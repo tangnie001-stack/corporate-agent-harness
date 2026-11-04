@@ -58,6 +58,7 @@ class AlertContext:
     datasource_uid: str | None  # Grafana 数据源 uid
     threshold: float | None  # 告警阈值
     for_seconds: int | None  # 持续时间
+    ref_labels: tuple[tuple[str, str], ...] = ()  # refId → 人类可读含义
 
 
 @dataclass(frozen=True)

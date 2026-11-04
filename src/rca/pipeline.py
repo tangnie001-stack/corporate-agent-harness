@@ -154,7 +154,9 @@ async def run_triage(
         if history.status is EvidenceStatus.OK and isinstance(history.data, dict):
             history_minutes = int(history.data.get("minutes", 0))
         verdict = judge(results, cfg.severe_latency_ms, history_minutes)
-        card = render_card(verdict, results, {}, RCA_CARD_MAX_CHARS)
+        card = render_card(
+            verdict, results, {}, RCA_CARD_MAX_CHARS, _alert_values_line(event, context)
+        )
         query = base_query + "\n\n" + skill.body + "\n\n[证据]\n" + card
         return TriageOutcome(query, verdict, card)
     except Exception as exc:  # noqa: BLE001  判定失败不得影响报警轮
@@ -181,3 +183,19 @@ def _build_source(client: GrafanaClient, context, cfg):
             slow_ms=slow_ms,
         )
     return GrafanaLogSource(client, context, cfg)
+
+
+def _alert_values_line(event, context) -> str:
+    """把告警自带的 refId 值翻译成一行；无值或无标签时返回空串。"""
+    values = getattr(event, "values", ())
+    if not values:
+        return ""
+    labels = dict(context.ref_labels)
+    parts = []
+    for ref_id, value in values:
+        label = labels.get(ref_id, "")
+        if label:
+            parts.append(f"{ref_id}={value}（{label}）")
+        else:
+            parts.append(f"{ref_id}={value}")
+    return "告警值 " + "；".join(parts)

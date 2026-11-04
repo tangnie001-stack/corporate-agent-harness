@@ -131,6 +131,7 @@ def render_card(
     results: dict[str, EvidenceResult],
     explanation: dict,
     max_chars: int,
+    alert_line: str = "",
 ) -> str:
     """渲染三档卡片；超长截断。"""
     stats = results.get("stats")
@@ -141,8 +142,10 @@ def render_card(
     lines = [
         f"[{verdict.tier.value}] 置信 {explanation.get('confidence', '-')}",
         f"判定 {verdict.reason}",
-        f"样本 {_as_int(stats_data.get('total'))} 条（窗口内）",
     ]
+    if alert_line:
+        lines.append(alert_line)
+    lines.append(f"样本 {_as_int(stats_data.get('total'))} 条（窗口内）")
 
     latency = _latency_line(stats_data)
     if latency:
