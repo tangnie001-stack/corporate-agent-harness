@@ -24,6 +24,7 @@ from src.rca.loader import load_skills, match_skill
 from src.rca.models import EvidenceResult, EvidenceStatus, TriageVerdict
 from src.rca.render import render_card
 from src.rca.sources.grafana import GrafanaLogSource
+from src.rca.sources.mcp import McpLogSource
 
 if TYPE_CHECKING:
     from src.services.alert_service import AlertEvent
@@ -139,7 +140,7 @@ async def run_triage(
 
         end_ts = int(time.time())
         start_ts = end_ts - cfg.window_minutes * 60
-        source = GrafanaLogSource(client, context, cfg)
+        source = _build_source(client, context, cfg)
         fields = {
             "uri": context.uri,
             "alertname": context.alertname,
@@ -163,3 +164,16 @@ async def run_triage(
             encode_value(type(exc).__name__),
         )
         return TriageOutcome(base_query, None)
+
+
+def _build_source(client: GrafanaClient, context, cfg):
+    """按配置选择取数实现：mcp 走独立服务，其余走 Grafana 代理。"""
+    if cfg.rca_source == "mcp":
+        return McpLogSource(
+            cfg.mcp_base_url,
+            cfg.mcp_token,
+            datasource_id=cfg.mcp_datasource_id or None,
+            timeout=cfg.source_timeout_seconds,
+            uris=cfg.business_uris,
+        )
+    return GrafanaLogSource(client, context, cfg)

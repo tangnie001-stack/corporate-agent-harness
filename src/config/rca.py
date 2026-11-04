@@ -36,6 +36,12 @@ class RcaConfig:
     severe_latency_ms: int  # 严重阈值（独立于告警阈值）
     cache_ttl_seconds: float  # 规则反查缓存有效期
     business_uris: tuple[str, ...]  # 业务影响要看的核心接口
+    rca_source: str = (
+        "grafana"  # 取数实现：grafana（经 Grafana 代理）| mcp（经 MCP 服务）
+    )
+    mcp_base_url: str = ""  # MCP 端点，如 https://host/welife-mcp/mcp
+    mcp_token: str = ""  # MCP Bearer token；空串 = 未配置
+    mcp_datasource_id: str = ""  # MCP 侧数据源 id；空串 = 用服务默认
     window_minutes: int = (
         _DEFAULT_WINDOW_MINUTES  # 取证窗口（分钟）：end_ts=now，start_ts=now-窗口
     )
