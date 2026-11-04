@@ -76,30 +76,40 @@ def test_absent_upstream_status_is_ignored():
     assert judge(results, 3000).tier is Tier.NO_ACTION
 
 
-def test_missing_detail_with_large_sample_is_watch():
-    """总样本 >= 20 且没有明细 ⇒ 无法确认无 5xx，不得判无需处理。"""
+def _stats_without_errors(total: int, slow: int, max_ms: float = 0.0) -> EvidenceResult:
+    """构造不带 5xx 统计的 stats，用于验证降级判据。"""
+    return _ok(
+        "stats",
+        {
+            "total": total,
+            "slow": {"count": slow},
+            "latency_ms": {"p95": 0.0, "max": max_ms},
+        },
+    )
+
+
+def test_missing_detail_with_errors_present_is_no_action():
+    """stats 已带 5xx 计数时，明细缺失不构成阻断。"""
     results = {"stats": _stats(50, 0, max_ms=500.0)}
+    verdict = judge(results, 3000, history_minutes=30)
+    assert verdict.tier is Tier.NO_ACTION
+
+
+def test_missing_detail_without_errors_is_watch():
+    """stats 不带 5xx 统计且没有明细 ⇒ 无法确认无 5xx，不得判无需处理。"""
+    results = {"stats": _stats_without_errors(50, 0, 500.0)}
     verdict = judge(results, 3000, history_minutes=30)
     assert verdict.tier is Tier.WATCH
     assert "明细缺失" in verdict.reason
 
 
-def test_empty_detail_with_large_sample_is_watch():
-    results = {
-        "stats": _stats(50, 0, max_ms=500.0),
-        "detail": EvidenceResult(
-            "detail", EvidenceStatus.EMPTY, None, 10, "empty:no_rows"
-        ),
-    }
-    assert judge(results, 3000, history_minutes=30).tier is Tier.WATCH
-
-
-def test_failed_detail_with_large_sample_is_watch():
+def test_failed_detail_with_errors_present_is_no_action():
+    """明细失败但 stats 有 5xx 计数 ⇒ 不阻断判定。"""
     results = {
         "stats": _stats(50, 0, max_ms=500.0),
         "detail": EvidenceResult("detail", EvidenceStatus.FAILED, None, 10, "timeout"),
     }
-    assert judge(results, 3000, history_minutes=30).tier is Tier.WATCH
+    assert judge(results, 3000, history_minutes=30).tier is Tier.NO_ACTION
 
 
 def test_above_severe_is_watch():

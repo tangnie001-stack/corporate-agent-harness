@@ -128,6 +128,10 @@ def load_rca_config() -> RcaConfig:
         ),
         business_uris=_env_list("RCA_BUSINESS_URIS"),
         window_minutes=_env_int("RCA_WINDOW_MINUTES", _DEFAULT_WINDOW_MINUTES),
+        rca_source=os.getenv("RCA_SOURCE", "grafana").strip() or "grafana",
+        mcp_base_url=os.getenv("MCP_BASE_URL", "").strip(),
+        mcp_token=os.getenv("MCP_AUTH_TOKEN", "").strip(),
+        mcp_datasource_id=os.getenv("MCP_DATASOURCE_ID", "").strip(),
     )
     return _CACHE
 

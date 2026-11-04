@@ -99,9 +99,9 @@ def judge(
     if c5xx > 0:
         return TriageVerdict(Tier.NEED_ACTION, f"窗口出现 {c5xx} 条 5xx", total, False)
 
-    if not _detail_available(results):
-        if total >= MIN_SAMPLES:
-            return TriageVerdict(Tier.WATCH, "明细缺失，无法确认无 5xx", total, False)
+    errors_present = isinstance(stats.get("errors"), dict)
+    if not _detail_available(results) and total >= MIN_SAMPLES and not errors_present:
+        return TriageVerdict(Tier.WATCH, "明细缺失，无法确认无 5xx", total, False)
     else:
         server_errors = [
             row
