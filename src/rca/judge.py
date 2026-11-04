@@ -126,5 +126,7 @@ def judge(
             return TriageVerdict(
                 Tier.WATCH, "缺少正向证据，无法确认为噪声", total, False
             )
+        if slow_count == 0:
+            return TriageVerdict(Tier.NO_ACTION, "无慢请求，未超严重阈值", total, False)
         return TriageVerdict(Tier.NO_ACTION, "孤立慢请求，未超严重阈值", total, False)
     return TriageVerdict(Tier.WATCH, f"{slow_count} 条慢请求", total, False)

@@ -144,3 +144,58 @@ def test_within_limit_not_truncated():
         1500,
     )
     assert not text.endswith("…")
+
+
+def test_renders_latency_and_nodes():
+    """量化指标与节点分布要进卡片，且地址替换为序号。"""
+    verdict = TriageVerdict(Tier.NO_ACTION, "孤立慢请求", 2, False)
+    results = {
+        "stats": EvidenceResult(
+            "stats",
+            EvidenceStatus.OK,
+            {
+                "total": 723,
+                "latency_ms": {"p50": 557, "p95": 691, "max": 1869},
+                "slow": {"threshold": 1000, "count": 1},
+                "by_node": [
+                    {"addr": "172.18.0.123:8083", "cnt": 362, "p95": 688},
+                    {"addr": "172.18.0.124:8083", "cnt": 361, "p95": 690},
+                ],
+            },
+            10,
+        )
+    }
+    text = render_card(verdict, results, {}, 1500)
+    assert "p95 691ms" in text
+    assert "node-1: 362 条" in text
+    assert "172.18" not in text
+
+
+def test_renders_business_impact_delta():
+    """业务影响要带昨日同口径与涨跌幅。"""
+    verdict = TriageVerdict(Tier.WATCH, "x", 10, False)
+    results = {
+        "stats": EvidenceResult("stats", EvidenceStatus.OK, {"total": 10}, 10),
+        "impact": EvidenceResult(
+            "impact",
+            EvidenceStatus.OK,
+            {
+                "endpoints": [
+                    {"uri": "/welife-pay/pay/createOrder", "pv": 3601, "base_pv": 3849}
+                ]
+            },
+            10,
+        ),
+    }
+    text = render_card(verdict, results, {}, 1500)
+    assert "业务影响" in text
+    assert "3601" in text
+    assert "-6%" in text
+
+
+def test_impact_missing_not_rendered():
+    """影响证据缺失时不留空行。"""
+    verdict = TriageVerdict(Tier.WATCH, "x", 10, False)
+    results = {"stats": EvidenceResult("stats", EvidenceStatus.OK, {"total": 10}, 10)}
+    text = render_card(verdict, results, {}, 1500)
+    assert "业务影响" not in text
