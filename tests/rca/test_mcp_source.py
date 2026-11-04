@@ -124,3 +124,94 @@ async def test_business_impact_passes_uris():
 
     assert data["endpoints"][0]["pv"] == 3
     assert calls[2]["params"]["arguments"]["uris"] == ["/x"]
+
+
+def _capture_logs(records: list):
+    """挂一个 loguru sink，返回移除函数。"""
+    from loguru import logger
+
+    sink_id = logger.add(lambda message: records.append(str(message)), level="INFO")
+    return lambda: logger.remove(sink_id)
+
+
+@pytest.mark.asyncio
+async def test_success_writes_call_log():
+    """成功调用写一条 [rca] mcp call 日志，含工具名、耗时与样本量。"""
+    calls = []
+    transport = httpx.MockTransport(_handler(calls, _STATS))
+    source = McpLogSource("https://m/mcp", "tok", timeout=5.0, transport=transport)
+    records: list[str] = []
+    stop = _capture_logs(records)
+    try:
+        await source.latency_stats(uri="/x", start_ts=1, end_ts=2)
+    finally:
+        stop()
+    text = "".join(records)
+    assert "mcp call tool=sls_latency_stats status=ok" in text
+    assert "elapsed_ms=" in text
+    assert "total=2" in text
+
+
+@pytest.mark.asyncio
+async def test_failure_writes_reason_log():
+    """工具失败时日志带 reason，且不再抛日志异常。"""
+    calls = []
+    transport = httpx.MockTransport(_handler(calls, {"detail": "boom"}, is_error=True))
+    source = McpLogSource("https://m/mcp", "tok", timeout=5.0, transport=transport)
+    records: list[str] = []
+    stop = _capture_logs(records)
+    try:
+        with pytest.raises(SourceFailedError):
+            await source.request_detail(uri="/x", start_ts=1, end_ts=2)
+    finally:
+        stop()
+    text = "".join(records)
+    assert "status=failed" in text
+    assert "reason=tool_error" in text
+
+
+@pytest.mark.asyncio
+async def test_span_opened_and_closed(monkeypatch):
+    """有 trace 上下文时建 mcp:<tool> span，并在结束时写入状态。"""
+    import src.infra.llm.trace_context as trace_ctx
+    import src.rca.sources.mcp as mcp_mod
+
+    class _SpySpan:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.end_kwargs = None
+
+        def end(self, **kwargs):
+            self.end_kwargs = kwargs
+
+    class _SpyClient:
+        def __init__(self):
+            self.spans = []
+
+        def span(self, **kwargs):
+            span = _SpySpan(**kwargs)
+            self.spans.append(span)
+            return span
+
+    spy_client = _SpyClient()
+
+    class _SpyContext:
+        client_instance = spy_client
+
+    monkeypatch.setattr(mcp_mod, "langfuse_context", _SpyContext())
+    monkeypatch.setattr(mcp_mod.settings, "LANGFUSE_ENABLE", True)
+
+    token = trace_ctx.current_trace_id.set("trace_rca_test")
+    try:
+        transport = httpx.MockTransport(_handler([], _STATS))
+        source = McpLogSource("https://m/mcp", "tok", timeout=5.0, transport=transport)
+        await source.latency_stats(uri="/x", start_ts=1, end_ts=2)
+    finally:
+        trace_ctx.current_trace_id.reset(token)
+
+    assert len(spy_client.spans) == 1
+    span = spy_client.spans[0]
+    assert span.kwargs["name"] == "mcp:sls_latency_stats"
+    assert span.kwargs["trace_id"] == "trace_rca_test"
+    assert span.kwargs["input"]["slow_ms"] == 2000
+    assert span.end_kwargs["output"]["status"] == "ok"

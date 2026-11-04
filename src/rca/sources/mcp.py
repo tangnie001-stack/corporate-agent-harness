@@ -8,6 +8,9 @@
 - 工具结果在 result.content[0].text 里，是一段 JSON 字符串；result.isError 为真表示工具内部失败
 - 工具名带 sls_ 前缀；business_impact 必须传 uris
 
+可观测性：每次工具调用写一条 `[rca] mcp call` 日志，并在当前 Langfuse trace 下挂
+`mcp:<tool>` span（观测关闭或无 trace 上下文时自动跳过，不影响取数）。
+
 异常语义：无数据抛 SourceEmptyError，调用失败抛 SourceFailedError，供判定层区分 empty / failed。
 """
 
@@ -15,9 +18,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
+from langfuse.decorators import langfuse_context
+from loguru import logger
 
+from src.config import settings
+from src.core.logging import encode_value
+from src.infra.llm.trace_context import current_trace_id
 from src.rca.sources.base import SourceEmptyError, SourceFailedError
 
 _PROTOCOL_VERSION = "2025-06-18"
@@ -67,6 +78,52 @@ def _extract_tool_result(message: dict) -> object:
         except json.JSONDecodeError:
             continue
     raise SourceFailedError("no_structured_content")
+
+
+def _summary_fields(data: object) -> str:
+    """把结果压成日志用的少量计数，避免把原始数据写进日志。"""
+    if isinstance(data, dict):
+        total = data.get("total")
+        if isinstance(total, int) and not isinstance(total, bool):
+            return f" total={total}"
+        endpoints = data.get("endpoints")
+        if isinstance(endpoints, list):
+            return f" endpoints={len(endpoints)}"
+        return ""
+    if isinstance(data, list):
+        return f" rows={len(data)}"
+    return ""
+
+
+def _open_span(tool: str, arguments: dict) -> Any | None:
+    """在当前 trace 下开一个 mcp:<tool> span；不可用时返回 None。"""
+    if not settings.LANGFUSE_ENABLE:
+        return None
+    trace_id = current_trace_id.get()
+    if trace_id is None:
+        return None
+    try:
+        return langfuse_context.client_instance.span(
+            trace_id=trace_id,
+            name="mcp:" + tool,
+            input=arguments,
+            start_time=datetime.now(UTC),
+        )
+    except Exception as exc:  # noqa: BLE001  观测失败不得影响取数
+        logger.warning(
+            "[rca] mcp span open failed tool={} err={}", tool, type(exc).__name__
+        )
+        return None
+
+
+def _close_span(span: Any | None, output: dict) -> None:
+    """关闭 span；None 时是廉价 no-op。"""
+    if span is None:
+        return
+    try:
+        span.end(end_time=datetime.now(UTC), output=output)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[rca] mcp span close failed err={}", type(exc).__name__)
 
 
 class McpLogSource:
@@ -157,7 +214,35 @@ class McpLogSource:
         return {**arguments, "datasource_id": self._datasource_id}
 
     async def _call(self, tool: str, arguments: dict) -> object:
-        """调用一个 MCP 工具；会话失效时重建一次后重试。"""
+        """调用一个 MCP 工具并记录日志与 span。"""
+        started = time.monotonic()
+        span = _open_span(tool, arguments)
+        try:
+            data = await self._call_once(tool, arguments)
+        except SourceFailedError as exc:
+            elapsed = int((time.monotonic() - started) * 1000)
+            logger.warning(
+                "[rca] mcp call tool={} status=failed elapsed_ms={} reason={}",
+                encode_value(tool),
+                elapsed,
+                encode_value(str(exc)),
+            )
+            _close_span(
+                span, {"status": "failed", "reason": str(exc), "elapsed_ms": elapsed}
+            )
+            raise
+        elapsed = int((time.monotonic() - started) * 1000)
+        logger.info(
+            "[rca] mcp call tool={} status=ok elapsed_ms={}{}",
+            encode_value(tool),
+            elapsed,
+            _summary_fields(data),
+        )
+        _close_span(span, {"status": "ok", "elapsed_ms": elapsed})
+        return data
+
+    async def _call_once(self, tool: str, arguments: dict) -> object:
+        """单次调用；会话失效（400/404）时重建一次后重试。"""
         await self._ensure_session()
         payload = {
             "jsonrpc": "2.0",
