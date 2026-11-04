@@ -28,6 +28,7 @@ class WeComBotConfig:
     secret: str = field(
         repr=False
     )  # 长连接专用 Secret；repr=False 防止插入日志/异常回溯时裸泄
+    name: str = ""  # 人类可读名称（如「阿里云运维机器人」）；仅用于日志辨识，不参与路由
 
 
 def load_wecom_bots() -> list[WeComBotConfig]:
@@ -55,12 +56,15 @@ def load_wecom_bots() -> list[WeComBotConfig]:
         key = item.get("key")
         bot_id = item.get("bot_id")
         secret = item.get("secret")
+        name = item.get("name", "")
         if not isinstance(key, str) or key == "":
             raise ValueError(f"WECOM_BOTS[{index}].key 为空")
         if not isinstance(bot_id, str) or bot_id == "":
             raise ValueError(f"WECOM_BOTS[{index}].bot_id 为空")
         if not isinstance(secret, str) or secret == "":
             raise ValueError(f"WECOM_BOTS[{index}].secret 为空")
+        if not isinstance(name, str):
+            raise ValueError(f"WECOM_BOTS[{index}].name 必须是字符串")  # noqa: TRY004  # 校验外部配置值，统一抛 ValueError
         if _KEY_PATTERN.fullmatch(key) is None:
             raise ValueError(f"WECOM_BOTS[{index}].key 只允许 [a-z0-9_-]")
         if key == CALLBACK_BOT_KEY:
@@ -71,5 +75,5 @@ def load_wecom_bots() -> list[WeComBotConfig]:
             raise ValueError(f"WECOM_BOTS[{index}].bot_id 重复")
         seen_keys.add(key)
         seen_ids.add(bot_id)
-        bots.append(WeComBotConfig(key=key, bot_id=bot_id, secret=secret))
+        bots.append(WeComBotConfig(key=key, bot_id=bot_id, secret=secret, name=name))
     return bots

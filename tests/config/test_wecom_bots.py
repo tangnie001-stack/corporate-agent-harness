@@ -85,3 +85,41 @@ def test_duplicate_bot_id(monkeypatch):
     )
     with pytest.raises(ValueError):
         load_wecom_bots()
+
+
+def test_name_parsed(monkeypatch):
+    """name 是可选的人类可读名称，解析后随配置带出。"""
+    monkeypatch.setenv(
+        "WECOM_BOTS",
+        _dump(
+            [
+                {
+                    "key": "ops",
+                    "name": "阿里云运维机器人",
+                    "bot_id": "aibX",
+                    "secret": "s",
+                }
+            ]
+        ),
+    )
+    bots = load_wecom_bots()
+    assert bots[0].name == "阿里云运维机器人"
+
+
+def test_name_optional_defaults_empty(monkeypatch):
+    """未写 name 时为空串，不影响其余字段。"""
+    monkeypatch.setenv("WECOM_BOTS", _dump([_bot("dev", "aibA", "s1")]))
+    bots = load_wecom_bots()
+    assert bots[0].name == ""
+
+
+def test_name_must_be_string(monkeypatch):
+    """name 类型非法即 fail-fast，不回显原值。"""
+    monkeypatch.setenv(
+        "WECOM_BOTS",
+        _dump([{"key": "dev", "name": 1, "bot_id": "aibA", "secret": "s1"}]),
+    )
+    with pytest.raises(ValueError) as excinfo:
+        load_wecom_bots()
+    assert "name" in str(excinfo.value)
+    assert "s1" not in str(excinfo.value)

@@ -136,9 +136,11 @@ async def start() -> None:
     _drivers.clear()
     bridge_handler = _build_bridge_handler()
     built: list[tuple[str, LongConnectionDriver]] = []
+    label_by_key: dict[str, str] = {}
     for bot in bots:
         driver = LongConnectionDriver(bot.bot_id, bot.secret, bridge_handler)
         built.append((bot.key, driver))
+        label_by_key[bot.key] = f"{bot.key}:{bot.name}" if bot.name else bot.key
     results = await asyncio.gather(
         *(driver.start() for _key, driver in built), return_exceptions=True
     )
@@ -146,8 +148,9 @@ async def start() -> None:
     for (bot_key, driver), result in zip(built, results, strict=True):
         if isinstance(result, BaseException):
             logger.warning(
-                "[wecom] bot connect failed bot_key={} err={}",
+                "[wecom] bot connect failed bot_key={} name={} err={}",
                 encode_value(bot_key),
+                encode_value(label_by_key.get(bot_key, bot_key)),
                 result,
             )
             continue
@@ -156,7 +159,12 @@ async def start() -> None:
         # 连接失败的台既不注册也不计数；就绪台数只统计已登记者
         if driver.is_ready:
             ready_count += 1
-    logger.info("[wecom] bots connected n={} total={}", ready_count, len(bots))
+    logger.info(
+        "[wecom] bots connected n={} total={} bots={}",
+        ready_count,
+        len(bots),
+        encode_value(",".join(label_by_key[key] for key, _driver in built)),
+    )
 
 
 async def stop() -> None:
