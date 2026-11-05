@@ -119,12 +119,23 @@ class AgentPresetLoader:
     def _resolve_channel(self, meta: dict) -> str:
         """解析 channel（仅 web / wecom / 空；其它取值抛 ValueError）。
 
+        Args:
+            meta: frontmatter 解析结果
+
+        Returns:
+            归一化后的渠道；键缺省或空串返回 ""（不限渠道）
+
         Raises:
-            ValueError: channel 取值不在 web / wecom / 空 之内
+            ValueError: channel 非字符串，或取值不在 web / wecom / 空 之内
         """
         value = meta.get("channel")
-        if not isinstance(value, str):
+        if value is None:
             return ""
+        if not isinstance(value, str):
+            # load_all 只把 ValueError 当作单文件解析失败并跳过，故不改成 TypeError
+            raise ValueError(  # noqa: TRY004
+                f"channel 非法（仅允许 web / wecom）: {value!r}"
+            )
         normalized = value.strip().lower()
         if normalized in ("", "web", "wecom"):
             return normalized

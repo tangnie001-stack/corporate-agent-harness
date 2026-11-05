@@ -136,3 +136,50 @@ def test_channel_rejects_unknown_value(tmp_path, recwarn):
 
     assert AgentPresetLoader(tmp_path).load_all() == []
     assert any("feishu" in str(w.message) for w in recwarn)
+
+
+def test_channel_non_string_is_skipped(tmp_path, recwarn):
+    """channel 非字符串（数字 / 列表）不得静默当作「不限渠道」，该文件被跳过。"""
+    (tmp_path / "analyst.md").write_text(
+        "---\nname: analyst\ndescription: 分析\nchannel: 1\n---\n正文。\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "legal.md").write_text(
+        "---\nname: legal\ndescription: 法务\nchannel: [wecom]\n---\n正文。\n",
+        encoding="utf-8",
+    )
+
+    assert AgentPresetLoader(tmp_path).load_all() == []
+    messages = [str(w.message) for w in recwarn]
+    assert any("analyst.md" in message for message in messages)
+    assert any("legal.md" in message for message in messages)
+
+
+def test_hidden_string_is_false_and_bot_preset_skipped(tmp_path, recwarn):
+    """hidden 为字符串 "true" 不算布尔真值；bot- 预设因此被跳过。"""
+    (tmp_path / "analyst.md").write_text(
+        '---\nname: analyst\ndescription: 分析\nhidden: "true"\n---\n正文。\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "bot-ops.md").write_text(
+        '---\nname: bot-ops\ndescription: 运维\nhidden: "true"\nchannel: wecom\n'
+        "---\n正文。\n",
+        encoding="utf-8",
+    )
+
+    presets = AgentPresetLoader(tmp_path).load_all()
+
+    assert [p.name for p in presets] == ["analyst"]
+    assert presets[0].hidden is False
+    assert any("bot-ops.md" in str(w.message) for w in recwarn)
+
+
+def test_bot_prefixed_filename_without_declaration_is_skipped(tmp_path, recwarn):
+    """文件名以 bot- 开头即受约束：frontmatter name 非 bot- 也要跳过。"""
+    (tmp_path / "bot-alias.md").write_text(
+        "---\nname: alias\ndescription: 别名预设\n---\n正文。\n",
+        encoding="utf-8",
+    )
+
+    assert AgentPresetLoader(tmp_path).load_all() == []
+    assert any("bot-alias.md" in str(w.message) for w in recwarn)
