@@ -42,7 +42,7 @@
 - [ ] 5.4 空结果与失败返回不同文案（「近 N 分钟无请求记录」 vs 「查询失败：…」）
 - [ ] 5.5 单次 8 秒超时、不重试；超时返回失败文案
 - [ ] 5.6 工具注册进 `ToolRegistry`（readonly），只出现在 `log` 档的 Agent 工具面中（`bot-ops`/`bot-dev`），`default` 档不含
-- [ ] 5.7 日志：`[tool] mcp call bot=… chatid=… tool=… uri=… minutes=… elapsed_ms=… rows=…`
+- [ ] 5.7 日志：`[tool] mcp call tool=… uri=… minutes=… elapsed_ms=… rows=… session=…`（`bot`/`chatid` 在工具层拿不到，靠同一 trace 下的 `[wecom] inbound … chatid=` 行关联）
 - [ ] 5.8 补测试：白名单内外、参数越界、空 vs 失败、脱敏（无 IPv4/UA）、行数上限
 
 ## 6. trace 约定
