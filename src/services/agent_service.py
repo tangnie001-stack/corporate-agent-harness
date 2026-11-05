@@ -11,9 +11,10 @@ import asyncio
 import logging
 import re
 import time
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, TypeAlias
 
 from langchain_core.messages import BaseMessage
@@ -29,9 +30,16 @@ from src.agents.graph.state import (
     LangGraphNode,
 )
 from src.agents.graph.workflow import build_graph
+from src.agents.presets.capability import (
+    DEFAULT_CAPABILITY,
+    LOG_CAPABILITY,
+    LOG_PROFILE_MAX_TURNS,
+    capability_of,
+)
 from src.agents.skills.models import SkillContext
 from src.agents.skills.prefix import parse_prefix
 from src.agents.skills.rendering import render_skill_body
+from src.agents.tools.log_tools import make_log_tools
 from src.agents.tools.rag_tools import make_rag_tools
 from src.chat.manager import ChatManager
 from src.chat.streaming import (
@@ -980,13 +988,25 @@ async def _run_generation(
     return full_answer
 
 
+# 无工具时的能力档快照默认值：不可变映射，可安全做类属性默认值
+_EMPTY_TOOL_NAMES_BY_CAPABILITY: Mapping[str, frozenset[str]] = MappingProxyType(
+    {DEFAULT_CAPABILITY: frozenset(), LOG_CAPABILITY: frozenset()}
+)
+
+
 class AgentService:
     """图生命周期管理服务。"""
 
     # 可选协作方的默认契约：生产路径由 __init__ 赋值覆盖，这里声明的默认值给出
-    # "无 KB 仓库 → 领域取 general"、"无工具 → 空集" 的确定语义（不用 getattr 兜底）。
+    # "无 KB 仓库 → 领域取 general"、"无工具 → 各能力档均空集" 的确定语义
+    # （不用 getattr 兜底）。
     _kb_repo: KbRepo | None = None
-    _tool_names: frozenset[str] = frozenset()
+    _tool_names_by_capability: Mapping[str, frozenset[str]] = (
+        _EMPTY_TOOL_NAMES_BY_CAPABILITY
+    )
+    _tool_names_no_clarify_by_capability: Mapping[str, frozenset[str]] = (
+        _EMPTY_TOOL_NAMES_BY_CAPABILITY
+    )
 
     def __init__(
         self,
@@ -1067,6 +1087,13 @@ class AgentService:
 
             skill_direct_node = make_skill_direct_node(skill_registry, skill_executor)
 
+        # 能力档工具面：日志档 = 基础工具集 + 两个只读日志工具（profile 落在
+        # LOG_PROFILES 时生效），基础档不受影响。两套图共用同一份映射：工具对象
+        # 无状态，同一批实例可在多个编译图里注册。
+        log_tools = make_log_tools()
+        profile_tools = {LOG_CAPABILITY: log_tools}
+        max_turns_by_profile = {LOG_CAPABILITY: LOG_PROFILE_MAX_TURNS}
+
         self._graph: CompiledStateGraph = build_graph(
             vector_store,
             self._llm,
@@ -1075,13 +1102,19 @@ class AgentService:
             delegate_task=delegate_task_tool,
             tool_sink=fork_tool_pool,
             skill_direct_node=skill_direct_node,
+            profile_tools=profile_tools,
+            max_turns_by_profile=max_turns_by_profile,
         )
-        # 本轮实际注册的工具名（段组装与 verify 指引的条件注入判据）。
+        # 各能力档的实际注册工具名（verify 指引的条件注入判据；prompt 工具段
+        # 由各档 bundle.tool_names 决定，不读这里）。基础档取 fork 工具池；日志档
+        # 在池外再并上日志工具——日志工具不进 fork 池，故不能只靠池子推导。
         # 取各工具的 .name（LangChain BaseTool 契约）；缺 name 是编程错误，
         # 故在装配期直接暴露，而非每请求静默跳过。
-        self._tool_names: frozenset[str] = frozenset(
-            str(t.name) for t in fork_tool_pool
-        )
+        self._tool_names_by_capability = {
+            DEFAULT_CAPABILITY: frozenset(str(t.name) for t in fork_tool_pool),
+            LOG_CAPABILITY: frozenset(str(t.name) for t in fork_tool_pool)
+            | frozenset(str(t.name) for t in log_tools),
+        }
         # 非交互轮次（如告警分析）禁用 ask_user：无人可答，注册只会拖到澄清超时。
         # 图是编译期固化的，故必须**再编译一套**并按轮次选择，而非透传参数。
         # ⚠️ 必须显式拼上 make_task_tools()：build_graph 只在 tools=None 的分支
@@ -1108,10 +1141,16 @@ class AgentService:
             delegate_task=delegate_task_tool,
             tool_sink=fork_tool_pool_no_clarify,
             skill_direct_node=skill_direct_node,
+            profile_tools=profile_tools,
+            max_turns_by_profile=max_turns_by_profile,
         )
-        self._tool_names_no_clarify: frozenset[str] = frozenset(
-            str(t.name) for t in fork_tool_pool_no_clarify
-        )
+        self._tool_names_no_clarify_by_capability = {
+            DEFAULT_CAPABILITY: frozenset(
+                str(t.name) for t in fork_tool_pool_no_clarify
+            ),
+            LOG_CAPABILITY: frozenset(str(t.name) for t in fork_tool_pool_no_clarify)
+            | frozenset(str(t.name) for t in log_tools),
+        }
         # 能力清单服务（Task 9）：由两个注册表派生只读清单，api 层只转发
         self.capability_service = CapabilityService(skill_registry, preset_registry)
         core_logging.log_event(Event.SERVICE_READY)
@@ -1202,7 +1241,8 @@ class AgentService:
             agent: 请求体传入的智能体预设名（ASCII slug；空=未指定）。
                 生效值经 _resolve_session_agent bind-once 解析后写入 ctx.agent
             clarify: 是否允许澄清追问（False 用于报警等非交互轮次；切换为此编译的
-                无 ask_user 图，并同步段组装用的工具名集合）
+                无 ask_user 图，并同步 ctx.tool_names 快照——它是 verify 判据，
+                prompt 工具段由各能力档 bundle 决定）
 
         Returns:
             (subscription_generator, launch_context)：
@@ -1226,7 +1266,6 @@ class AgentService:
         ctx = RequestContext(session_id=session_id)
         ctx.kb_id = kb_id
         ctx.kb_bound = bool(kb_id)
-        ctx.tool_names = self._tool_names if clarify else self._tool_names_no_clarify
         # 知识库领域：base 段三选一的依据。领域非法（无对应 base 模板）时回落到保留值
         # general 并记 warning，不阻断请求 —— 写入侧已拒绝非法值（KBService._require_known_domain），
         # 此处兜的是"模板被删/改名后存量库指向了不存在的领域"这类跨版本情形。
@@ -1261,6 +1300,18 @@ class AgentService:
         effective_agent = resolution.effective
         ctx.agent = effective_agent
         launch_context["agent"] = effective_agent
+        # 工具名快照按能力档取（能力档由生效 profile 决定）：verify/regen 读它，
+        # prompt 工具段由各档 bundle.tool_names 决定，与本快照无关
+        capability = capability_of(effective_agent)
+        if clarify:
+            ctx.tool_names = self._tool_names_by_capability.get(
+                capability, self._tool_names_by_capability[DEFAULT_CAPABILITY]
+            )
+        else:
+            ctx.tool_names = self._tool_names_no_clarify_by_capability.get(
+                capability,
+                self._tool_names_no_clarify_by_capability[DEFAULT_CAPABILITY],
+            )
         # `/xxx` 前缀分派：只认 user_visible() 的名字（user-invocable:false 禁止
         # 用户调用）。skills 目录缺失时注册表为 None，退化为无技能可解析。
         if self._skill_registry is not None:
