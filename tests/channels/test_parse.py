@@ -56,3 +56,42 @@ def test_non_text_message_has_no_text():
 def test_missing_msgid_raises():
     with pytest.raises(InboundParseError):
         parse_inbound({"msgtype": "text", "text": {"content": "hi"}})
+
+
+def _plain_with_quote(quote):
+    plain = {
+        "msgid": "M2",
+        "aibotid": "BOT1",
+        "chatid": "C1",
+        "chattype": "group",
+        "from": {"userid": "U1"},
+        "msgtype": "text",
+        "text": {"content": "@Robot 看一下"},
+    }
+    if quote is not None:
+        plain["quote"] = quote
+    return plain
+
+
+def test_quote_text_extracted():
+    """引用普通文本消息时取出被引用内容。"""
+    msg = parse_inbound(
+        _plain_with_quote({"msgtype": "text", "text": {"content": "今天订单少了很多"}})
+    )
+    assert msg.quote_text == "今天订单少了很多"
+
+
+def test_quote_placeholder_ignored():
+    """企微给占位时按未引用处理。"""
+    msg = parse_inbound(
+        _plain_with_quote(
+            {"msgtype": "text", "text": {"content": "[该消息类型暂不能展示]"}}
+        )
+    )
+    assert msg.quote_text is None
+
+
+def test_quote_absent_is_none():
+    """没有 quote 字段时为 None。"""
+    msg = parse_inbound(_plain_with_quote(None))
+    assert msg.quote_text is None

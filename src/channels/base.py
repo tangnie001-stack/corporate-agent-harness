@@ -21,6 +21,7 @@ class InboundMessage:
     text: str | None  # 仅文本消息取 text.content；其它为 None
     event_type: str | None  # 事件类型（msgtype == "event" 时非空）
     raw: dict  # 原始明文兜底；只读约定，不深拷贝
+    quote_text: str | None = None  # 被引用消息的文本；未引用或企微给占位时为 None
 
 
 class ReplySink(Protocol):
