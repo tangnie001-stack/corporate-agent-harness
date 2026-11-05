@@ -16,6 +16,15 @@ class LogToolTexts:
     NO_URI_CONFIGURED = "（未配置可查询接口）"  # 白名单为空时的可选接口占位
     MINUTES_OUT_OF_RANGE = "参数错误：minutes 必须在 {min_minutes}-{max_minutes} 之间"
     LIMIT_OUT_OF_RANGE = "参数错误：limit 必须在 1-{max_limit} 之间"
+    LATENCY_TOTAL = "样本量 {total} 条"  # 聚合摘要第 1 行
+    LATENCY_SPAN = "耗时 {parts}"  # 聚合摘要分位行，parts 形如 "p50 30ms / p95 800ms"
+    LATENCY_SLOW = "慢请求 {count} 条"  # 超过 slow_ms 阈值的请求数
+    LATENCY_NODES = "分布 {parts}"  # 节点分布行，parts 由 NODE_PART 拼接
+    LATENCY_ERRORS = "5xx {count} 条"  # 上游 5xx 计数
+    NODE_PART = "node-{index}: {count} 条"  # 节点分布中的单节点片段
+    NODE_ALIAS = "node-{index}"  # 明细行的节点别名（按耗时排名，不含真实地址）
+    MASKED_NODE = "node-***"  # 兜底脱敏：任何漏出的 IPv4[:port] 替换值
+    DETAIL_TRUNCATED = "共命中 {total} 条，仅显示最慢 {shown} 条"  # 明细被裁剪时的末行
 
 
 LOG_TOOL_TIMEOUT_SECONDS: float = 8.0  # 单次工具调用超时（秒）；超时即失败，不重试
@@ -23,4 +32,5 @@ MIN_MINUTES: int = 1  # minutes 下界（分钟）
 MAX_MINUTES: int = 360  # minutes 上界（分钟，6 小时）
 DEFAULT_MINUTES: int = 15  # minutes 默认值（模型未指定时回看 15 分钟）
 MAX_LIMIT: int = 20  # 明细返回行数上限
+MAX_LATENCY_LINES: int = 5  # 聚合摘要行数上限（模型上下文预算）
 DEFAULT_SLOW_MS: int = 1000  # 慢请求阈值默认值（毫秒）

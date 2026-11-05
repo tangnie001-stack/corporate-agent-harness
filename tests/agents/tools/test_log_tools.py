@@ -363,3 +363,35 @@ async def test_backend_empty_text_maps_to_no_rows(tool_name):
     call_lines = [line for line in lines if "[tool] mcp call" in line]
     assert len(call_lines) == 1
     assert "rows=0" in call_lines[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["sls_query_latency", "sls_query_requests"])
+async def test_empty_result_logs_status_empty(tool_name):
+    """空结果：审计日志记 status=empty（空 ≠ 失败），便于与真失败分流。"""
+    backend = _FakeBackend(
+        latency_result=SourceEmptyError("no_rows"),
+        detail_result=SourceEmptyError("no_rows"),
+    )
+    configure(backend, ("/api/x",))
+    with _captured_lines() as lines:
+        out = await _tools()[tool_name].ainvoke({"uri": "/api/x", "minutes": 15})
+    assert out == "近 15 分钟无请求记录"
+    call_lines = [line for line in lines if "[tool] mcp call" in line]
+    assert len(call_lines) == 1
+    assert "status=empty" in call_lines[0]
+    assert "status=failed" not in call_lines[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["sls_query_latency", "sls_query_requests"])
+async def test_whitespace_only_text_counts_zero_rows(tool_name):
+    """纯空白文本：先 strip 再计数，rows=0 与「无请求记录」文案保持一致。"""
+    backend = _FakeBackend(latency_result="  \n\t\n ", detail_result="  \n\t\n ")
+    configure(backend, ("/api/x",))
+    with _captured_lines() as lines:
+        out = await _tools()[tool_name].ainvoke({"uri": "/api/x", "minutes": 15})
+    assert out == "近 15 分钟无请求记录"
+    call_lines = [line for line in lines if "[tool] mcp call" in line]
+    assert len(call_lines) == 1
+    assert "rows=0" in call_lines[0]

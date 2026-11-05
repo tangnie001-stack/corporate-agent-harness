@@ -131,9 +131,10 @@ def _failure_reason(exc: BaseException) -> str:
 def _log_failure(
     tool: str, uri: str, minutes: int, started: float, exc: BaseException
 ) -> str:
-    """失败/超时路径写审计日志并返回失败文案。
+    """失败/超时/空结果路径写审计日志并返回对应文案。
 
-    失败也必须留痕：排障时靠这条日志区分「模型没调用工具」与「工具调用失败」。
+    失败也必须留痕：排障时靠这条日志区分「模型没调用工具」与「工具调用失败」；
+    空结果的 status 记 empty（空 ≠ 失败），失败记 failed。
 
     Args:
         tool: 工具名
@@ -145,12 +146,16 @@ def _log_failure(
     Returns:
         供模型消费的失败文案（见 _failure_text）
     """
+    status = "failed"
+    if isinstance(exc, SourceEmptyError):
+        status = "empty"
     logger.warning(
-        "[tool] mcp call tool={} uri={} minutes={} elapsed_ms={} status=failed reason={} session={}",
+        "[tool] mcp call tool={} uri={} minutes={} elapsed_ms={} status={} reason={} session={}",
         encode_value(tool),
         encode_value(uri),
         minutes,
         int((time.monotonic() - started) * 1000),
+        status,
         encode_value(_failure_reason(exc)),
         encode_value(_session_id()),
     )
@@ -196,7 +201,10 @@ async def sls_query_latency(
         return _log_failure("sls_query_latency", uri, minutes, started, exc)
     except Exception as exc:  # noqa: BLE001  兜底：任何异常都转成模型可见文案
         return _log_failure("sls_query_latency", uri, minutes, started, exc)
-    rows = len(text.splitlines())
+    normalized = text.strip()
+    rows = 0
+    if normalized != "":
+        rows = len(normalized.splitlines())
     logger.info(
         "[tool] mcp call tool=sls_query_latency uri={} minutes={} elapsed_ms={} rows={} session={}",
         encode_value(uri),
@@ -205,7 +213,7 @@ async def sls_query_latency(
         rows,
         encode_value(_session_id()),
     )
-    if text.strip() == "":
+    if normalized == "":
         return LogToolTexts.NO_ROWS.format(minutes=minutes)
     return text
 
@@ -252,7 +260,10 @@ async def sls_query_requests(
         return _log_failure("sls_query_requests", uri, minutes, started, exc)
     except Exception as exc:  # noqa: BLE001  兜底：任何异常都转成模型可见文案
         return _log_failure("sls_query_requests", uri, minutes, started, exc)
-    rows = len(text.splitlines())
+    normalized = text.strip()
+    rows = 0
+    if normalized != "":
+        rows = len(normalized.splitlines())
     logger.info(
         "[tool] mcp call tool=sls_query_requests uri={} minutes={} elapsed_ms={} rows={} session={}",
         encode_value(uri),
@@ -261,7 +272,7 @@ async def sls_query_requests(
         rows,
         encode_value(_session_id()),
     )
-    if text.strip() == "":
+    if normalized == "":
         return LogToolTexts.NO_ROWS.format(minutes=minutes)
     return text
 
