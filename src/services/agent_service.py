@@ -372,10 +372,11 @@ def _convert_event(
 class AgentResolution:
     """会话智能体解析结果（design D11：来源由解析方给出，调用方不重推分支）。
 
-    effective: 本轮生效的智能体名（空=未绑定或未注册降级）
+    effective: 本轮生效的智能体名（空=未绑定、未注册降级或渠道不符）
     source: 解析来源枚举 —— bound（沿用绑定）/ new_bound（首次绑定）/
-        ignored（请求与会话绑定不一致，已忽略）/ unregistered（请求名未注册，
-        降级为空）/ none（请求与绑定都为空）
+        ignored（请求与会话绑定不一致 → 生效绑定值；预设声明的渠道与当前渠道
+        不符 → 生效为空）/ routing_disabled（企微路由总开关关闭 → 生效为空）/
+        unregistered（请求名未注册，降级为空）/ none（请求与绑定都为空）
     """
 
     effective: str  # 生效值；来源：解析结果；范围：本轮请求；用途：ctx.agent/日志
@@ -1389,8 +1390,17 @@ class AgentService:
         Returns:
             AgentResolution：已绑定一律生效绑定值（请求不一致 → 忽略 + warning）；
             预设声明的渠道与当前渠道不符时按未请求处理（source="ignored"）；
+            企微渠道且路由总开关关闭时忽略绑定与请求（source="routing_disabled"）；
             来源枚举见 dataclass docstring
         """
+        # 回滚开关先于渠道校验：关闭时企微一整条路由链（请求 + 绑定）都失效。
+        # 只在内存里忽略绑定：不写库，开关重开后原绑定自然恢复。
+        if (
+            not settings.WECOM_AGENT_ROUTING_ENABLED
+            and current_channel.get() == Channel.WECOM
+        ):
+            return AgentResolution(effective="", source="routing_disabled")
+
         # 渠道校验先于 bind-once：渠道专属预设（如 wecom 机器人）不得从别的渠道
         # 进入本会话；已绑定的值同样要过这一关，否则跨渠道会话会沿用机器人身份。
         candidate = bound

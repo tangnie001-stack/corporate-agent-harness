@@ -2022,9 +2022,14 @@ def _service_with_preset_channel(channel: str) -> tuple[AgentService, AsyncMock]
 
 
 @pytest.mark.asyncio
-async def test_wecom_preset_ignored_on_web_channel():
-    """站点请求指定 channel=wecom 的预设：忽略并按默认处理。"""
+async def test_wecom_preset_ignored_on_web_channel(monkeypatch):
+    """站点请求指定 channel=wecom 的预设：忽略并按默认处理（留可观测事件）。"""
     service, chat_manager = _service_with_preset_channel(Channel.WECOM)
+    logged: list[str] = []
+    monkeypatch.setattr(
+        "src.services.agent_service.core_logging.log_event",
+        lambda event, **fields: logged.append(event),
+    )
     token = current_channel.set(Channel.WEB)
     try:
         result = await service._resolve_session_agent("s1", "bot-ops")
@@ -2033,6 +2038,7 @@ async def test_wecom_preset_ignored_on_web_channel():
 
     assert result.effective == ""
     assert result.source == "ignored"
+    assert Event.AGENT_BIND_IGNORED in logged
     chat_manager.bind_session_agent_async.assert_not_awaited()
 
 

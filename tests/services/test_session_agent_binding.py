@@ -4,6 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.config import settings
+from src.config.const import Channel
+from src.infra.llm.trace_context import current_channel
 from src.services.agent_service import AgentService
 
 pytestmark = pytest.mark.asyncio
@@ -67,6 +70,53 @@ async def test_unknown_request_is_ignored():
     svc, _ = _service(known=[])
     result = await svc._resolve_session_agent("sess_1", "ghost")
     assert result.effective == ""
+
+
+async def test_disabled_switch_ignores_bound_on_wecom(monkeypatch):
+    """企微渠道 + 开关关闭：忽略已绑定值，回通用人设。"""
+    svc = _service(known=["bot-ops"])[0]
+    monkeypatch.setattr(settings, "WECOM_AGENT_ROUTING_ENABLED", False)
+    token = current_channel.set(Channel.WECOM)
+    try:
+        result = await svc._resolve_session_agent("s1", "bot-ops", bound="bot-ops")
+    finally:
+        current_channel.reset(token)
+
+    assert result.effective == ""
+    assert result.source == "routing_disabled"
+
+
+async def test_disabled_switch_keeps_web_binding(monkeypatch):
+    """站点渠道不受开关影响：仍沿用绑定。"""
+    svc = _service(known=["finance-expert"])[0]
+    monkeypatch.setattr(settings, "WECOM_AGENT_ROUTING_ENABLED", False)
+    token = current_channel.set(Channel.WEB)
+    try:
+        result = await svc._resolve_session_agent("s2", "", bound="finance-expert")
+    finally:
+        current_channel.reset(token)
+
+    assert result.effective == "finance-expert"
+    assert result.source == "bound"
+
+
+async def test_disabled_switch_does_not_write_binding(monkeypatch):
+    """override 不得改写 sessions.agent（回滚可逆）。"""
+    svc = _service(known=["bot-ops"])[0]
+    monkeypatch.setattr(settings, "WECOM_AGENT_ROUTING_ENABLED", False)
+    calls: list[str] = []
+
+    async def _fake_bind(session_id: str, agent: str) -> None:
+        calls.append(agent)
+
+    monkeypatch.setattr(svc._chat_manager, "bind_session_agent_async", _fake_bind)
+    token = current_channel.set(Channel.WECOM)
+    try:
+        await svc._resolve_session_agent("s3", "bot-ops", bound="bot-ops")
+    finally:
+        current_channel.reset(token)
+
+    assert calls == []
 
 
 async def test_stream_chat_wires_effective_agent():
