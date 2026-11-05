@@ -20,6 +20,7 @@ LOG_PREFIXES: frozenset[str] = frozenset(
         "retrieval",
         "verify",
         "agent",
+        "tool",
         "session",
         "db",
         "llm",
@@ -193,6 +194,9 @@ class Event(str, Enum):
     CAPABILITY_DEGRADED = "capability degraded"
     # prompt 模板启动期校验通过（fail-fast：失败直接抛错、不记本事件）
     PROMPT_VALIDATED = "prompt validated"
+
+    # [tool] 只读日志工具的后端（启动期探测失败降级：工具仍可调用，返回「查询失败」）
+    LOG_TOOLS_DEGRADED = "mcp unavailable"
 
     # [delegate] fork 子代理委派（delegate-hardening-observability）
     DELEGATE_START = "delegate start"

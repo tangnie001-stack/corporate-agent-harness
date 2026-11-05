@@ -388,6 +388,8 @@ EVENT_SPECS: dict[str, EventSpec] = {
     "prompt validated": EventSpec(
         "prompt validated", "app", "info", ("section_chars",)
     ),
+    # 日志工具后端启动期探测失败（reason = 取数层失败原因；不阻断启动）
+    "mcp unavailable": EventSpec("mcp unavailable", "tool", "warning", ("reason",)),
     # [delegate] fork 子代理委派（delegate-hardening-observability）
     "delegate start": EventSpec(
         "delegate start",
