@@ -1,8 +1,9 @@
 ## 0. 前置与排期
 
 - [x] 0.1 `alert-triage` **已合并**（`558919ad`）。按其真实代码核对后，复用范围为 `models` / `collector` / `loader` / `sources/base` 三态 / `grafana` 解析辅助；`LogSource` 协议、`judge()`、`render_card` 均为延迟专用，不复用（见 design D2）
-- [ ] 0.2 确认 `turn-provenance-observability` 组 1+4 的落地状态；未落地时按 D11 走"字段不可用"降级，不阻塞开工
-- [ ] 0.3 建隔离 worktree（`git worktree add`），base 取合并后的 `dev-wsl`
+- [ ] 0.2 **等 `bot-agent-routing` 合并**（实施中，`feat/bot-agent-routing`）：本变更依赖其 `alert_turn` trace 名、`profile` 路由与 `rca_*` metadata；日志能力同样只在该 change 的 ops 档开放
+- [ ] 0.3 确认 `turn-provenance-observability` 组 1+4 的落地状态；未落地时按 D11 走"字段不可用"降级，不阻塞开工
+- [ ] 0.4 建隔离 worktree（`git worktree add`），base 取三者合并后的 `dev-wsl`
 
 ## 1. 迁移与配置
 
@@ -15,7 +16,7 @@
 ## 2. 证据源
 
 - [ ] 2.1 `src/rca/sources/trace.py`：`TraceSource`——按 `trace_id` 取观测与 `metadata.retrieval_contexts`，复用 `src/cli/eval_trace_io.py` 的 `fetch_trace`；取不到抛 `SourceFailedError`，trace 存在但无检索快照抛 `SourceEmptyError`
-- [ ] 2.2 `src/rca/sources/error_log.py`：`ErrorLogSource`——按时间窗扫 ERROR 行、按第 3 段取 `trace_id`；沿用 `grafana.py` 的 `ensure_query_ok` 经验（成功判定不看 status，看数据体）
+- [ ] 2.2 `ErrorLogSource`——**不复用** `bot-agent-routing` 的 `sls_query_latency` / `sls_query_requests`（两者 `uri` 必填且只查白名单接口，是"接口维度"）；复用其 MCP 客户端（`src/rca/sources/mcp.py`）与白名单语义，新增两个能力：`sls_query_by_trace(trace_id)`（反查单轮日志）与 `sls_query_errors(minutes, status>=500)`（窗口 + 状态过滤 → 提取 `trace_id`）；沿用 `ensure_query_ok` 的"成功判定不看 status、看数据体"经验
 - [ ] 2.3 `src/rca/sources/probe.py`：`RetrievalProbe`——对原问题做确定性变体（抽实体/去年份/同义）后重检；命中且相关度过线 → "表述问题"，全空 → "覆盖缺失"。**默认不用模型改写**（不可复现），模型改写作为可选第二档并标注
 - [ ] 2.4 三个 Source 实现**新窄协议** `ErrorEvidenceSource`（`trace_fetch` / `error_logs` / `retrieval_probe`），与 `LogSource` 并列、不扩展后者；三态沿用 `SourceEmptyError` / `SourceFailedError`；测试替身照 `FixtureLogSource` 的写法
 
@@ -36,14 +37,15 @@
 
 ## 5. 人工入口
 
-- [ ] 5.1 `src/agents/skills/` 新增 `diagnose_trace` 工具（只读；输入 `trace_id`）
-- [ ] 5.2 `skills/rca-error/SKILL.md`：frontmatter 声明证据清单（`trace_fetch` required、`error_log`、`retrieval_probe`、`history_lookback` 的 `when` 条件）
+- [ ] 5.1 `src/agents/tools/` 新增 `diagnose_trace` 工具（只读；输入 `trace_id`），**挂在 `bot-ops` 的 profile 工具面**，不新建独立机器人
+- [ ] 5.2 `skills/rca-error/SKILL.md`：frontmatter 声明证据清单（`trace_fetch` required、`error_log`、`retrieval_probe`、`history_lookback` 的 `when` 条件）；**前置声明依赖 ops 档**（日志能力只在 ops/dev 开放）
 - [ ] 5.3 入口校验：`trace_id` 格式不符/不存在/属于另一环境 → 分别给出三种明确文案，不落到"诊断失败"
-- [ ] 5.4 按 bot 分环境（`support` / `finance` 绑生产，`dev` 绑开发）
+- [ ] 5.4 输出裁剪与脱敏口径与 `ops-log-tools` 对齐（同一套 `_mask` 与行数/字符上限），避免两条链路给出两种脱敏结果
+- [ ] 5.5 环境隔离随 profile 走（`dev` / `support` / `finance` 各绑各的环境），**不另建开关**
 
 ## 6. 告警定位器
 
-- [ ] 6.1 `src/rca/locator.py`：时间窗（`T0-15min`~当前）内 ERROR 行 → `trace_id` 去重 → 按 `(错误类型, 接口, 错误码)` 聚类 → 每类取最早代表
+- [ ] 6.1 `src/rca/locator.py`：时间窗（`T0-15min`~当前）内 ERROR 行 → `trace_id` 去重 → 按 `(错误类型, 接口, 错误码)` 聚类 → 每类取最早代表；取 trace 时按 **`alert_turn`** 而非 `chat_turn`，并优先读告警轮已有的 `rca_tier` / `rca_reason` metadata
 - [ ] 6.2 D9 分支：窗口内无 ERROR / 有 ERROR 但无 `trace_id` → 结论"未落到应用层"，不进诊断
 - [ ] 6.3 上限：最多诊断 3 个代表；超出只输出类别计数
 - [ ] 6.4 接入报警轮：error 类告警走"定位 + 诊断"，延迟类仍走 `rca-latency`；按告警名白名单灰度、默认关闭

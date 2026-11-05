@@ -20,8 +20,9 @@
 
 **前置依赖**：
 
-- `alert-triage`（实施中，未合并）：提供 `src/rca/` 的 Source 协议、`empty/failed` 三态、分波采集、代码定档、卡片渲染。本变更**不复刻**这套骨架。
-- `turn-provenance-observability` 组 1+4（7 项）：提供温度、生效智能体、prompt 组成、消息构成等生成侧事实。缺失时本变更降级（见 D11）。
+- `alert-triage`（**已合并**）：提供 `src/rca/` 的 `models` / `collector` / `loader` / 三态异常 / frames 解析辅助。本变更**不复刻**这套骨架，但 `LogSource` 协议、`judge()`、`render_card` 均为延迟专用，不复用（见 D2）。
+- `bot-agent-routing`（实施中）：提供 `bot-ops` 人设、`profile` 路由、两个只读日志工具、告警轮 `alert_turn` trace 与 `rca_*` metadata。本变更的诊断入口挂在 ops 档，日志查询复用其 MCP 客户端（见 D12）。
+- `turn-provenance-observability` 组 1+4（7 项，未开始）：提供温度、生效智能体、prompt 组成、消息构成等生成侧事实。缺失时本变更降级（见 D11）。
 
 ## Goals / Non-Goals
 
@@ -60,6 +61,8 @@
 | `loader`（skill frontmatter 解析） | ✅ | 只认 `tool/params/required/timeout/when` |
 | `sources/base.py` 的 `SourceEmptyError` / `SourceFailedError` | ✅ | 三态语义通用 |
 | `sources/grafana.py` 的 `ensure_query_ok` / `parse_frame_column` | ✅ | 查数解析经验（成功判定不看 status） |
+| `sources/mcp.py` 的 MCP 客户端 | ✅ | 日志查询统一走 MCP，不另建 SLS SDK |
+| `bot-agent-routing` 的 `sls_query_latency` / `sls_query_requests` | ❌ | 两者 `uri` 必填、只查白名单接口，是"接口维度"；诊断需要"错误维度"与"trace 维度"（见 D12） |
 | `LogSource` 协议本身 | ❌ | 三个方法都是延迟专用：`latency_stats` / `request_detail` / `business_impact`；`request_detail` 也不含 `trace_id` |
 | `judge()` | ❌ | 入参是 `severe_latency_ms` / `stats` / `history`，判定逻辑与延迟强绑定 |
 | `render_card` | ❌ | 直接读 `results["stats"]`，卡片结构面向延迟 |
@@ -137,6 +140,15 @@
 
 - **选**：若 `turn-provenance` 的字段尚未落地，报告中"温度 / 生效智能体 / prompt 组成"三项标注为"不可用"，**不推断**。检索侧判定不受影响。
 - **理由**：检索侧证据来自 trace，生成侧来自日志字段；两者可独立降级。把"不知道"写成"可能是人设没生效"，是误判的主要来源。
+
+### D12 与 `bot-agent-routing` 的边界：对话式值班 vs 结构化归因
+
+- **事实**：`bot-agent-routing` 提供的是**对话式值班**——人问"今天 createOrder 正常吗"，`bot-ops` 选工具查日志并直接作答；无固定流程、无落库、无引用约束、不可回归。本变更提供的是**结构化归因**——给定 `trace_id`，代码定路径、枚举根因、报告可复核。
+- **选**：两者并存，不合并 change。诊断工具挂在 `bot-ops` 的 profile 工具面上，作为"第二个能力"而非另一个机器人。
+- **弃**：把 `sls_query_latency` / `sls_query_requests` 直接当诊断证据源。理由：两者契约要求 `uri` 且只查白名单接口，回答的是"某个接口最近怎么样"；诊断要的是"这一轮里发生了什么"与"窗口内所有 5xx 的分布"。语义不同，强行复用会导致白名单外的接口永远查不到。
+- **选**：复用其 MCP 客户端与白名单机制，新增两个能力 `sls_query_by_trace` 与 `sls_query_errors`。
+- **约束**：告警轮的 trace 名为 `alert_turn`（不是 `chat_turn`），且 metadata 已有 `rca_tier` / `rca_reason` / `rca_evidence`；诊断读取这些现成字段，不重复计算。
+- **约束**：脱敏与输出裁剪必须与 `ops-log-tools` 同源（同一套 `_mask` 与行数上限），否则同一份日志在两条链路会得到两种脱敏结果。
 
 ## 模块划分
 

@@ -64,8 +64,9 @@
 
 **依赖**
 
-- `alert-triage` 合并（复用 `src/rca/` 与 `LogSource`）
-- `turn-provenance-observability` 组 1+4（生成侧事实字段）
+- `alert-triage`（**已合并**）：复用 `src/rca/` 的 `models` / `collector` / `loader` / 三态；`judge` / `render` / `LogSource` 为延迟专用，不复用
+- `bot-agent-routing`（**实施中**）：`bot-ops` 人设与 `profile` 路由、告警轮 `alert_turn` trace 与 `rca_*` metadata、MCP 日志客户端。诊断入口挂其 ops 档，日志查询复用客户端但不复用那两个接口维度的工具
+- `turn-provenance-observability` 组 1+4（生成侧事实字段，未开始，缺失可降级）
 
 **风险**
 
