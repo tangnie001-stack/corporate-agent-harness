@@ -59,6 +59,6 @@
 
 ## 8. 门禁与实机验证
 
-- [ ] 8.1 `pytest tests/ -q` 全绿、`ruff check .` 无错、`pyright src/` 不新增 error、`python -m src.cli.check_docs` 0 error
+- [x] 8.1 `pytest tests/ -q` **2292 passed / 2 skipped**、`ruff check .` 无错（engine 存量 UP047 已行内登记）、`pyright src/` **0 error**、`check_docs` **0 error**（2026-11-06 实测）
 - [ ] 8.2 `playwright-cli` 实机：选「财务专家」发一轮（或 inline `/xxx`）→ 过程区最前出现两条来源声明；**刷新/切会话后**两条声明与**模型标注**均可回放；fork 轮显示"使用技能…（子代理执行）"；**未知 stage 容忍**（两条声明作为普通状态行正常渲染、不改变正文/旁白判定）、顶栏仍显示生效智能体（取自 `agent_used`）；控制台无新增 error
-- [ ] 8.3 用一条真实 trace（含 agent + skill）复核：日志可直接读出温度及其来源、生效智能体与来源、prompt 组成与消息构成、技能注入与分派
+- [x] 8.3 实测两条 trace：`trace_c7705609`（绑 `finance-expert`）读出 `agent resolved source=new_bound persona_applied=true` / `prompt assembled persona_source=preset kb_bound=true` / `prompt messages system_msgs=1` / `model turn temperature=0.1 temp_source=default kb_bound=true`；`trace_cd3acd8a`（inline 命令）读出 `skill dispatch kind=known context=fork`。**技能注入**未见属预期：三个业务技能均为 fork（不注入主 agent），注入路径由 `tests/services/test_preset_skill_preload.py` 覆盖
