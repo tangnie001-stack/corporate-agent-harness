@@ -14,7 +14,7 @@ from enum import Enum
 
 from src.core.log_event_specs import EVENT_SPECS, EventSpec
 
-# 分层前缀允许集（logging-rules.md 前缀主表：6 处理层 + cli + app + delegate + wecom）
+# 分层前缀允许集，主表见 docs/agents/logging-rules.md
 LOG_PREFIXES: frozenset[str] = frozenset(
     {
         "retrieval",

@@ -2,18 +2,23 @@
 
 三条分支各自可回归：
   - 无引用（含开关关闭）：不构造 MCP 客户端、不校验白名单、不注入后端；
-  - 有引用但服务不可达：只记 warning，注入仍可调用的后端，启动不失败；
+  - 有引用但服务不可达（失败或超时）：只记 warning，注入不可用态，工具统一返回
+    「查询失败：日志服务不可用」，启动不失败；
   - 有引用且配置不全（白名单为空 / 服务端缺期望工具）：启动失败且信息可定位。
 
 另钉住 lifespan 的开关门控与顺序：profile 校验与日志工具装配都在
 `wecom_service.start()` 之前，开关关闭时两者都不被调用（T3 评审补项）。
 """
 
+import asyncio
+
 import pytest
+from loguru import logger
 
 import src.main as main_mod
 from src.agents.presets.capability import LOG_PROFILES
 from src.agents.tools import log_tools
+from src.config.log_tools import LogToolTexts
 from src.config.rca import RcaConfig
 from src.config.wecom_bots import WeComBotConfig
 from src.rca.sources.base import SourceFailedError
@@ -41,20 +46,24 @@ class _FakeMcp:
 class _BrokenMcp:
     """tools/list 必然失败的 MCP 客户端替身（模拟不可达）。"""
 
-    def __init__(self) -> None:
-        """无状态；失败原因固定在 list_tools 里。"""
+    def __init__(self, reason: str = "transport:ConnectError") -> None:
+        """保存失败原因（空串用于覆盖 reason 回退类型名的分支）。"""
+        self._reason = reason
         self.probed = False
 
     async def list_tools(self) -> list[str]:
         """抛取数层失败异常。"""
         self.probed = True
-        raise SourceFailedError("transport:ConnectError")
+        raise SourceFailedError(self._reason)
 
-    async def latency_stats(
-        self, uri: str, start_ts: int, end_ts: int, slow_ms: int = 2000
-    ) -> dict:
-        """取数同样失败（模拟服务不可达时的调用路径）。"""
-        raise SourceFailedError("transport:ConnectError")
+
+class _HangingMcp:
+    """tools/list 永不返回的 MCP 客户端替身（模拟探测卡住）。"""
+
+    async def list_tools(self) -> list[str]:
+        """挂起直到被 wait_for 取消。"""
+        await asyncio.sleep(60)
+        return []
 
 
 def _bots(profile: str) -> list[WeComBotConfig]:
@@ -87,13 +96,19 @@ def _reset_log_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(log_tools, "_whitelist", ())
 
 
+def _capture_warning(lines: list[str]) -> int:
+    """挂 loguru sink 收集 warning 及以上日志的消息文本，返回 sink id（调用方负责 remove）。"""
+    return logger.add(
+        lambda message: lines.append(message.record["message"]), level="WARNING"
+    )
+
+
 @pytest.mark.asyncio
 async def test_switch_off_skips_probe(monkeypatch):
     """企微通道关闭时不探测：即使配置里有日志档机器人也不连服务。"""
     _reset_log_tools(monkeypatch)
     monkeypatch.setattr(main_mod.settings, "WECOM_BOT_ENABLED", False)
     monkeypatch.setattr(main_mod, "load_wecom_bots", lambda: _bots(_LOG_PROFILE))
-    fake = _FakeMcp(_EXPECTED_TOOLS)
 
     def _make() -> _FakeMcp:
         """记录 MCP 客户端被构造。"""
@@ -104,7 +119,6 @@ async def test_switch_off_skips_probe(monkeypatch):
 
     await main_mod._setup_log_tools()
 
-    assert fake.probed is False
     assert log_tools._backend is None
 
 
@@ -150,24 +164,77 @@ async def test_probe_success_configures_backend(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_probe_failure_degrades_without_raising(monkeypatch):
-    """有引用但服务不可达：不阻断启动，注入的后端调用时返回「查询失败 + 原因」。"""
+    """有引用但服务不可达：不阻断启动，注入不可用态并记 warning。"""
     _reset_log_tools(monkeypatch)
     monkeypatch.setattr(main_mod.settings, "WECOM_BOT_ENABLED", True)
     monkeypatch.setattr(main_mod, "load_wecom_bots", lambda: _bots(_LOG_PROFILE))
     monkeypatch.setattr(main_mod, "load_rca_config", lambda: _config(_WHITELIST))
     broken = _BrokenMcp()
     monkeypatch.setattr(main_mod, "_make_mcp_source", lambda: broken)
+    lines: list[str] = []
+    sink_id = _capture_warning(lines)
 
-    await main_mod._setup_log_tools()  # 不抛
+    try:
+        await main_mod._setup_log_tools()  # 不抛
+    finally:
+        logger.remove(sink_id)
 
     assert broken.probed is True
-    assert log_tools._backend is not None
+    assert log_tools._backend is None
     assert log_tools._whitelist == _WHITELIST
+    assert any(
+        line.startswith("[tool] mcp unavailable")
+        and "reason=transport:ConnectError" in line
+        for line in lines
+    ), lines
     text = await log_tools.sls_query_latency.ainvoke(
         {"uri": _WHITELIST[0], "minutes": 15}
     )
-    assert "查询失败" in text
-    assert "transport:ConnectError" in text
+    assert text == LogToolTexts.UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_probe_timeout_degrades(monkeypatch):
+    """探测超预算：按不可用降级，reason 回退为异常类型名。"""
+    _reset_log_tools(monkeypatch)
+    monkeypatch.setattr(main_mod.settings, "WECOM_BOT_ENABLED", True)
+    monkeypatch.setattr(main_mod, "load_wecom_bots", lambda: _bots(_LOG_PROFILE))
+    monkeypatch.setattr(main_mod, "load_rca_config", lambda: _config(_WHITELIST))
+    monkeypatch.setattr(main_mod, "_make_mcp_source", _HangingMcp)
+    monkeypatch.setattr(main_mod, "PROBE_TIMEOUT_SECONDS", 0.01)
+    lines: list[str] = []
+    sink_id = _capture_warning(lines)
+
+    try:
+        await main_mod._setup_log_tools()  # 不抛
+    finally:
+        logger.remove(sink_id)
+
+    assert log_tools._backend is None
+    assert any("reason=TimeoutError" in line for line in lines), lines
+    text = await log_tools.sls_query_requests.ainvoke(
+        {"uri": _WHITELIST[0], "minutes": 15}
+    )
+    assert text == LogToolTexts.UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_probe_failure_empty_reason_falls_back_to_type(monkeypatch):
+    """失败原因为空串时，事件字段回退为异常类型名（保证 reason 始终有值）。"""
+    _reset_log_tools(monkeypatch)
+    monkeypatch.setattr(main_mod.settings, "WECOM_BOT_ENABLED", True)
+    monkeypatch.setattr(main_mod, "load_wecom_bots", lambda: _bots(_LOG_PROFILE))
+    monkeypatch.setattr(main_mod, "load_rca_config", lambda: _config(_WHITELIST))
+    monkeypatch.setattr(main_mod, "_make_mcp_source", lambda: _BrokenMcp(""))
+    lines: list[str] = []
+    sink_id = _capture_warning(lines)
+
+    try:
+        await main_mod._setup_log_tools()
+    finally:
+        logger.remove(sink_id)
+
+    assert any("reason=SourceFailedError" in line for line in lines), lines
 
 
 @pytest.mark.asyncio

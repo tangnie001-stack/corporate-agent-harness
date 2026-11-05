@@ -30,6 +30,7 @@ from src.api import ragas_generate as ragas_generate_routes
 from src.api import wecom as wecom_routes
 from src.config import settings
 from src.config.alert import load_alert_config
+from src.config.log_tools import PROBE_TIMEOUT_SECONDS
 from src.config.prompts import validation
 from src.config.rca import load_rca_config
 from src.config.response_codes import Code
@@ -154,7 +155,7 @@ def _make_mcp_source() -> McpLogSource:
         token=config.mcp_token,
         datasource_id=config.mcp_datasource_id,
         timeout=config.source_timeout_seconds,
-        uris=config.tool_uri_whitelist,
+        uris=(),  # 日志工具不走 business_impact，不复用 RCA 的业务接口清单
     )
 
 
@@ -162,8 +163,9 @@ async def _setup_log_tools() -> None:
     """按机器人引用情况装配日志工具后端（lifespan 调用，幂等）。
 
     只有存在引用时才会连接日志服务并校验白名单：没有引用时相关环境变量缺省
-    不得影响启动（行为与改造前一致）。连接失败不阻断启动——后端照常注入，
-    调用时由取数层抛失败、工具层翻成「查询失败」，且服务恢复后无需重启即可用。
+    不得影响启动（行为与改造前一致）。连接失败或探测超时不阻断启动——注入不可用态，
+    两个工具仍可调用但统一返回「查询失败：日志服务不可用」；探测只在启动期做一次，
+    服务恢复后需重启才能重新接入。
 
     Raises:
         RuntimeError: 有引用但白名单为空（否则所有查询被静默拒绝），
@@ -180,19 +182,22 @@ async def _setup_log_tools() -> None:
             "RCA_TOOL_URI_WHITELIST 为空：有机器人引用日志能力档时必须配置"
         )
     source = _make_mcp_source()
-    backend = McpLogToolBackend(source)
     try:
-        names = await source.list_tools()
-    except SourceFailedError as exc:
+        # 探测含 initialize + tools/list 两跳，整体加预算避免启动被服务端拖住
+        names = await asyncio.wait_for(
+            source.list_tools(), timeout=PROBE_TIMEOUT_SECONDS
+        )
+    except (SourceFailedError, TimeoutError) as exc:
         reason = str(exc)
         if reason == "":
             reason = type(exc).__name__
         core_logging.log_event(Event.LOG_TOOLS_DEGRADED, reason=reason)
-    else:
-        missing = _EXPECTED_LOG_TOOLS - set(names)
-        if missing:
-            raise RuntimeError("日志服务缺少期望工具: " + ", ".join(sorted(missing)))
-    log_tools.configure(backend, config.tool_uri_whitelist)
+        log_tools.configure(None, config.tool_uri_whitelist)
+        return
+    missing = _EXPECTED_LOG_TOOLS - set(names)
+    if missing:
+        raise RuntimeError("日志服务缺少期望工具: " + ", ".join(sorted(missing)))
+    log_tools.configure(McpLogToolBackend(source), config.tool_uri_whitelist)
 
 
 async def _clear_stale_chat_locks() -> None:

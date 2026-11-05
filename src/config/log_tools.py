@@ -34,6 +34,7 @@ class LogToolTexts:
 
 
 LOG_TOOL_TIMEOUT_SECONDS: float = 8.0  # 单次工具调用超时（秒）；超时即失败，不重试
+PROBE_TIMEOUT_SECONDS: float = 5.0  # 启动期探测整体超时（秒）；超时按服务不可用降级
 MIN_MINUTES: int = 1  # minutes 下界（分钟）
 MAX_MINUTES: int = 360  # minutes 上界（分钟，6 小时）
 DEFAULT_MINUTES: int = 15  # minutes 默认值（模型未指定时回看 15 分钟）
