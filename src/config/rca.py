@@ -55,6 +55,8 @@ class RcaConfig:
     business_min_base_pv: int = (
         _DEFAULT_BUSINESS_MIN_BASE_PV  # 基线最小样本量：昨日同时段低于此值不参与判定
     )
+    # 日志工具可查询接口（精确匹配）；空 = 全部拒绝（引用日志档时启动期 fail-fast）
+    tool_uri_whitelist: tuple[str, ...] = ()
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -150,6 +152,7 @@ def load_rca_config() -> RcaConfig:
         business_min_base_pv=_env_int(
             "RCA_BUSINESS_MIN_BASE_PV", _DEFAULT_BUSINESS_MIN_BASE_PV
         ),
+        tool_uri_whitelist=_env_list("RCA_TOOL_URI_WHITELIST"),
     )
     return _CACHE
 

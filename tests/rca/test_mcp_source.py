@@ -216,3 +216,65 @@ async def test_span_opened_and_closed(monkeypatch):
     assert span.kwargs["input"]["slow_ms"] == 2000
     assert span.end_kwargs["output"]["status"] == "ok"
     assert span.end_kwargs["output"]["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_list_tools_returns_names():
+    """tools/list 返回服务端工具名（启动期契约探测用）。"""
+    calls: list[dict] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        calls.append(body)
+        if body.get("method") == "initialize":
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": 1, "result": {}},
+                headers={"mcp-session-id": "s1"},
+            )
+        if body.get("method") == "notifications/initialized":
+            return httpx.Response(202, text="")
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": {
+                    "tools": [
+                        {"name": "sls_latency_stats"},
+                        {"name": "sls_request_detail"},
+                        {"bad": 1},
+                    ]
+                },
+            },
+        )
+
+    source = McpLogSource(
+        "https://m/mcp", "tok", timeout=5.0, transport=httpx.MockTransport(handle)
+    )
+    names = await source.list_tools()
+    assert names == ["sls_latency_stats", "sls_request_detail"]
+    assert calls[-1]["method"] == "tools/list"
+
+
+@pytest.mark.asyncio
+async def test_list_tools_missing_result_raises_failed():
+    """tools/list 响应缺 result：抛 SourceFailedError（契约不符）。"""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        if body.get("method") == "initialize":
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": 1, "result": {}},
+                headers={"mcp-session-id": "s1"},
+            )
+        if body.get("method") == "notifications/initialized":
+            return httpx.Response(202, text="")
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 3})
+
+    source = McpLogSource(
+        "https://m/mcp", "tok", timeout=5.0, transport=httpx.MockTransport(handle)
+    )
+    with pytest.raises(SourceFailedError):
+        await source.list_tools()
