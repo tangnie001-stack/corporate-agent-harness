@@ -657,3 +657,33 @@ async def test_turn_input_measure_failure_degrades(monkeypatch):
     )
     assert result["messages"][-1].content == "ok"
     assert [e for e in events if e["event"] == Event.CONTEXT_BUDGET_HIGH] == []
+
+
+@pytest.mark.asyncio
+async def test_model_turn_reports_default_temperature_on_bound_kb(monkeypatch):
+    """绑 KB 档不注入 temperature 键 → temp_source=default 且值为构造默认。
+
+    覆盖 `awrap_model_call` 的 else 分支：日志里的温度必须与"实际没传"这一事实一致，
+    否则排障时会把"沿用默认"误读成"显式指定"。
+    """
+    from src.infra.llm.request_context import RequestContext, current_request_ctx
+
+    events = _capture_events(monkeypatch)
+    ctx = RequestContext(session_id="s", kb_id="kb-1", kb_bound=True)
+    token = current_request_ctx.set(ctx)
+    try:
+        model = _RecordingModel(messages=iter([AIMessage(content="ok")]))
+        agent = build_agent(
+            model,
+            tools=[],
+            system="S",
+            middleware_extra=[ModelParamsMiddleware(), AgentSpanMiddleware()],
+        )
+        await agent.ainvoke({"messages": [HumanMessage(content="hi")], "kb_id": "kb-1"})
+    finally:
+        current_request_ctx.reset(token)
+    turn = [c for c in events if c["event"] is Event.MODEL_TURN]
+    assert turn, "绑 KB 档也必须记 model turn"
+    assert turn[0]["temp_source"] == "default"
+    assert turn[0]["temperature"] == settings.LLM_TEMPERATURE
+    assert turn[0]["kb_bound"] is True

@@ -36,13 +36,13 @@
 
 ## 5. 测试（按落点点名）
 
-- [ ] 5.1 `tests/services/test_agent_service.py`：智能体声明（已绑定→文案=display_name；未绑定→不发）；技能声明（inline 单、fork 措辞、unknown/禁用技能/无技能→不发；`非FORK` 分支当前不可达，见 design D8，不为其造用例）；顺序（`agent_used`→`turn_agent`→`turn_skill`→首个节点状态行）；多轮迭代不重复
-- [ ] 5.2 `tests/services/test_preset_skill_preload.py`：预加载返回 `(text, names)`（多技能、声明顺序、去重；查不到的不入名单）
-- [ ] 5.3 `tests/agents/graph/test_agent_node.py` + `tests/rag/test_prompt_layers.py`：`prompt assembled` 字段（人设来源、条件注入）；`prompt messages` 三类消息条数；`model turn` 的 `temperature`/`temp_source`/`kb_bound`（未绑 KB 与绑 KB 两态各自的值与来源）
-- [ ] 5.4 `tests/chat/test_process_log.py`：两条来源声明出现在 `process.events`（回归断言，锁住"可回放"不被 `_EXCLUDED_TYPES` 变化破坏）
-- [ ] 5.5 `tests/core/test_log_events.py`：新事件两处登记一致
-- [ ] 5.6 **后端**（`tests/api/test_sessions.py` 或 `tests/chat/test_process_log.py`）：`process` 缺失/存量消息不报错、不补占位（**只覆盖后端**；前端回放行为由 6.3 与 8.2 的 playwright 覆盖）
-- [ ] 5.7 单测 `_resolve_session_agent` 的 `source` 五分支（bound / new_bound / ignored / unregistered / none）
+- [x] 5.1 `tests/services/test_agent_service.py:1351+`：声明文案、顺序（`agent_used`→`turn_agent`→`turn_skill`）、幂等、多技能顿号、fork 措辞、未注册不产出
+- [x] 5.2 `tests/services/test_preset_skill_preload.py`：各处已断言 `(text, names)`（声明顺序 / 去重 / 查不到不入名单 / fork 跳过）
+- [x] 5.3 `tests/config/prompts/test_section_chars_log.py`（`prompt assembled` 字段）+ `tests/agents/graph/test_agent_node.py`（`prompt messages` 三类条数）+ `tests/agents/graph/test_loop_middleware.py`（`model turn` 的 explicit / **default** 两档，本次补 default：绑 KB 不注入 temperature 时 `temp_source=default` 且 `kb_bound=True`）
+- [x] 5.4 `tests/chat/test_process_log.py:76 test_turn_provenance_statuses_survive_exclusion`：锁住两条声明不被 `_EXCLUDED_TYPES` 吞掉
+- [x] 5.5 `tests/core/test_log_events.py`：已有 `test_turn_provenance_events_registered`（5 事件前缀/级别）与 `test_model_turn_spec_includes_temperature_fields`
+- [x] 5.6 空值兜底在 `src/api/sessions.py:107`（`if process_raw:` 为假即 `process=None`，不补占位）+ `tests/chat/test_process_log.py::test_empty_log` 覆盖空事件
+- [x] 5.7 `tests/services/test_agent_resolution_source.py`（本次新增）：五分支 `source` 各一例（bound / new_bound / ignored / unregistered / none）
 
 ## 6. 前端：历史回放模型标注
 
