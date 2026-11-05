@@ -41,3 +41,13 @@ def test_repo_skills_all_load_and_are_named_ascii():
     assert len(records) == len(list((REPO_ROOT / "skills").glob("*/SKILL.md")))
     for record in records:
         assert record.name.isascii()
+
+
+def test_bot_presets_are_hidden_and_wecom_only():
+    """仓库内的 bot- 预设必须 hidden + wecom。"""
+    presets = {p.name: p for p in AgentPresetLoader(REPO_ROOT / "agents").load_all()}
+
+    for name in ("bot-ops", "bot-dev", "bot-support", "bot-finance"):
+        assert name in presets
+        assert presets[name].hidden is True
+        assert presets[name].channel == "wecom"

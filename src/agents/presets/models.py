@@ -21,6 +21,8 @@ class AgentPreset:
         tools: 该预设作为 fork 执行者时允许的工具名（空 list = 不收窄）
         skills: 预加载 skill 名（会话首轮注入一次）
         max_turns: 作为 fork 执行者时的最大轮次（空 = 用系统默认）
+        hidden: 是否从站点智能体清单隐藏（企微机器人预设专用）
+        channel: 允许使用的渠道（空 = 不限；wecom 仅机器人入口可用）
         source_path: md 文件绝对路径（懒重载 signature 用）
     """
 
@@ -31,4 +33,6 @@ class AgentPreset:
     tools: list[str] = field(default_factory=list)  # fork 执行者工具白名单
     skills: list[str] = field(default_factory=list)  # 预加载 skill 名
     max_turns: int | None = None  # fork 执行者最大轮次，None=系统默认
+    hidden: bool = False  # 是否从站点清单隐藏（来源：frontmatter hidden；范围：清单过滤；bot- 前缀预设必须为 True）
+    channel: str = ""  # 允许渠道（frontmatter channel；生成入口校验）；空=不限
     source_path: Path = field(default_factory=Path)  # md 文件绝对路径

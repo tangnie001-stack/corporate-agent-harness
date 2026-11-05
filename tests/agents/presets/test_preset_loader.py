@@ -96,3 +96,43 @@ def test_illegal_file_stem_is_skipped_with_warning(tmp_path):
         presets = AgentPresetLoader(tmp_path).load_all()
 
     assert presets == []
+
+
+def test_parse_hidden_and_channel(tmp_path):
+    """frontmatter 解析出 hidden 与 channel。"""
+    (tmp_path / "bot-ops.md").write_text(
+        "---\nname: bot-ops\ndisplay_name: 运维\ndescription: 运维值守\n"
+        "hidden: true\nchannel: wecom\n---\n你是运维机器人。\n",
+        encoding="utf-8",
+    )
+
+    preset = AgentPresetLoader(tmp_path).load_all()[0]
+
+    assert preset.hidden is True
+    assert preset.channel == "wecom"
+
+
+def test_bot_prefix_without_declaration_is_skipped(tmp_path, recwarn):
+    """bot- 前缀缺 hidden/channel：跳过该预设（不注册），其它文件不受影响。"""
+    (tmp_path / "bot-ops.md").write_text(
+        "---\nname: bot-ops\ndescription: 运维\n---\n正文。\n", encoding="utf-8"
+    )
+    (tmp_path / "analyst.md").write_text(
+        "---\nname: analyst\ndescription: 分析\n---\n正文。\n", encoding="utf-8"
+    )
+
+    names = [p.name for p in AgentPresetLoader(tmp_path).load_all()]
+
+    assert names == ["analyst"]
+    assert any("bot-ops" in str(w.message) for w in recwarn)
+
+
+def test_channel_rejects_unknown_value(tmp_path, recwarn):
+    """channel 只允许 web / wecom / 空。"""
+    (tmp_path / "analyst.md").write_text(
+        "---\nname: analyst\ndescription: 分析\nchannel: feishu\n---\n正文。\n",
+        encoding="utf-8",
+    )
+
+    assert AgentPresetLoader(tmp_path).load_all() == []
+    assert any("feishu" in str(w.message) for w in recwarn)
