@@ -372,7 +372,7 @@ def _convert_event(
 class AgentResolution:
     """会话智能体解析结果（design D11：来源由解析方给出，调用方不重推分支）。
 
-    effective: 本轮生效的智能体名（空=未绑定、未注册降级或渠道不符）
+    effective: 本轮生效的智能体名（空=未绑定、未注册降级、渠道不符或开关关闭降级）
     source: 解析来源枚举 —— bound（沿用绑定）/ new_bound（首次绑定）/
         ignored（请求与会话绑定不一致 → 生效绑定值；预设声明的渠道与当前渠道
         不符 → 生效为空）/ routing_disabled（企微路由总开关关闭 → 生效为空）/
