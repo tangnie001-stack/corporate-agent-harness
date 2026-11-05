@@ -85,8 +85,17 @@ class ToolTraceCollector:
         self._open: dict[str, Any] = {}  # run_id -> 尚未结束的工具 span
         self._round: Any = None  # 当前 tools 父 span
         self._delegate_span: Any = None  # 委派父 span（仅 scope=delegate）
+        self._tools_used: set[str] = set()  # 本轮实际调用过的工具名（去重）
 
     # ---------- 对外 ----------
+
+    @property
+    def tools_used(self) -> list[str]:
+        """本轮实际调用过的工具名（去重、稳定排序）。
+
+        它写入 trace 元数据而非 span，故观测关闭（enabled=False）时仍记录。
+        """
+        return sorted(name for name in self._tools_used if name)
 
     def open_delegate_span(self, delegate_id: str, skill: str) -> Any | None:
         """开委派父 span（标注 delegate_id / skill），供该次委派的工具 span 挂靠。
@@ -119,7 +128,14 @@ class ToolTraceCollector:
         Args:
             item: `astream_events` 的单项（dict）
         """
-        if not self._enabled or not isinstance(item, dict):
+        if not isinstance(item, dict):
+            return
+        # 工具名先于开关与节点过滤记录：它只进 trace 元数据，不依赖 span 是否产出。
+        if item.get("event") == _EV_TOOL_START:
+            name = str(item.get("name", ""))
+            if name:
+                self._tools_used.add(name)
+        if not self._enabled:
             return
         metadata = item.get("metadata") or {}
         if metadata.get("langgraph_node") != _TOOLS_NODE:

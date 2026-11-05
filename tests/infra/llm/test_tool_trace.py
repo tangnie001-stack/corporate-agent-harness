@@ -292,3 +292,29 @@ def test_delegate_span_failure_does_not_break_conversation():
     )
     assert collector.open_delegate_span(delegate_id="d1", skill="s") is None
     collector.close()  # 不得抛
+
+
+def test_collector_records_tool_names_even_when_disabled():
+    """tools_used 是元数据而非 span：观测关闭时仍记录，且去重、稳定排序。"""
+    collector = ToolTraceCollector(enabled=False, trace_id="t")
+    collector.consume(
+        {
+            "event": "on_tool_start",
+            "name": "sls_query_latency",
+            "run_id": "r1",
+            "data": {},
+        }
+    )
+    collector.consume(
+        {"event": "on_tool_start", "name": "retrieve_kb", "run_id": "r2", "data": {}}
+    )
+    collector.consume(
+        {"event": "on_tool_start", "name": "retrieve_kb", "run_id": "r3", "data": {}}
+    )
+    assert collector.tools_used == ["retrieve_kb", "sls_query_latency"]
+
+
+def test_tools_used_empty_when_no_tool_called():
+    """未发生工具调用时返回空列表（trace metadata 恒有该字段）。"""
+    collector = ToolTraceCollector(enabled=False, trace_id="t")
+    assert collector.tools_used == []

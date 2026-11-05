@@ -202,3 +202,18 @@ def test_build_graph_without_profile_tools_builds_only_default(monkeypatch):
     )
 
     assert set(captured_bundles[0]) == {DEFAULT_CAPABILITY}
+
+
+def test_build_graph_rejects_default_key_in_profile_tools(monkeypatch):
+    """profile_tools 带 default 键会覆盖基础档，与契约相反 → fail-fast。"""
+    monkeypatch.setattr("src.agents.graph.workflow.build_agent", MagicMock())
+
+    with pytest.raises(ValueError, match="default"):
+        build_graph(
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            tools=[_make_tool("retrieve_kb")],
+            profile_tools={DEFAULT_CAPABILITY: []},
+        )

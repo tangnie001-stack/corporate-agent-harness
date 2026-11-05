@@ -142,6 +142,13 @@ def build_graph(
         # 只 extend 基础集：能力档增量工具（日志工具）不得进入 fork 子代理池
         tool_sink.extend(rag_tools)
 
+    # 基础档由 build_graph 自行装配：profile_tools 若带同名键会静默覆盖它，令
+    # bundle.tool_names（prompt 工具段）与 ctx.tool_names（verify 判据）分叉。
+    if profile_tools and DEFAULT_CAPABILITY in profile_tools:
+        raise ValueError(
+            "profile_tools 不得包含 default 档：基础档由 build_graph 自行装配"
+        )
+
     # 每档一份独立装配产物：基础档恒存在，增量档（如日志档）= 基础工具集 + 该档
     # 增量工具。middleware 实例不可跨 agent 复用，故逐档新建
     bundles: dict[str, AgentLoopBundle] = {

@@ -727,23 +727,37 @@ def _write_retrieval_trace(ctx: RequestContext, trace_metadata: dict) -> None:
         logger.warning("[agent] retrieval trace metadata failed err=%s", exc)
 
 
-def _trace_tags(kb_tag: str, channel: str) -> list[str]:
-    """本轮 trace 的标签：基础两项 + 机器人渠道标签。
+def _profile_tag(channel: str, profile: str) -> str:
+    """把 profile 压成低基数标签值（chat / alert / ops / dev / support / finance）。
 
-    机器人发起的轮次（企微问答 / 告警分析）打独立渠道标签，便于在 Langfuse 里
-    与站点主流程分开筛选；站点轮次不加，保持既有标签集不变。
+    Args:
+        channel: 当前渠道（Channel 取值或 CHANNEL_DEFAULT）
+        profile: 会话生效的智能体预设名（空串=系统默认）
+
+    Returns:
+        带 pf: 前缀的标签值；告警轮次恒为 pf:alert
+    """
+    if channel == Channel.ALERT:
+        return "pf:alert"
+    if profile == "":
+        return "pf:chat"
+    if profile.startswith("bot-"):
+        return "pf:" + profile[len("bot-") :]
+    return "pf:" + profile
+
+
+def _trace_tags(kb_tag: str, channel: str, profile: str) -> list[str]:
+    """本轮 trace 的三个低基数维度：知识库绑定、渠道、profile。
 
     Args:
         kb_tag: 知识库标签（kb / no_kb）
         channel: 当前渠道（Channel 取值或 CHANNEL_DEFAULT）
+        profile: 会话生效的智能体预设名（空串=系统默认）
 
     Returns:
         低基数、稳定的标签列表
     """
-    tags = ["chat", kb_tag]
-    if channel in (Channel.WECOM, Channel.ALERT):
-        tags.append(channel)
-    return tags
+    return [kb_tag, channel, _profile_tag(channel, profile)]
 
 
 @observe(name="chat_turn", capture_input=False)
@@ -817,10 +831,11 @@ async def _run_generation(
     else:
         kb_tag = "no_kb"
     channel = current_channel.get() or CHANNEL_DEFAULT
-    tags = _trace_tags(kb_tag, channel)
+    tags = _trace_tags(kb_tag, channel, ctx.agent)
 
     trace_metadata: dict = {
         "agent": ctx.agent,
+        "profile": ctx.agent,
         "agent_display_name": ctx.agent_display_name,
         "kb_id": kb_id,
         "kb_domain": ctx.kb_domain,
@@ -829,6 +844,7 @@ async def _run_generation(
         "loaded_skills": list(ctx.loaded_skills),
         "has_skills": ctx.has_skills,
         "channel": channel,
+        "tools_used": [],
     }
     if direct_skill:
         trace_metadata["direct_skill"] = direct_skill
@@ -933,6 +949,11 @@ async def _run_generation(
             tool_trace.consume(item)
             if abort_signal is not None and abort_signal.is_set():
                 raise asyncio.CancelledError
+
+        # v2 的 metadata 是整体替换，必须带全量；同时回写字典，保证 finally 里
+        # 的检索元数据合并不会丢掉 tools_used
+        trace_metadata["tools_used"] = tool_trace.tools_used
+        langfuse_context.update_current_trace(metadata={**trace_metadata})
     except Exception as e:
         # 失败降级（P2 / D6 / D9）：动作留本调用点；分类与取值来自 retry_policy + 规格表。
         # CancelledError 属 BaseException，不落此分支（取消语义由调用方收尾，不在本变更范围）。
@@ -1487,6 +1508,18 @@ class AgentService:
                     requested=requested,
                 )
                 return AgentResolution(effective=bound, source="ignored")
+            # 预设被删/改名后存量会话仍绑定它：行为不变（绑定生效），但留一条
+            # 可查证据，避免静默降到基础档
+            if (
+                self._preset_registry is not None
+                and self._preset_registry.get(bound) is None
+            ):
+                core_logging.log_event(
+                    Event.AGENT_BIND_IGNORED,
+                    session_id=session_id,
+                    bound=bound,
+                    requested=requested,
+                )
             return AgentResolution(effective=bound, source="bound")
         if not requested:
             return AgentResolution(effective="", source="none")
