@@ -51,6 +51,7 @@ from src.config import TOP_K_RERANK, settings
 from src.config.const import (
     CHANNEL_DEFAULT,
     SKILL_INJECTION_PREFIX,
+    TRACE_CHANNELS,
     Channel,
     SSEInteractionTexts,
 )
@@ -728,14 +729,16 @@ def _write_retrieval_trace(ctx: RequestContext, trace_metadata: dict) -> None:
 
 
 def _profile_tag(channel: str, profile: str) -> str:
-    """把 profile 压成低基数标签值（chat / alert / ops / dev / support / finance）。
+    """把 profile 压成低基数标签值（pf:chat / pf:ops / pf:alert / ...）。
 
     Args:
         channel: 当前渠道（Channel 取值或 CHANNEL_DEFAULT）
         profile: 会话生效的智能体预设名（空串=系统默认）
 
     Returns:
-        带 pf: 前缀的标签值；告警轮次恒为 pf:alert
+        `pf:` + preset 短名：`bot-` 前缀去掉后剩余部分作短名，非 `bot-` 前缀
+        原样透传（如 `pf:financial-analyst`）；空 profile 为 `pf:chat`；告警
+        轮次恒为 `pf:alert`
     """
     if channel == Channel.ALERT:
         return "pf:alert"
@@ -751,13 +754,15 @@ def _trace_tags(kb_tag: str, channel: str, profile: str) -> list[str]:
 
     Args:
         kb_tag: 知识库标签（kb / no_kb）
-        channel: 当前渠道（Channel 取值或 CHANNEL_DEFAULT）
+        channel: 当前渠道（Channel 取值或 CHANNEL_DEFAULT）；不在
+            web / wecom / alert 内的取值（未设置、预留渠道）归一为 none
         profile: 会话生效的智能体预设名（空串=系统默认）
 
     Returns:
         低基数、稳定的标签列表
     """
-    return [kb_tag, channel, _profile_tag(channel, profile)]
+    channel_tag = channel if channel in TRACE_CHANNELS else CHANNEL_DEFAULT
+    return [kb_tag, channel_tag, _profile_tag(channel, profile)]
 
 
 @observe(name="chat_turn", capture_input=False)
@@ -950,10 +955,6 @@ async def _run_generation(
             if abort_signal is not None and abort_signal.is_set():
                 raise asyncio.CancelledError
 
-        # v2 的 metadata 是整体替换，必须带全量；同时回写字典，保证 finally 里
-        # 的检索元数据合并不会丢掉 tools_used
-        trace_metadata["tools_used"] = tool_trace.tools_used
-        langfuse_context.update_current_trace(metadata={**trace_metadata})
     except Exception as e:
         # 失败降级（P2 / D6 / D9）：动作留本调用点；分类与取值来自 retry_policy + 规格表。
         # CancelledError 属 BaseException，不落此分支（取消语义由调用方收尾，不在本变更范围）。
@@ -968,6 +969,13 @@ async def _run_generation(
         idle_task.cancel()  # 生成结束/异常/取消后停止静默守护
         # 取消 / 异常路径同样走到这里 —— 不关的 span 会永远悬空
         tool_trace.close()
+        # v2 的 metadata 是整体替换，必须带全量；写点放 finally 使异常 / 取消
+        # 路径也带上本轮已调用的工具名。观测失败只告警，不得冒泡成生成失败
+        trace_metadata["tools_used"] = tool_trace.tools_used
+        try:
+            langfuse_context.update_current_trace(metadata={**trace_metadata})
+        except Exception as exc:  # noqa: BLE001  # 观测失败不得影响对话
+            logger.warning("[agent] tools_used metadata failed err=%s", exc)
         _write_retrieval_trace(ctx, trace_metadata)
         await asyncio.gather(drain_task, idle_task, return_exceptions=True)
         if partial_holder is not None:
@@ -1515,10 +1523,9 @@ class AgentService:
                 and self._preset_registry.get(bound) is None
             ):
                 core_logging.log_event(
-                    Event.AGENT_BIND_IGNORED,
+                    Event.AGENT_BIND_UNREGISTERED,
                     session_id=session_id,
                     bound=bound,
-                    requested=requested,
                 )
             return AgentResolution(effective=bound, source="bound")
         if not requested:

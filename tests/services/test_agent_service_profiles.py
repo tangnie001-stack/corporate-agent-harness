@@ -4,6 +4,7 @@
 agent 节点的闭包取能力档 → 装配产物映射，直接断言工具面。
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -55,7 +56,7 @@ def test_no_clarify_graph_log_bundle_has_log_tools_without_ask_user():
 
 @pytest.mark.asyncio
 async def test_bound_but_unregistered_preset_logs_and_keeps_bound(monkeypatch):
-    """已绑定但注册表查不到的预设：记 AGENT_BIND_IGNORED，仍返回绑定值。"""
+    """已绑定但注册表查不到的预设：记 AGENT_BIND_UNREGISTERED，仍返回绑定值。"""
     service = AgentService.__new__(AgentService)
     service._chat_manager = AsyncMock()
     service._preset_registry = MagicMock()
@@ -73,6 +74,30 @@ async def test_bound_but_unregistered_preset_logs_and_keeps_bound(monkeypatch):
     assert result.effective == "ghost"
     assert result.source == "bound"
     assert (
-        Event.AGENT_BIND_IGNORED,
-        {"session_id": "s1", "bound": "ghost", "requested": ""},
+        Event.AGENT_BIND_UNREGISTERED,
+        {"session_id": "s1", "bound": "ghost"},
     ) in logged
+    # 绑定仍生效，不得复用语义相反的 ignored 事件
+    assert all(event is not Event.AGENT_BIND_IGNORED for event, _ in logged)
+
+
+@pytest.mark.asyncio
+async def test_registered_bound_preset_logs_nothing(monkeypatch):
+    """已绑定且仍在注册表：不发任何 bind 相关事件（防止每轮刷 warning）。"""
+    service = AgentService.__new__(AgentService)
+    service._chat_manager = AsyncMock()
+    service._preset_registry = MagicMock()
+    service._preset_registry.get.return_value = SimpleNamespace(channel="")
+
+    logged: list[tuple] = []
+
+    def _capture(event, **fields):
+        logged.append((event, fields))
+
+    monkeypatch.setattr(core_logging, "log_event", _capture)
+
+    result = await service._resolve_session_agent("s1", "", bound="ops")
+
+    assert result.effective == "ops"
+    assert result.source == "bound"
+    assert logged == []

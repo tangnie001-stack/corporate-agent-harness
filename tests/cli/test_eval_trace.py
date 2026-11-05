@@ -95,3 +95,26 @@ def test_parse_trace_reads_structured_contexts_from_metadata():
     assert parsed["retrieval_trace"][0]["contexts"][0]["entities"] == {
         "company": "tencent"
     }
+
+
+def test_fetch_recent_does_not_filter_by_tags(monkeypatch):
+    """trace 标签已收敛（无字面量 chat）：只按名称筛选，否则批量回放恒为空。"""
+    from src.cli import eval_trace_io
+
+    seen: dict = {}
+
+    class _FakeClient:
+        def fetch_traces(self, **kwargs):
+            seen.update(kwargs)
+            return SimpleNamespace(data=[SimpleNamespace(id="t1")])
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(eval_trace_io, "_client", lambda host: _FakeClient())
+
+    traces = eval_trace_io.fetch_recent("http://localhost:3000", since=None, limit=5)
+
+    assert [trace.id for trace in traces] == ["t1"]
+    assert seen["name"] == "chat_turn"
+    assert "tags" not in seen

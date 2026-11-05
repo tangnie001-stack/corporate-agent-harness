@@ -210,6 +210,10 @@ class Channel:
 # 渠道未设置时的日志占位（非空、不含 "|" 与 " - "，保证日志行可解析）
 CHANNEL_DEFAULT: str = "none"
 
+# trace 标签允许的渠道值（三类生产入口）；其余取值（未设置 / 预留渠道）
+# 在标签上归一为 CHANNEL_DEFAULT，保证标签值域可枚举
+TRACE_CHANNELS: frozenset[str] = frozenset({Channel.WEB, Channel.WECOM, Channel.ALERT})
+
 
 # execution 自动登记标题模板（task-board）：{skill} 为命中 skill 名；
 # 放 const 集中管理（CLAUDE.md 硬编码集中规则），delegate_task 登记用

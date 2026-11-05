@@ -134,6 +134,12 @@ EVENT_SPECS: dict[str, EventSpec] = {
         "warning",
         ("session_id", "bound", "requested"),
     ),
+    "agent bind unregistered": EventSpec(
+        "agent bind unregistered",
+        "agent",
+        "warning",
+        ("session_id", "bound"),
+    ),
     # [verify] 验证管道（3.2 批）
     "skip": EventSpec("skip", "verify", "info", ("reason",)),
     "completeness check": EventSpec(

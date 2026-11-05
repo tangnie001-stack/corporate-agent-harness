@@ -84,6 +84,7 @@ class Event(str, Enum):
     EVENT_CONVERT_FAILED = "event convert failed"
     SERVICE_READY = "service ready"
     AGENT_BIND_IGNORED = "agent bind ignored"
+    AGENT_BIND_UNREGISTERED = "agent bind unregistered"
 
     # [verify] 验证管道事件（3.2 批迁移登记：态A 引用引导 / 态B 完整性+护栏）
     SKIP = "skip"

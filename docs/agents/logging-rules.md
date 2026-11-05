@@ -65,6 +65,9 @@ channel），业务不手写。channel 取值见 `src/config/const.py` 的 `Chan
 - `agent resolved`（session / info）——每轮生效智能体与解析来源；`source` 取 bound
   （沿用绑定）/ new_bound（首次绑定）/ ignored（请求与会话绑定不一致，已忽略）/
   unregistered（请求名未注册，降级为空）/ none
+- `agent bind unregistered`（agent / warning）——会话绑定的预设已从注册表消失（被删 /
+  改名），绑定仍生效、仅留可查证据，避免静默沿用；`bound` 为失效预设名。与
+  `agent bind ignored` 语义相反：后者是本次绑定**未**生效（被忽略或降级为空）
 - `kb domain fallback`（session / warning）——知识库领域无对应 base 模板，回落保留值
   general；**不阻断**。`kb_id` 为发生回退的知识库、`domain` 为落库的非法值
 - `agent domain mismatch`（session / info）——会话选定了预设同时又绑定了非通用领域的

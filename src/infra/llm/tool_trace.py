@@ -123,7 +123,10 @@ class ToolTraceCollector:
         return self._delegate_span
 
     def consume(self, item: Any) -> None:
-        """事件循环每项调一次；非 tools 节点的事件直接返回。
+        """事件循环每项调一次。
+
+        工具名无条件记录（进 trace 元数据，与开关、节点无关）；span 相关处理
+        只对 `langgraph_node == "tools"` 的事件生效，其余事件直接返回。
 
         Args:
             item: `astream_events` 的单项（dict）

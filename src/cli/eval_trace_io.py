@@ -82,7 +82,8 @@ def fetch_recent(host: str, *, since: datetime | None, limit: int) -> list[Any]:
         trace 摘要列表；每条含 id / timestamp / input / output / tags
     """
     client = _client(host)
-    kwargs: dict = {"limit": limit, "name": "chat_turn", "tags": ["chat"]}
+    # 只按名称筛选：trace 标签已收敛为 kb/渠道/pf:* 三类，不再有字面量 chat
+    kwargs: dict = {"limit": limit, "name": "chat_turn"}
     if since is not None:
         kwargs["from_timestamp"] = since
     try:
