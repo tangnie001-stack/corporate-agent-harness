@@ -22,15 +22,23 @@ class LogToolTexts:
     LATENCY_NODES = "分布 {parts}"  # 节点分布行，parts 由 NODE_PART 拼接
     LATENCY_ERRORS = "5xx {count} 条"  # 上游 5xx 计数
     NODE_PART = "node-{index}: {count} 条"  # 节点分布中的单节点片段
-    NODE_ALIAS = "node-{index}"  # 明细行的节点别名（按耗时排名，不含真实地址）
+    NODE_MORE = "另 {count} 个节点"  # 分布行超出 MAX_NODE_PARTS 时的收尾片段
+    NODE_ALIAS = "node-{index}"  # 明细行的节点别名（按 upstream_addr 首次出现顺序编号）
+    NODE_UNKNOWN = "node-?"  # 明细行缺 upstream_addr 时的占位别名（不臆造节点号）
     MASKED_NODE = "node-***"  # 兜底脱敏：任何漏出的 IPv4[:port] 替换值
-    DETAIL_TRUNCATED = "共命中 {total} 条，仅显示最慢 {shown} 条"  # 明细被裁剪时的末行
+    NO_STATS = "无可用统计"  # 聚合结果整段缺失时的返回值（区别于「各项为 0」）
+    MISSING_VALUE = "N/A"  # 明细行数值字段缺失时的占位（不把「没采到」写成 0）
+    DETAIL_TRUNCATED = (
+        "本次取样 {sampled} 条，仅显示最慢 {shown} 条"  # 明细被裁剪时的末行
+    )
 
 
 LOG_TOOL_TIMEOUT_SECONDS: float = 8.0  # 单次工具调用超时（秒）；超时即失败，不重试
 MIN_MINUTES: int = 1  # minutes 下界（分钟）
 MAX_MINUTES: int = 360  # minutes 上界（分钟，6 小时）
 DEFAULT_MINUTES: int = 15  # minutes 默认值（模型未指定时回看 15 分钟）
-MAX_LIMIT: int = 20  # 明细返回行数上限
+MAX_LIMIT: int = 20  # 明细展示行数上限（工具参数 limit 的上界）
+DETAIL_FETCH_LIMIT: int = 100  # 明细取数上限（服务端返回行数），与展示上限解耦
 MAX_LATENCY_LINES: int = 5  # 聚合摘要行数上限（模型上下文预算）
+MAX_NODE_PARTS: int = 5  # 分布行最多列出的节点数（其余以 NODE_MORE 收尾）
 DEFAULT_SLOW_MS: int = 1000  # 慢请求阈值默认值（毫秒）
