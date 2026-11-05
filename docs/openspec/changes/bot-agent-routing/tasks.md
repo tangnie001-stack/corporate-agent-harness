@@ -47,7 +47,7 @@
 
 ## 6. trace 约定
 
-- [ ] 6.0 **spike**：本地起实例发一条假 webhook，验证 `alert_turn` 根方案是否得到「一条 trace + 根早于首个取数 span」。**回退分支要整组收口**：若 `langfuse_observation_id` 嵌套撞 id，则取消 6.1，同时删除/改写 6.4 的「起点不晚于首个 span」断言、8.2 与 8.3 的 `alert_turn` 验收、llm-tracing delta 的「告警轮根开在告警入口」条款、design Risks 同名条目，以及 **proposal 的 BREAKING 句**（trace 名 `chat_turn`→`alert_turn`）——只取消 6.1 会让 8.2/8.3 验收与 BREAKING 声明双双失真
+- [ ] 6.0 **spike**：本地起实例发一条假 webhook，验证 `alert_turn` 根方案是否得到「一条 trace + 根早于首个取数 span」。**回退分支要整组收口**：若 `langfuse_observation_id` 嵌套撞 id，则取消 6.1，同时删除/改写 6.4 的「起点不晚于首个 span」断言、8.2 与 8.3 的 `alert_turn` 验收、llm-tracing delta 的「告警轮根开在告警入口」条款、design Risks 同名条目，以及 proposal 的 BREAKING 句与「What Changes」里的 `alert_turn` 条目（trace 名 `chat_turn`→`alert_turn`）——只取消 6.1 会让 8.2/8.3 验收与 BREAKING 声明双双失真
 - [ ] 6.1 `_analyze_turn` 加 `@observe(name="alert_turn", capture_input=False)`，传 `langfuse_observation_id=trace_id`（依赖 6.0 通过）
 - [ ] 6.2 标签改为三类：`kb|no_kb`、渠道、`pf:<profile>`；移除 `chat` 写入
 - [ ] 6.3 metadata 增加 `profile`、`tools_used`；告警轮增加 `rca_tier` / `rca_reason` / `rca_evidence` / `rca_elapsed_ms`

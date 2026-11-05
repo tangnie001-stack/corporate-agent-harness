@@ -57,8 +57,8 @@
 
 #### Scenario: 未知 profile 降级
 
-- **WHEN** 配置引用了未装配的 profile
-- **THEN** 该轮降级到 `chat` 并记 warning，不阻断该轮
+- **WHEN** 配置引用了未注册的 profile
+- **THEN** 该轮降级到基础档并使用通用人设，记 warning，不阻断该轮
 
 ### Requirement: 渠道专属 Agent 对站点不可见且不可调用
 
