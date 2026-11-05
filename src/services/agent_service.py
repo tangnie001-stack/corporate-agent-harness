@@ -834,7 +834,14 @@ async def _run_generation(
         metadata=trace_metadata,
     )
     initial_state = AgentState.make_initial_state(
-        session_id, kb_id, query, history, deep_thinking, direct_skill, summary
+        session_id,
+        kb_id,
+        query,
+        history,
+        deep_thinking,
+        direct_skill,
+        summary,
+        profile=ctx.agent,
     )
     capture = _StreamCapture()
     tool_trace = ToolTraceCollector(

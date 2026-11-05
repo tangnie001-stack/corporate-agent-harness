@@ -79,3 +79,12 @@ def test_classify_fields_removed():
     }
     names = {f.name for f in fields(AgentState)}
     assert removed & names == set()
+
+
+def test_initial_state_carries_profile():
+    """profile 经 make_initial_state 贯穿到图状态；缺省为空串（通用人设）。"""
+    assert (
+        AgentState.make_initial_state("s", "", "hi", [], profile="bot-ops").profile
+        == "bot-ops"
+    )
+    assert AgentState.make_initial_state("s", "", "hi", []).profile == ""
