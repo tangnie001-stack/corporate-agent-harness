@@ -1,7 +1,8 @@
 """企业微信多机器人配置：从 WECOM_BOTS（JSON 数组）解析并校验每台机器人。
 
 独立于 settings.py（后者已接近 400 行红线）。解析与校验合并在
-load_wecom_bots()，由 wecom_service.start() 调用（受 WECOM_BOT_ENABLED 门控）。
+load_wecom_bots()，由 wecom_service.start() 调用（受 WECOM_BOT_ENABLED 门控）；
+profile 的存在性由 src.main 的启动期校验（_validate_wecom_profiles）负责。
 
 错误信息只定位到下标或 key，绝不回显 WECOM_BOTS 原值或任何 secret——
 三台凭证同处一个 env 变量，回显原值会批量泄露。
@@ -11,6 +12,8 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+
+from src.config.const import CAPABILITY_NAME_PATTERN
 
 # 保留 key：回调 legacy 驱动占用，长连接侧不得使用
 CALLBACK_BOT_KEY: str = "callback"
@@ -29,6 +32,7 @@ class WeComBotConfig:
         repr=False
     )  # 长连接专用 Secret；repr=False 防止插入日志/异常回溯时裸泄
     name: str = ""  # 人类可读名称（如「阿里云运维机器人」）；仅用于日志辨识，不参与路由
+    profile: str = ""  # Agent 预设名；空=通用人设；存在性由启动期校验
 
 
 def load_wecom_bots() -> list[WeComBotConfig]:
@@ -57,6 +61,9 @@ def load_wecom_bots() -> list[WeComBotConfig]:
         bot_id = item.get("bot_id")
         secret = item.get("secret")
         name = item.get("name", "")
+        profile = item.get("profile", "")
+        if profile is None:
+            profile = ""
         if not isinstance(key, str) or key == "":
             raise ValueError(f"WECOM_BOTS[{index}].key 为空")
         if not isinstance(bot_id, str) or bot_id == "":
@@ -65,6 +72,10 @@ def load_wecom_bots() -> list[WeComBotConfig]:
             raise ValueError(f"WECOM_BOTS[{index}].secret 为空")
         if not isinstance(name, str):
             raise ValueError(f"WECOM_BOTS[{index}].name 必须是字符串")  # noqa: TRY004  # 校验外部配置值，统一抛 ValueError
+        if not isinstance(profile, str):
+            raise ValueError(f"WECOM_BOTS[{index}].profile 必须是字符串")  # noqa: TRY004  # 校验外部配置值，统一抛 ValueError
+        if profile != "" and CAPABILITY_NAME_PATTERN.fullmatch(profile) is None:
+            raise ValueError(f"WECOM_BOTS[{index}].profile 非法（仅允许 ASCII slug）")
         if _KEY_PATTERN.fullmatch(key) is None:
             raise ValueError(f"WECOM_BOTS[{index}].key 只允许 [a-z0-9_-]")
         if key == CALLBACK_BOT_KEY:
@@ -75,5 +86,28 @@ def load_wecom_bots() -> list[WeComBotConfig]:
             raise ValueError(f"WECOM_BOTS[{index}].bot_id 重复")
         seen_keys.add(key)
         seen_ids.add(bot_id)
-        bots.append(WeComBotConfig(key=key, bot_id=bot_id, secret=secret, name=name))
+        bots.append(
+            WeComBotConfig(
+                key=key, bot_id=bot_id, secret=secret, name=name, profile=profile
+            )
+        )
     return bots
+
+
+def validate_bot_profiles(bots: list[WeComBotConfig], known: set[str]) -> None:
+    """校验每台机器人的 profile 指向已注册预设。
+
+    Args:
+        bots: 已解析的机器人配置
+        known: 预设目录中可加载的预设名集合
+
+    Raises:
+        ValueError: 某台机器人的 profile 不在 known 中；错误只含 key，不含 secret
+    """
+    for bot in bots:
+        if bot.profile == "":
+            continue
+        if bot.profile not in known:
+            raise ValueError(
+                f"WECOM_BOTS key={bot.key} 的 profile 未注册: {bot.profile}"
+            )

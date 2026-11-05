@@ -163,3 +163,12 @@ class AgentPresetLoader:
             return ""
         paragraph = body.split("\n\n")[0].replace("\n", " ").strip()
         return paragraph[:200]
+
+
+def default_agents_root() -> Path:
+    """项目根下的 agents 目录（智能体预设内容库的唯一入口）。
+
+    Returns:
+        `<项目根>/agents`；目录不存在时由调用方自行决定降级方式
+    """
+    return Path(__file__).resolve().parents[3] / "agents"

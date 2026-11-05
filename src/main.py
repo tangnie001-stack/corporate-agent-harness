@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from src.agents.presets.loader import AgentPresetLoader, default_agents_root
 from src.api import (
     alerts_router,
     chat_router,
@@ -24,10 +25,12 @@ from src.api import auth as auth_routes
 from src.api import capabilities as capabilities_routes
 from src.api import ragas_generate as ragas_generate_routes
 from src.api import wecom as wecom_routes
+from src.config import settings
 from src.config.alert import load_alert_config
 from src.config.prompts import validation
 from src.config.response_codes import Code
 from src.config.settings import validate_timeout_nesting
+from src.config.wecom_bots import load_wecom_bots, validate_bot_profiles
 from src.core import logging as core_logging
 from src.core.log_events import Event
 from src.core.logging import setup_logging
@@ -63,6 +66,10 @@ async def lifespan(app: FastAPI):
     `ValueError`，进程启动失败（fail-fast），不在请求期降级成 500。未配置 token 属
     合法状态（不阻断启动）。
 
+    启动阶段校验企微机器人 profile（`_validate_wecom_profiles`，受 `WECOM_BOT_ENABLED`
+    门控）：agents/ 缺失时跳过并记 warning；profile 指向未注册预设即抛 `ValueError`，
+    进程启动失败，不留到首条消息才在路由处报错。
+
     启动阶段清空残留的 chat_lock:* 键：重启后进程内无任何生成任务，
     残留锁（来自被杀进程，TTL 兜底 180s）会阻塞新请求的并发锁获取。
 
@@ -90,12 +97,33 @@ async def lifespan(app: FastAPI):
     load_alert_config()
     configure_tracing()
     await _ensure_model_pricing()
+    # 企微 profile 存在性校验必须在连接建立前：配错时直接启动失败，
+    # 而不是等到第一条消息进来才在路由处报错。
+    if settings.WECOM_BOT_ENABLED:
+        _validate_wecom_profiles()
     await wecom_service.start()
     yield
     core_logging.log_event(Event.APP_STOPPING)
     await wecom_service.stop()
     # 关停前上报缓冲事件，否则最后一批 trace 随进程消失
     flush_tracing()
+
+
+def _validate_wecom_profiles() -> None:
+    """启动期校验 WECOM_BOTS 的 profile 指向已注册预设。
+
+    agents/ 缺失时跳过并记 warning：此时站点预设同样不可用，属既有降级路径，
+    不因此阻断启动。错误信息只含机器人 key，不含 secret。
+
+    Raises:
+        ValueError: WECOM_BOTS 非法，或某台机器人的 profile 未注册
+    """
+    root = default_agents_root()
+    if not root.exists():
+        logger.warning("[wecom] agents dir missing, skip profile validation")
+        return
+    known = {preset.name for preset in AgentPresetLoader(root).load_all()}
+    validate_bot_profiles(load_wecom_bots(), known)
 
 
 async def _clear_stale_chat_locks() -> None:
