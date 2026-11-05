@@ -2,7 +2,7 @@
 
 - [x] 0.1 `alert-triage` **已合并**（`558919ad`）。按其真实代码核对后，复用范围为 `models` / `collector` / `loader` / `sources/base` 三态 / `grafana` 解析辅助；`LogSource` 协议、`judge()`、`render_card` 均为延迟专用，不复用（见 design D2）
 - [ ] 0.2 **等 `bot-agent-routing` 合并**（实施中，`feat/bot-agent-routing`）：本变更依赖其 `alert_turn` trace 名、`profile` 路由与 `rca_*` metadata；日志能力同样只在该 change 的 ops 档开放
-- [ ] 0.3 确认 `turn-provenance-observability` 组 1+4 的落地状态；未落地时按 D11 走"字段不可用"降级，不阻塞开工
+- [ ] 0.3 确认 `agent-loop-log-facts`（`turn-provenance-observability` 的日志先行子集）是否合并；未落地时按 D11 走"字段不可用"降级，不阻塞开工
 - [ ] 0.4 建隔离 worktree（`git worktree add`），base 取三者合并后的 `dev-wsl`
 
 ## 1. 迁移与配置
