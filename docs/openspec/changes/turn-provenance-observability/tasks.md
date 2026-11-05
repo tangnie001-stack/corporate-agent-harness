@@ -60,5 +60,5 @@
 ## 8. 门禁与实机验证
 
 - [x] 8.1 `pytest tests/ -q` **2292 passed / 2 skipped**、`ruff check .` 无错（engine 存量 UP047 已行内登记）、`pyright src/` **0 error**、`check_docs` **0 error**（2026-11-06 实测）
-- [ ] 8.2 `playwright-cli` 实机：选「财务专家」发一轮（或 inline `/xxx`）→ 过程区最前出现两条来源声明；**刷新/切会话后**两条声明与**模型标注**均可回放；fork 轮显示"使用技能…（子代理执行）"；**未知 stage 容忍**（两条声明作为普通状态行正常渲染、不改变正文/旁白判定）、顶栏仍显示生效智能体（取自 `agent_used`）；控制台无新增 error
+- [x] 8.2 `playwright-cli` 实机（2026-11-06，本地 `www.tangnie.cn` → 127.0.0.1）：选「财务专家」发一轮 → 过程区首行 `当前使用了 财务专家`；**刷新后**该声明与 `由 qwen3.7-flash 回答` 均可回放；fork 轮 `/financial-statement-analyzer` → `使用技能：/financial-statement-analyzer（子代理执行）` 且紧随 agent 声明；未知 stage 作为普通状态行渲染、正文与引用未受影响；顶栏 `智能体:财务专家`；控制台 **0 error**
 - [x] 8.3 实测两条 trace：`trace_c7705609`（绑 `finance-expert`）读出 `agent resolved source=new_bound persona_applied=true` / `prompt assembled persona_source=preset kb_bound=true` / `prompt messages system_msgs=1` / `model turn temperature=0.1 temp_source=default kb_bound=true`；`trace_cd3acd8a`（inline 命令）读出 `skill dispatch kind=known context=fork`。**技能注入**未见属预期：三个业务技能均为 fork（不注入主 agent），注入路径由 `tests/services/test_preset_skill_preload.py` 覆盖
