@@ -16,7 +16,10 @@
 
 ## 3. 企微路由接入
 
-- [ ] 3.1 `WECOM_BOTS` 条目解析增加可选 `profile`（缺省为空 = 通用人设），校验值必须是**已注册预设名**（不是"已装配的硬编码清单"：`bot-support`/`bot-finance` 也在注册表内），否则启动失败并指出 `key`
+- [ ] 3.1 `WECOM_BOTS` 条目解析增加可选 `profile`（缺省为空 = 通用人设），校验分两段：
+  - **解析期（`load_wecom_bots`，结构）**：非空字符串、字符集合法
+  - **lifespan 启动企微驱动前（存在性）**：预设注册表此时**尚未构建**（在 `AgentService.__init__`，且 skills 为空则不建；AppService 首次请求才创建），因此用 `AgentPresetLoader(agents_dir).load_all()` **直载取名集合**做校验（与运行时注册表同源、不依赖 skills 门控），把该判定注入 `wecom_service.start()`；缺失 → `RuntimeError` 指出 `key`
+  - `agents/` 目录缺失时跳过存在性校验并记 warning（此时站点预设同样不可用，属既有降级路径）
 - [ ] 3.2 handler 在确定 `bot_key` 处解析 `profile`，并作为 `start_turn(agent=...)` 传入；日志增加 `profile=` 维度
 - [ ] 3.3 新增开关 `WECOM_AGENT_ROUTING_ENABLED`（默认 true）。关闭时在 `_resolve_session_agent` 增加 override，**两个条件同时满足才生效**：开关关闭 **且** `current_channel.get() == Channel.WECOM`（站点 `Channel.WEB` / 告警 `Channel.ALERT` 路径不受影响）。override 语义 = 把 `bound`/`requested` 都当空、返回 `effective=""`（通用人设），**不调用** `bind_session_agent_async`（不写库、回滚可逆）
 - [ ] 3.4 补测试：有 profile 时传入 agent；无 profile 时回落通用人设；开关关闭 + 企微通道回落通用人设；**开关关闭时站点已绑定预设的会话仍沿用绑定**；**override 后 `sessions.agent` 未被改写**；未知 profile 启动失败
@@ -44,7 +47,7 @@
 
 ## 6. trace 约定
 
-- [ ] 6.0 **spike**：本地起实例发一条假 webhook，验证 `alert_turn` 根方案是否得到「一条 trace + 根早于首个取数 span」。**回退分支要整组收口**：若 `langfuse_observation_id` 嵌套撞 id，则取消 6.1，同时删除/改写 6.4 的「起点不晚于首个 span」断言、8.2 与 8.3 的 `alert_turn` 验收、llm-tracing delta 的「告警轮根开在告警入口」条款与 design Risks 同名条目——只取消 6.1 会让 8.2/8.3 验收必挂
+- [ ] 6.0 **spike**：本地起实例发一条假 webhook，验证 `alert_turn` 根方案是否得到「一条 trace + 根早于首个取数 span」。**回退分支要整组收口**：若 `langfuse_observation_id` 嵌套撞 id，则取消 6.1，同时删除/改写 6.4 的「起点不晚于首个 span」断言、8.2 与 8.3 的 `alert_turn` 验收、llm-tracing delta 的「告警轮根开在告警入口」条款、design Risks 同名条目，以及 **proposal 的 BREAKING 句**（trace 名 `chat_turn`→`alert_turn`）——只取消 6.1 会让 8.2/8.3 验收与 BREAKING 声明双双失真
 - [ ] 6.1 `_analyze_turn` 加 `@observe(name="alert_turn", capture_input=False)`，传 `langfuse_observation_id=trace_id`（依赖 6.0 通过）
 - [ ] 6.2 标签改为三类：`kb|no_kb`、渠道、`pf:<profile>`；移除 `chat` 写入
 - [ ] 6.3 metadata 增加 `profile`、`tools_used`；告警轮增加 `rca_tier` / `rca_reason` / `rca_evidence` / `rca_elapsed_ms`

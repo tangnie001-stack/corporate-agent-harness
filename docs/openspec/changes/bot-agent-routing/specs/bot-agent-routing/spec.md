@@ -32,7 +32,7 @@
 
 ### Requirement: profile 映射到预装配的能力档实例
 
-系统 SHALL 在启动期为每个**能力档**装配一个 Agent 实例（工具面 + 轮次预算），并在轮次开始时按 profile 查表选中档位。能力档 SHALL 至少区分「基础」与「含只读日志工具」两档；未在注册表中的 profile 引用的档位 SHALL NOT 被装配。
+系统 SHALL 在启动期为每个**能力档**装配一个 Agent 实例（工具面 + 轮次预算），并在轮次开始时按 profile 查表选中档位。能力档 SHALL 至少区分「基础」与「含只读日志工具」两档；装配的档位集合 SHALL 固定为该最小集合，SHALL NOT 随 profile 数量增长而增加实例。
 
 人设 SHALL 由 profile 对应的预设正文在运行期施加，SHALL NOT 固化在 Agent 实例中——因此同档的不同预设共用同一实例。
 
