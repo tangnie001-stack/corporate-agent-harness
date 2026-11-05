@@ -2,7 +2,7 @@
 
 ### Requirement: 多机器人配置以注册表声明并在启动期校验
 
-系统 SHALL 从环境变量 `WECOM_BOTS`（JSON 数组，**必须写在一行**）读取多台智能机器人配置，每台包含 `key`（业务线标识）、`bot_id`、`secret`，以及可选的 `name`（人类可读名称，仅用于日志）与 `profile`（该机器人使用的 Agent profile，缺省 `chat`）。系统 SHALL 在启动期（`WECOM_BOT_ENABLED=true` 时）解析并校验：值为单行且 JSON 合法、每台 `key`/`bot_id`/`secret` 非空、`key` 匹配 `^[a-z0-9_-]+$`、`key` 唯一、`bot_id` 唯一、`key` 不为保留字 `callback`、`name` 若存在必须为字符串、`profile` 若存在必须为已装配 profile；任一不满足 SHALL 立即失败（fail-fast）。当 `WECOM_BOT_ENABLED=false` 时，系统 SHALL 不解析该配置、SHALL NOT 因该配置非法而启动失败。
+系统 SHALL 从环境变量 `WECOM_BOTS`（JSON 数组，**必须写在一行**）读取多台智能机器人配置，每台包含 `key`（业务线标识）、`bot_id`、`secret`，以及可选的 `name`（人类可读名称，仅用于日志）与 `profile`（该机器人使用的 Agent profile，缺省为空 = 通用人设）。系统 SHALL 在启动期（`WECOM_BOT_ENABLED=true` 时）解析并校验：值为单行且 JSON 合法、每台 `key`/`bot_id`/`secret` 非空、`key` 匹配 `^[a-z0-9_-]+$`、`key` 唯一、`bot_id` 唯一、`key` 不为保留字 `callback`、`name` 若存在必须为字符串、`profile` 若存在必须为**已注册预设名**（不要求该预设具备专属工具差异）；任一不满足 SHALL 立即失败（fail-fast）。当 `WECOM_BOT_ENABLED=false` 时，系统 SHALL 不解析该配置、SHALL NOT 因该配置非法而启动失败。
 
 校验失败时，错误信息 SHALL 只标识到**下标或 `key`**（如 `WECOM_BOTS[1].secret 为空`），SHALL NOT 包含 `WECOM_BOTS` 的原值或任何 `secret` 内容。
 
@@ -18,13 +18,18 @@
 
 #### Scenario: profile 引用不存在
 
-- **WHEN** 某台机器人声明了未装配的 `profile`
+- **WHEN** 某台机器人声明了未注册的 `profile`
 - **THEN** 启动失败并指出该机器人的 `key`
+
+#### Scenario: profile 只提供人设
+
+- **WHEN** 某台机器人声明的 profile 在注册表中但不具备专属工具差异
+- **THEN** 启动成功，该机器人以基础能力档运行，人设取自该预设
 
 #### Scenario: 未声明 profile
 
 - **WHEN** 某台机器人未声明 `profile`
-- **THEN** 该机器人以 `chat` 运行，不报错
+- **THEN** 该机器人以通用人设运行，不报错
 
 #### Scenario: 错误信息不泄露凭证
 
