@@ -26,8 +26,6 @@
 
 ## 4. 补全日志
 
-> **2026-11-06：本组已由 `agent-loop-log-facts` 先行承接**（连同 1.3 / 1.4 的事件登记与 2.5 的结构化改造）。该变更合并后，本组 4.1–4.7 与 1.3 / 1.4 / 2.5 应删除，避免同一事件二次登记、同一函数改两遍。
-
 - [ ] 4.1 `agent_node`：在温度分档处（`:158-167`）提取**单一真源**的局部 `temperature` 变量（未绑 KB 用 `NON_KB_MAIN_TEMPERATURE`、绑 KB 沿用构造默认 `LLM_TEMPERATURE`），同一变量既传给 LLM 调用也进日志；`model turn`（`:194-203`）追加 `temperature`、`temp_source(explicit|default)`、`kb_bound`
 - [ ] 4.2 新增 `agent resolved`：消费 2.5 的结构化结果，记 `requested/bound/effective/source/persona_applied`；**请求值与绑定值都为空时用调用点守卫「不记」**（避免每轮噪声；`log_event` 级别由 `EventSpec` 固定、调用点不能逐次降级，故不用 debug，见 design D11）
 - [ ] 4.3 新增 `prompt assembled`：落点 **`build_system_prompt`（`src/rag/prompt.py:24`）函数内**——先为该模块补模块级 logger（现**未 import logging**）；字段 `persona_source(preset|base)`、`kb_bound`、`has_skills`、`discipline_injected`、`delegate_injected`、`system_msgs`（注入/历史条数此处不可知，见 4.4）
