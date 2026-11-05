@@ -30,7 +30,7 @@ session_factory = async_sessionmaker(
 )
 
 
-async def run_and_dispose(coro: Awaitable[_T]) -> _T:
+async def run_and_dispose(coro: Awaitable[_T]) -> _T:  # noqa: UP047 — 存量泛型写法，改 PEP 695 需同步 3.11 兼容口径
     """在同一事件循环里 await coro，并在返回前释放连接池。
 
     asyncpg 的连接绑定创建它的事件循环；同一进程内第二次 asyncio.run 复用同一池
