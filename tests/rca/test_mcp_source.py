@@ -278,3 +278,34 @@ async def test_list_tools_missing_result_raises_failed():
     )
     with pytest.raises(SourceFailedError):
         await source.list_tools()
+
+
+@pytest.mark.asyncio
+async def test_list_tools_rpc_error_keeps_code():
+    """tools/list 返回 JSON-RPC error：抛 SourceFailedError 且保留错误码。"""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        if body.get("method") == "initialize":
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": 1, "result": {}},
+                headers={"mcp-session-id": "s1"},
+            )
+        if body.get("method") == "notifications/initialized":
+            return httpx.Response(202, text="")
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": 3,
+                "error": {"code": -32601, "message": "method not found"},
+            },
+        )
+
+    source = McpLogSource(
+        "https://m/mcp", "tok", timeout=5.0, transport=httpx.MockTransport(handle)
+    )
+    with pytest.raises(SourceFailedError) as excinfo:
+        await source.list_tools()
+    assert "rpc_error:-32601" in str(excinfo.value)

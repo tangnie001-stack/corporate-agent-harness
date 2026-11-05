@@ -325,6 +325,9 @@ class McpLogSource:
         )
         result = message.get("result")
         if not isinstance(result, dict):
+            error = message.get("error")
+            if isinstance(error, dict):
+                raise SourceFailedError("rpc_error:" + str(error.get("code")))
             raise SourceFailedError("missing_result")
         tools = result.get("tools")
         if not isinstance(tools, list):

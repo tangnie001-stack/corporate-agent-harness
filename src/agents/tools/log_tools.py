@@ -4,8 +4,8 @@
 统一返回「查询失败」，**不得**表述为「未发现异常」。工具内部不重试，单次调用
 超时即失败（重试权交给模型换查询）。
 
-工具只做参数校验、白名单校验、时间窗换算超时与降级文案；取数细节、输出裁剪与
-脱敏由后端负责。
+工具只做参数校验、白名单校验、超时与降级文案；minutes 原样透传给后端，时间窗换算
+（按服务端时钟换成半开区间）在 log_backend；取数细节、输出裁剪与脱敏同样由后端负责。
 """
 
 from __future__ import annotations
@@ -95,12 +95,66 @@ def _uri_error(uri: str) -> str | None:
 
 
 def _failure_text(exc: BaseException, minutes: int) -> str:
-    """把异常映射为失败文案（空结果 ≠ 失败）。"""
+    """把异常映射为失败文案（空结果 ≠ 失败）。
+
+    Args:
+        exc: 后端抛出的异常
+        minutes: 回看分钟数，用于空结果文案
+
+    Returns:
+        「近 N 分钟无请求记录」（空结果）/「查询失败：超时」/「查询失败：<原因或异常类型>」
+    """
     if isinstance(exc, SourceEmptyError):
         return LogToolTexts.NO_ROWS.format(minutes=minutes)
     if isinstance(exc, TimeoutError):
         return LogToolTexts.TIMEOUT
-    return LogToolTexts.FAILED_PREFIX + str(exc)
+    if isinstance(exc, SourceFailedError):
+        return LogToolTexts.FAILED_PREFIX + str(exc)
+    detail = str(exc)
+    if detail == "":
+        return LogToolTexts.FAILED_PREFIX + type(exc).__name__
+    return LogToolTexts.FAILED_PREFIX + type(exc).__name__ + ": " + detail
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """把异常压成日志用的单值 reason（空串异常退回类型名，保证字段始终有值）。"""
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, SourceEmptyError):
+        return "empty"
+    detail = str(exc)
+    if detail == "":
+        return type(exc).__name__
+    return detail
+
+
+def _log_failure(
+    tool: str, uri: str, minutes: int, started: float, exc: BaseException
+) -> str:
+    """失败/超时路径写审计日志并返回失败文案。
+
+    失败也必须留痕：排障时靠这条日志区分「模型没调用工具」与「工具调用失败」。
+
+    Args:
+        tool: 工具名
+        uri: 目标接口
+        minutes: 回看分钟数
+        started: 调用开始时刻（time.monotonic）
+        exc: 捕获到的异常
+
+    Returns:
+        供模型消费的失败文案（见 _failure_text）
+    """
+    logger.warning(
+        "[tool] mcp call tool={} uri={} minutes={} elapsed_ms={} status=failed reason={} session={}",
+        encode_value(tool),
+        encode_value(uri),
+        minutes,
+        int((time.monotonic() - started) * 1000),
+        encode_value(_failure_reason(exc)),
+        encode_value(_session_id()),
+    )
+    return _failure_text(exc, minutes)
 
 
 @tool("sls_query_latency")
@@ -118,6 +172,10 @@ async def sls_query_latency(
 
     Returns:
         不超过 5 行的文本摘要；参数/白名单/服务不可用时返回错误文案
+
+    Note:
+        查询失败（含超时、服务不可用）只说明这次没拿到数据，不得据此推断服务正常，
+        也不得表述为"未发现异常"或"没有错误"。
     """
     error = _minutes_error(minutes)
     if error is not None:
@@ -132,15 +190,23 @@ async def sls_query_latency(
         text = await asyncio.wait_for(
             _backend.latency(uri, minutes, slow_ms), timeout=LOG_TOOL_TIMEOUT_SECONDS
         )
+    except asyncio.CancelledError:
+        raise
     except (TimeoutError, SourceFailedError, SourceEmptyError) as exc:
-        return _failure_text(exc, minutes)
+        return _log_failure("sls_query_latency", uri, minutes, started, exc)
+    except Exception as exc:  # noqa: BLE001  兜底：任何异常都转成模型可见文案
+        return _log_failure("sls_query_latency", uri, minutes, started, exc)
+    rows = len(text.splitlines())
     logger.info(
-        "[tool] mcp call tool=sls_query_latency uri={} minutes={} elapsed_ms={} session={}",
+        "[tool] mcp call tool=sls_query_latency uri={} minutes={} elapsed_ms={} rows={} session={}",
         encode_value(uri),
         minutes,
         int((time.monotonic() - started) * 1000),
+        rows,
         encode_value(_session_id()),
     )
+    if text.strip() == "":
+        return LogToolTexts.NO_ROWS.format(minutes=minutes)
     return text
 
 
@@ -159,6 +225,10 @@ async def sls_query_requests(
 
     Returns:
         每行"时间 节点 耗时 状态 上游状态 方法"；超上限时按耗时倒序截断并标注总数
+
+    Note:
+        查询失败（含超时、服务不可用）只说明这次没拿到数据，不得据此推断服务正常，
+        也不得表述为"未发现异常"或"没有错误"。
     """
     error = _minutes_error(minutes)
     if error is not None:
@@ -176,16 +246,23 @@ async def sls_query_requests(
         text = await asyncio.wait_for(
             _backend.detail(uri, minutes, limit), timeout=LOG_TOOL_TIMEOUT_SECONDS
         )
+    except asyncio.CancelledError:
+        raise
     except (TimeoutError, SourceFailedError, SourceEmptyError) as exc:
-        return _failure_text(exc, minutes)
+        return _log_failure("sls_query_requests", uri, minutes, started, exc)
+    except Exception as exc:  # noqa: BLE001  兜底：任何异常都转成模型可见文案
+        return _log_failure("sls_query_requests", uri, minutes, started, exc)
+    rows = len(text.splitlines())
     logger.info(
         "[tool] mcp call tool=sls_query_requests uri={} minutes={} elapsed_ms={} rows={} session={}",
         encode_value(uri),
         minutes,
         int((time.monotonic() - started) * 1000),
-        len(text.splitlines()),
+        rows,
         encode_value(_session_id()),
     )
+    if text.strip() == "":
+        return LogToolTexts.NO_ROWS.format(minutes=minutes)
     return text
 
 

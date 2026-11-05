@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import contextlib
 
 import pytest
 from loguru import logger
@@ -68,6 +69,17 @@ def _reset_module_state():
 
 def _tools() -> dict:
     return {t.name: t for t in make_log_tools()}
+
+
+@contextlib.contextmanager
+def _captured_lines():
+    """临时接管 loguru 输出，收集格式化后的日志行（用例结束即移除 sink）。"""
+    lines: list[str] = []
+    sink_id = logger.add(lambda m: lines.append(str(m)), format="{message}")
+    try:
+        yield lines
+    finally:
+        logger.remove(sink_id)
 
 
 @pytest.mark.asyncio
@@ -203,6 +215,7 @@ async def test_success_log_line_fields():
     assert "uri=/api/x" in line
     assert "minutes=15" in line
     assert "elapsed_ms=" in line
+    assert "rows=1" in line
     assert "session=sess-42" in line
 
 
@@ -272,3 +285,81 @@ def test_rca_config_whitelist_defaults_empty(monkeypatch):
     finally:
         reset_for_test()
     assert cfg.tool_uri_whitelist == ()
+
+
+def test_tool_descriptions_warn_failure_is_not_no_anomaly():
+    """模型可见描述必须写明：查询失败只说明没拿到数据，不得表述为未发现异常。"""
+    descriptions = {t.name: t.description for t in make_log_tools()}
+    for name in ("sls_query_latency", "sls_query_requests"):
+        assert "查询失败" in descriptions[name]
+        assert "未发现异常" in descriptions[name]
+
+
+@pytest.mark.asyncio
+async def test_failure_path_logs_status_failed():
+    """后端失败：返回文案的同时必须落一条 status=failed 审计日志。"""
+    backend = _FakeBackend(detail_result=SourceFailedError("rpc_error:-1"))
+    configure(backend, ("/api/x",))
+    with _captured_lines() as lines:
+        out = await _tools()["sls_query_requests"].ainvoke(
+            {"uri": "/api/x", "minutes": 15}
+        )
+    assert out.startswith("查询失败")
+    call_lines = [line for line in lines if "[tool] mcp call" in line]
+    assert len(call_lines) == 1
+    line = call_lines[0]
+    assert "tool=sls_query_requests" in line
+    assert "uri=/api/x" in line
+    assert "minutes=15" in line
+    assert "elapsed_ms=" in line
+    assert "status=failed" in line
+    assert "reason=rpc_error:-1" in line
+    assert "session=" in line
+
+
+@pytest.mark.asyncio
+async def test_timeout_path_logs_status_failed(monkeypatch):
+    """超时：最需要 elapsed_ms 的场景也要留痕，reason 固定为 timeout。"""
+    monkeypatch.setattr(log_tools, "LOG_TOOL_TIMEOUT_SECONDS", 0.01)
+    configure(_SlowBackend(delay=0.2), ("/api/x",))
+    with _captured_lines() as lines:
+        out = await _tools()["sls_query_latency"].ainvoke(
+            {"uri": "/api/x", "minutes": 15}
+        )
+    assert out == "查询失败：超时"
+    call_lines = [line for line in lines if "[tool] mcp call" in line]
+    assert len(call_lines) == 1
+    assert "status=failed" in call_lines[0]
+    assert "reason=timeout" in call_lines[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["sls_query_latency", "sls_query_requests"])
+async def test_unexpected_exception_becomes_failure_text(tool_name):
+    """三类以外异常（如后端格式化 bug）也转成失败文案并落日志，不穿出工具。"""
+    backend = _FakeBackend(
+        latency_result=ValueError("boom"), detail_result=ValueError("boom")
+    )
+    configure(backend, ("/api/x",))
+    with _captured_lines() as lines:
+        out = await _tools()[tool_name].ainvoke({"uri": "/api/x", "minutes": 15})
+    assert out.startswith("查询失败")
+    assert "ValueError" in out
+    call_lines = [line for line in lines if "[tool] mcp call" in line]
+    assert len(call_lines) == 1
+    assert "status=failed" in call_lines[0]
+    assert "reason=boom" in call_lines[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["sls_query_latency", "sls_query_requests"])
+async def test_backend_empty_text_maps_to_no_rows(tool_name):
+    """后端返回空串：按「近 N 分钟无请求记录」处理，不得原样透传空串。"""
+    backend = _FakeBackend(latency_result="", detail_result="")
+    configure(backend, ("/api/x",))
+    with _captured_lines() as lines:
+        out = await _tools()[tool_name].ainvoke({"uri": "/api/x", "minutes": 25})
+    assert out == "近 25 分钟无请求记录"
+    call_lines = [line for line in lines if "[tool] mcp call" in line]
+    assert len(call_lines) == 1
+    assert "rows=0" in call_lines[0]
