@@ -12,10 +12,13 @@ class _Skill:
 
 
 class _Preset:
-    def __init__(self, name: str, display_name: str, description: str):
+    def __init__(
+        self, name: str, display_name: str, description: str, hidden: bool = False
+    ):
         self.name = name
         self.display_name = display_name
         self.description = description
+        self.hidden = hidden
 
 
 def test_list_skills_projects_name_and_description():
@@ -40,6 +43,20 @@ def test_list_agents_projects_display_name():
             "description": "财务分析",
         }
     ]
+
+
+def test_list_agents_filters_hidden():
+    """hidden=true 的预设（企微机器人专用）不出现在站点清单。"""
+    preset_registry = MagicMock()
+    preset_registry.all.return_value = [
+        _Preset("chat", "通用助手", "通用问答"),
+        _Preset("bot-ops", "运维机器人", "运维问答", hidden=True),
+    ]
+    svc = CapabilityService(MagicMock(), preset_registry)
+
+    names = [item["name"] for item in svc.list_agents()]
+
+    assert names == ["chat"]
 
 
 def test_missing_registry_returns_empty_list():

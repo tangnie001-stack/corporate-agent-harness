@@ -1387,9 +1387,29 @@ class AgentService:
             bound: 会话已绑定的智能体名（空=未绑定）
 
         Returns:
-            AgentResolution：已绑定一律生效绑定值（请求不一致 → 忽略 + warning），
+            AgentResolution：已绑定一律生效绑定值（请求不一致 → 忽略 + warning）；
+            预设声明的渠道与当前渠道不符时按未请求处理（source="ignored"）；
             来源枚举见 dataclass docstring
         """
+        # 渠道校验先于 bind-once：渠道专属预设（如 wecom 机器人）不得从别的渠道
+        # 进入本会话；已绑定的值同样要过这一关，否则跨渠道会话会沿用机器人身份。
+        candidate = bound
+        if not candidate:
+            candidate = requested
+        if candidate and self._preset_registry is not None:
+            preset = self._preset_registry.get(candidate)
+            if (
+                preset is not None
+                and preset.channel
+                and preset.channel != current_channel.get()
+            ):
+                core_logging.log_event(
+                    Event.AGENT_BIND_IGNORED,
+                    session_id=session_id,
+                    bound=bound,
+                    requested=requested,
+                )
+                return AgentResolution(effective="", source="ignored")
         if bound:
             if requested and requested != bound:
                 core_logging.log_event(

@@ -17,9 +17,10 @@ from src.agents.graph.state import (
 )
 from src.agents.skills.models import SkillContext
 from src.config import TOP_K_RERANK, settings
-from src.config.const import SSEInteractionTexts
+from src.config.const import Channel, SSEInteractionTexts
 from src.core.log_events import Event
 from src.infra.llm.request_context import RequestContext
+from src.infra.llm.trace_context import current_channel
 from src.rag.context import RAGContext
 from src.services.agent_service import (
     AgentService,
@@ -1277,8 +1278,10 @@ class TestResolveSessionAgentSource:
     @pytest.mark.asyncio
     async def test_new_request_binds_as_new_bound(self):
         service, chat_manager = _make_service()
+        preset = Mock()
+        preset.channel = ""  # 不限渠道
         service._preset_registry = Mock()
-        service._preset_registry.get = Mock(return_value=Mock())
+        service._preset_registry.get = Mock(return_value=preset)
         result = await service._resolve_session_agent("s1", "finance-expert")
         assert result.effective == "finance-expert"
         assert result.source == "new_bound"
@@ -1338,6 +1341,7 @@ class TestTurnProvenanceContext:
         preset.display_name = "财务专家"
         preset.system_prompt = "你是财务专家"
         preset.skills = []  # 无预加载技能，避免首轮预加载路径迭代 Mock
+        preset.channel = ""  # 不限渠道
         service._preset_registry = Mock()
         service._preset_registry.get = Mock(return_value=preset)
         _agen, launch = await service.stream_chat(
@@ -1381,6 +1385,7 @@ class TestTurnProvenanceStatus:
         preset.display_name = "财务专家"
         preset.system_prompt = "你是财务专家"
         preset.skills = []
+        preset.channel = ""  # 不限渠道
         service = self._service_with_binding(
             record=record, preset=preset, session_agent="finance-expert"
         )
@@ -1427,6 +1432,7 @@ class TestTurnProvenanceStatus:
         preset.display_name = "财务专家"
         preset.system_prompt = "你是财务专家"
         preset.skills = ["a", "b"]
+        preset.channel = ""  # 不限渠道
         service._preset_registry = Mock()
         service._preset_registry.get = Mock(return_value=preset)
         record_a = Mock()
@@ -1468,6 +1474,7 @@ class TestTurnProvenanceStatus:
         preset.display_name = "财务专家"
         preset.system_prompt = "你是财务专家"
         preset.skills = []
+        preset.channel = ""  # 不限渠道
         service = self._service_with_binding(
             record=record, preset=preset, session_agent="finance-expert"
         )
@@ -1991,6 +1998,72 @@ async def test_idle_guard_notifies_without_aborting_generation(monkeypatch):
         == SSEInteractionTexts.DEGRADATION_TEXTS["generation_idle"]
     )
     assert [f for e, f in logged if e == Event.DEGRADED]
+
+
+def _service_with_preset_channel(channel: str) -> tuple[AgentService, AsyncMock]:
+    """构造只带预设注册表的 AgentService（跳过 __init__）。
+
+    Args:
+        channel: registry.get 返回的预设所声明的允许渠道
+
+    Returns:
+        (service, chat_manager)：chat_manager 供断言是否发生绑定写入
+    """
+    service = AgentService.__new__(AgentService)
+    chat_manager = AsyncMock()
+    chat_manager.bind_session_agent_async = AsyncMock(return_value=True)
+    service._chat_manager = chat_manager
+    preset = Mock()
+    preset.channel = channel
+    registry = Mock()
+    registry.get = Mock(return_value=preset)
+    service._preset_registry = registry
+    return service, chat_manager
+
+
+@pytest.mark.asyncio
+async def test_wecom_preset_ignored_on_web_channel():
+    """站点请求指定 channel=wecom 的预设：忽略并按默认处理。"""
+    service, chat_manager = _service_with_preset_channel(Channel.WECOM)
+    token = current_channel.set(Channel.WEB)
+    try:
+        result = await service._resolve_session_agent("s1", "bot-ops")
+    finally:
+        current_channel.reset(token)
+
+    assert result.effective == ""
+    assert result.source == "ignored"
+    chat_manager.bind_session_agent_async.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wecom_bound_preset_ignored_on_web_channel():
+    """站点渠道上已绑定的 wecom 预设：绑定同样被忽略（不沿用、不写库）。"""
+    service, chat_manager = _service_with_preset_channel(Channel.WECOM)
+    token = current_channel.set(Channel.WEB)
+    try:
+        result = await service._resolve_session_agent("s1", "", bound="bot-ops")
+    finally:
+        current_channel.reset(token)
+
+    assert result.effective == ""
+    assert result.source == "ignored"
+    chat_manager.bind_session_agent_async.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_channel_matched_preset_binds():
+    """渠道相符（企微预设 + 企微渠道）：正常绑定。"""
+    service, chat_manager = _service_with_preset_channel(Channel.WECOM)
+    token = current_channel.set(Channel.WECOM)
+    try:
+        result = await service._resolve_session_agent("s1", "bot-ops")
+    finally:
+        current_channel.reset(token)
+
+    assert result.effective == "bot-ops"
+    assert result.source == "new_bound"
+    chat_manager.bind_session_agent_async.assert_awaited_once_with("s1", "bot-ops")
 
 
 def test_p3_does_not_change_sse_subscription_layer():

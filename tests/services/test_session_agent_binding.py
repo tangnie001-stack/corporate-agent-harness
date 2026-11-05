@@ -18,7 +18,9 @@ def _service(
     svc._chat_manager.bind_session_agent_async = AsyncMock(return_value=True)
     registry = MagicMock()
     registry.get = MagicMock(
-        side_effect=lambda name: MagicMock(name=name) if name in (known or []) else None
+        side_effect=lambda name: (
+            MagicMock(name=name, channel="") if name in (known or []) else None
+        )
     )
     svc._preset_registry = registry
     return svc, svc._chat_manager
@@ -77,7 +79,7 @@ async def test_stream_chat_wires_effective_agent():
     chat_manager.bind_session_agent_async = AsyncMock(return_value=True)
     svc._chat_manager = chat_manager
     registry = MagicMock()
-    registry.get = MagicMock(return_value=MagicMock())
+    registry.get = MagicMock(return_value=MagicMock(channel=""))
     svc._preset_registry = registry
     svc._skill_registry = None
     svc._graph = MagicMock()

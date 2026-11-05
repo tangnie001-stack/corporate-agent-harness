@@ -28,10 +28,13 @@ class CapabilityService:
         return [{"name": r.name, "description": r.description} for r in records]
 
     def list_agents(self) -> list[dict]:
-        """全部可加载的智能体预设（含 display_name，供选择器显示中文名）。"""
+        """站点可选的智能体预设（含 display_name，供选择器显示中文名）。
+
+        hidden=true 的预设（企微机器人专用）不列出：站点选择器不得选到它们。
+        """
         if self._preset_registry is None:
             return []
-        presets = self._preset_registry.all()
+        presets = [p for p in self._preset_registry.all() if not p.hidden]
         return [
             {
                 "name": p.name,
