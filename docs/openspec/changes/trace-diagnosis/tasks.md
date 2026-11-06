@@ -42,12 +42,15 @@
 - [ ] 5.2 `skills/rca-error/SKILL.md`：frontmatter 声明证据清单（`trace_fetch` required、`error_log`、`retrieval_probe`、`history_lookback` 的 `when` 条件）；**前置声明依赖 ops 档**（日志能力只在 ops/dev 开放）
 - [ ] 5.3 入口校验：`trace_id` 格式不符/不存在/属于另一环境 → 分别给出三种明确文案，不落到"诊断失败"
 - [ ] 5.4 输出裁剪与脱敏口径与 `ops-log-tools` 对齐（同一套 `_mask` 与行数/字符上限），避免两条链路给出两种脱敏结果
-- [ ] 5.5 环境隔离随 profile 走（`dev` / `support` / `finance` 各绑各的环境），**不另建开关**
+- [ ] 5.5 环境隔离**不按 bot 区分**：`WeComBotConfig` 只有 `key/bot_id/secret/name/profile`，没有环境字段；日志源配置是单例（`load_rca_config()`）。诊断随部署环境走（一套部署一套日志源），profile 只决定工具面
 
 ## 6. 告警定位器
 
 - [ ] 6.1 `src/rca/locator.py`：时间窗（`T0-15min`~当前）内 ERROR 行 → `trace_id` 去重 → 按 `(错误类型, 接口, 错误码)` 聚类 → 每类取最早代表；取 trace 按 **`chat_turn`**（不存在 `alert_turn`），告警轮用 tag `pf:alert` 区分；**不读** `rca_*`（已被移出归档变更）
-- [ ] 6.2 D9 分支：窗口内无 ERROR / 有 ERROR 但无 `trace_id` → 结论"未落到应用层"，不进诊断
+- [ ] 6.2 三态显式分支（**不得合并**）：
+  - 查询成功且 0 行 / 有行但无 `trace_id` → "未落到应用层"（D9，这是结论）；
+  - 日志源不可达 / 超时 / 参数错误 → "日志源不可用，未判定"（failed 态，**不得**落进 D9）；
+  - 有行且有 `trace_id` → 正常进入诊断
 - [ ] 6.3 上限：最多诊断 3 个代表；超出只输出类别计数
 - [ ] 6.4 接入报警轮：error 类告警走"定位 + 诊断"，延迟类仍走 `rca-latency`；按告警名白名单灰度、默认关闭
 
