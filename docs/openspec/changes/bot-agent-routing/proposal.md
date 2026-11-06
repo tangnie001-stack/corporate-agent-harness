@@ -2,7 +2,7 @@
 
 企微 4 台机器人当前**共用同一个通用 Agent**：handler 不传 agent，所有群轮次落到 general 人设（模型自称“企业知识库问答助手”），工具面也只有检索/联网/任务——运维和开发在群里问“今天 createOrder 正常吗”，只能回答“我查不到”。
 
-同时告警链路的 trace 起点晚于其子 span（实测 3.2s），标签体系也只有渠道与 kb 两维，无法按“哪个 Agent / 是否具备日志能力”筛选。
+同时告警链路的标签体系只有渠道与 kb 两维，无法按“哪个 Agent / 是否具备日志能力”筛选。
 
 本次把「入口 → Agent」的分配做成显式配置，并让 ops/dev 具备只读日志查询能力。
 
@@ -13,10 +13,10 @@
 - 预设 schema 增加 **可见性与渠道约束**：hidden / channel；bot- 前缀强制校验，站点选择器不可见且站点请求不可用。
 - 新增 **两个只读日志工具**（仅 ops/dev）：sls_query_latency / sls_query_requests，复用现有 MCP 客户端；带接口白名单、时间窗、行数上限与脱敏。
 - 外图 **按 profile 查能力档、选对应已装配的 Agent 实例**（基础 / 含日志两档），不按 Agent 复制外图。
-- trace 约定收敛：**起点前移到告警入口**（alert_turn）+ **三个标签**（kb|no_kb / 渠道 / pf:<profile>）+ metadata 补齐（profile、tools_used、rca_*）。
+- trace 约定收敛：**三个标签**（kb|no_kb / 渠道 / pf:<profile>）+ metadata 补齐（profile、tools_used、rca_*）。
 - 新增 **回滚开关** WECOM_AGENT_ROUTING_ENABLED（默认 true），关闭后全部回落通用人设。
 
-**BREAKING**：告警 trace 的 name 由 chat_turn 变为 alert_turn；chat 标签不再写入（历史数据保留）。
+**BREAKING**：chat 标签不再写入（历史数据保留）。
 
 ## Capabilities
 
@@ -29,7 +29,7 @@
 
 - agent-preset: 预设文件结构增加 hidden / channel 字段与加载期校验。
 - wecom-channel: 机器人注册表增加 profile 字段；入站分发时确定该轮 profile。
-- llm-tracing: trace 起点覆盖告警入口；标签由 3 类构成；metadata 增加 profile / tools_used / rca_*。
+- llm-tracing: 标签由 3 类构成；metadata 增加 profile / tools_used / rca_*。
 
 ## Impact
 
@@ -39,7 +39,6 @@
 - src/agents/presets/：schema 增加字段与校验
 - src/services/agent_service.py：agent 节点按 profile 取已装配实例
 - src/agents/tools/：新增两个日志工具（复用 src/rca/sources/mcp.py）
-- src/services/alert_service.py：trace 起点前移到告警入口
 - agents/：4 个新预设文件
 
 **配置**

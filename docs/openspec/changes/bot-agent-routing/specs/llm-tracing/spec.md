@@ -6,20 +6,12 @@ trace 根 SHALL 覆盖本轮从"开始处理"到"生成结束"的完整生命周
 
 站点与企微轮次：根 SHALL 开在生成任务内，覆盖图事件循环的完整生命周期。
 
-告警轮次：根 SHALL 开在告警入口（受理占位之后、证据采集之前），使采集产生的工具 span 隶属同一条 trace 且其开始时间 SHALL NOT 早于根的开始时间。
-
 SSE 订阅与推送侧 SHALL NOT 单独产生 trace。
 
 #### Scenario: 根的生命周期覆盖整轮生成
 
 - **WHEN** 一轮生成包含多轮 agent 迭代与工具调用
 - **THEN** 这些迭代与工具调用产出的 observation 均隶属于同一条 trace 之下
-
-#### Scenario: 告警轮的取数不早于根
-
-- **WHEN** 告警轮先做证据采集、再做生成
-- **THEN** trace 的起始时间不晚于任一工具 span 的起始时间
-- **AND** 该 trace 的名称标识为告警轮，可与对话轮区分
 
 #### Scenario: 生成被取消时 trace 不被丢失
 

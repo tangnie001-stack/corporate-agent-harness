@@ -81,6 +81,12 @@
 **注意**：渠道在"确认要跑一轮"时才写入——回合**之前**的渠道侧日志（如启动锚点、未知机器人、
 去重命中）会是 `none`，这是预期而非缺陷。
 
+**已知现象：trace 根的时间晚于子 span**。告警轮的 trace 根取在生成开始（`chat_turn`），而证据采集
+发生在根之前，Langfuse 里会看到「工具 span 的 start 早于 trace 根」约 10 秒的差。这是 Langfuse v2
+装饰器与后台任务上下文的既有限制（把根前移到告警入口的 `alert_turn` 方案已实测证伪，见 change
+`bot-agent-routing` 的 tasks 6.0）。**判据**：看 span 的 `parent` 是否指向同一条 trace、trace 名是否为
+`chat_turn`，不要看 start 先后——时间差本身不是故障，不能据此判"trace 串错了"或"观测丢了一段"。
+
 ## 5. 本地 SOP
 
 1. **复现**，并从响应头 `X-Trace-ID` 或 SSE `done` 帧记下 trace_id（前端也在流里带上它）。

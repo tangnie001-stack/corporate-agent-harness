@@ -47,11 +47,10 @@
 
 ## 6. trace 约定
 
-- [ ] 6.0 **spike**：本地起实例发一条假 webhook，验证 `alert_turn` 根方案是否得到「一条 trace + 根早于首个取数 span」。**回退分支要整组收口**：若 `langfuse_observation_id` 嵌套撞 id，则取消 6.1，同时删除/改写 6.4 的「起点不晚于首个 span」断言、8.2 与 8.3 的 `alert_turn` 验收、llm-tracing delta 的「告警轮根开在告警入口」条款、design Risks 同名条目，以及 proposal 的 BREAKING 句与「What Changes」里的 `alert_turn` 条目（trace 名 `chat_turn`→`alert_turn`）——只取消 6.1 会让 8.2/8.3 验收与 BREAKING 声明双双失真
-- [ ] 6.1 `_analyze_turn` 加 `@observe(name="alert_turn", capture_input=False)`，传 `langfuse_observation_id=trace_id`（依赖 6.0 通过）
+- [x] 6.0 **spike**：本地起实例发假 webhook 实测 `alert_turn` 根方案 —— **失败，走回退分支**：加 `@observe(name="alert_turn")` 后 trace 名正确，但采集 span 仍比根早 10.8s，且 `agent_turn` 的 parent 指向另一条 trace（后台任务未继承装饰器上下文）。证据见 `.superpowers/sdd/2026-11-06-bot-agent-routing/task-11-spike-evidence.md`。回退已整组收口：取消 6.1，6.4 / 8.2 / 8.3 改为确认 trace 名仍为 `chat_turn`，llm-tracing delta、design Risks 与 proposal 的 `alert_turn` 声明同步删除
 - [ ] 6.2 标签改为三类：`kb|no_kb`、渠道、`pf:<profile>`；移除 `chat` 写入
 - [ ] 6.3 metadata 增加 `profile`、`tools_used`；告警轮增加 `rca_tier` / `rca_reason` / `rca_evidence` / `rca_elapsed_ms`
-- [ ] 6.4 补测试：标签组合；tools_used 记录；告警轮 metadata 可读；trace 起点不晚于首个 span（**仅 6.0 通过时**；回退时该断言改为「trace 名为 `chat_turn`、起点为生成开始」）
+- [ ] 6.4 补测试：标签组合；tools_used 记录；告警轮 metadata 可读；trace 名为 `chat_turn`、起点为生成开始（6.0 结论）
 
 ## 7. 文档登记
 
@@ -63,6 +62,6 @@
 ## 8. 验证与发布
 
 - [ ] 8.1 全量测试：`POSTGRES_HOST=localhost pytest tests/ -v` 全绿；`ruff check .` 无错误；无新增 pyright error
-- [ ] 8.2 本地端到端：起本地实例（仅 ops），@ 一次确认 `pf:ops` + 日志工具可用；再发假 webhook 确认告警 trace 名变为 `alert_turn` 且起点不晚于取数 span（后半句**仅 6.0 通过时**；回退时改为确认 trace 名仍为 `chat_turn`）
-- [ ] 8.3 发布后验收：测试群 @ops 问「最近 15 分钟 createOrder 正常吗」→ 回答含真实数字；日志有 `[tool] mcp call`；Langfuse trace 有 `pf:ops` 与 `tools_used`（告警 trace 名同理受 6.0 结论约束）
+- [ ] 8.2 本地端到端：起本地实例（仅 ops），@ 一次确认 `pf:ops` + 日志工具可用；再发假 webhook 确认告警 trace 名仍为 `chat_turn`（起点为生成开始，采集 span 可能早于根，属已知现象）
+- [ ] 8.3 发布后验收：测试群 @ops 问「最近 15 分钟 createOrder 正常吗」→ 回答含真实数字；日志有 `[tool] mcp call`；Langfuse trace 有 `pf:ops` 与 `tools_used`（告警 trace 名仍为 `chat_turn`）
 - [ ] 8.4 回滚演练：`WECOM_AGENT_ROUTING_ENABLED=false` + 重建，确认回落通用人设且不影响站点

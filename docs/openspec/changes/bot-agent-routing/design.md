@@ -99,16 +99,6 @@
 
 **弃**：工具内重试。理由：重试让用户多等一个超时周期；把重试权交给模型（换查询）更可控。
 
-### D11 trace 起点前移到告警入口
-
-`_analyze_turn` 加 `@observe(name="alert_turn")` 并传 `langfuse_observation_id`，使取数 span 隶属同一条 trace；metadata 补 `rca_*`。
-
-**弃**：用 `client.trace(timestamp=...)` 事后修正。理由：v2 的 `client.trace()` 会覆盖 timestamp，行为不确定。
-
-**实现前置（spike，见 tasks 6.0）**：`_run_generation` 自身也传 `langfuse_observation_id`（`turn_runner.py:373`），嵌套时父子可能撞同一个 observation id。实施前先用本地一条假 webhook 验证：是否仍是**一条** trace、根是否早于首个取数 span。
-
-**回退分支必须整组收口**，不是只取消改代码：spike 不通过时，连带把 llm-tracing 的「告警轮根开在告警入口」delta 条款、`6.4` 的「起点不晚于首个 span」断言、`8.2`/`8.3` 的对应验收一并删除或改写为「trace 名仍为 `chat_turn`，起点为生成开始」，并同步 Risks 中的同名条目；否则按 8.2 验收必挂。
-
 ### D12 标签收敛为三类
 
 `kb|no_kb`、渠道、`pf:<profile>`。**弃**：`mcp|no_mcp`（与 profile 高度重合，且只能表达"能力"不能表达"实际调用"）；**弃**：把工具名做成标签（高基数、组合爆炸，行为看 span 与 `tools_used`）。
@@ -130,8 +120,7 @@
 - **白名单过窄** → 模型频繁回答"该接口不在可查询范围"；白名单从 4 个起步，按需扩。
 - **工具输出占用上下文** → 20 行上限 + 摘要；工具结果不落跨轮历史。
 - **模型滥用工具** → 工具描述写清"何时用"，预算 6 轮兜底（`bot-ops`/`bot-dev`；其余仍 5 轮）。
-- **trace name 变更影响既有筛选** → 文档登记 `chat_turn` → `alert_turn`；历史数据保留。
-- **alert_turn 与 chat_turn 撞 observation id** → 先 spike 验证（tasks 6.0）；不通过则放弃改代码，只保留文档说明。
+- **告警轮 trace 根不是告警入口** → 已知限制：告警轮 trace 根 = 生成开始（`chat_turn`），采集 span 的 start 早于根，属 Langfuse v2 装饰器与后台任务上下文的既有限制；已 spike 证伪 `alert_turn` 方案（tasks 6.0），排障判据见 `docs/agents/troubleshooting.md` §4。
 - **工具白名单未配置导致全拒** → 仅在日志类 profile 被引用时于启动期 fail-fast（tasks 5.3）；未引用时该变量缺省不影响启动。
 - **启动多编译一张子图** → 只多 `log` 档一张（`default` 档即现有那张），与预设数量无关；预设再多也不会增加编译量。
 - **agent 节点注册表化引入状态字段** → 未接 checkpointer，无迁移；新增字段有默认值。
@@ -139,7 +128,7 @@
 ## Migration Plan
 
 1. 发布代码（开关默认 true，但 `WECOM_BOTS` 尚无 `profile`）→ 行为等价于现状：全部回落通用人设，且因无机器人引用日志档，启动期**不连 MCP、不校验 `RCA_TOOL_URI_WHITELIST`**。
-2. 给 `ops` 加 `profile: bot-ops`，重建容器；观察一轮真实 @ 的 trace（`pf:ops`、`alert_turn` 不涉及）。
+2. 给 `ops` 加 `profile: bot-ops`，重建容器；观察一轮真实 @ 的 trace（`pf:ops`）。
 3. 再接 `dev`；确认两台的回答风格与工具调用。
 4. 出现异常时：`WECOM_AGENT_ROUTING_ENABLED=false` + 重建，全部回落通用人设。
 
