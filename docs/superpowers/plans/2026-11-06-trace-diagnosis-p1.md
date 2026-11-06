@@ -21,7 +21,9 @@
 
 ---
 
-### Task 1: `messages` 增加 `trace_id`
+### Task 1: `conversation_history` 增加 `trace_id`
+
+> 注：消息表真实表名是 `conversation_history`（`MessageModel.__tablename__`），下文的 SQL 以此为准。
 
 **Files:**
 - Modify: `src/infra/db/models/chat.py:33-57`
@@ -64,13 +66,17 @@ Expected: FAIL（KeyError: 'trace_id'）
 
 ```python
 def upgrade() -> None:
-    op.add_column("messages", sa.Column("trace_id", sa.String(64), nullable=True))
-    op.create_index("ix_messages_trace_id", "messages", ["trace_id"])
+    op.add_column(
+        "conversation_history", sa.Column("trace_id", sa.String(64), nullable=True)
+    )
+    op.create_index(
+        "ix_message_trace_id", "conversation_history", ["trace_id"]
+    )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_messages_trace_id", table_name="messages")
-    op.drop_column("messages", "trace_id")
+    op.drop_index("ix_message_trace_id", table_name="conversation_history")
+    op.drop_column("conversation_history", "trace_id")
 ```
 
 - [ ] **Step 4: 跑测试**
