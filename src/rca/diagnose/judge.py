@@ -9,16 +9,58 @@ from __future__ import annotations
 import statistics
 
 from src.config import settings
-from src.rca.diagnose.models import RetrievalCall, RootCause
+from src.rca.diagnose.models import DiagnosisKind, RetrievalCall, RootCause
 
 
 def judge(
     calls: list[RetrievalCall],
     *,
+    kind: DiagnosisKind = DiagnosisKind.ANSWER,
     cited: bool | None,
     has_context_budget_high: bool,
 ) -> tuple[RootCause, str]:
-    """返回 (根因, 人可读依据)。
+    """按分型分派判定，返回 (根因, 人可读依据)。
+
+    Args:
+        calls: 本轮全部 retrieve_kb 调用；空 = 没有检索。
+        kind: 问题分型（入口判定）；错误类走 judge_error，不进入检索判定。
+        cited: 回答是否引用了上下文；None = 未知（无法判定"未引用"）。
+        has_context_budget_high: 本轮是否出现上下文预算告警。
+    """
+    if kind is not DiagnosisKind.ANSWER:
+        return judge_error(kind)
+    return judge_answer(
+        calls, cited=cited, has_context_budget_high=has_context_budget_high
+    )
+
+
+def judge_error(kind: DiagnosisKind) -> tuple[RootCause, str]:
+    """错误类判定：检索事实与错误条目无因果关系，只给归属判断。
+
+    Args:
+        kind: 5xx / 4xx
+
+    Returns:
+        恒为未判定；原因文案说明归属与缺失的证据项
+    """
+    if kind is DiagnosisKind.ERROR_4XX:
+        return (
+            RootCause.UNDETERMINED,
+            "4xx 属客户端侧，归属 ops 受理；原因分类待 access 日志状态码",
+        )
+    return (
+        RootCause.UNDETERMINED,
+        "5xx 服务端错误，归属 dev 排查；具体原因待错误栈证据",
+    )
+
+
+def judge_answer(
+    calls: list[RetrievalCall],
+    *,
+    cited: bool | None,
+    has_context_budget_high: bool,
+) -> tuple[RootCause, str]:
+    """答错类判定（检索证据 → 根因）。
 
     Args:
         calls: 本轮全部 retrieve_kb 调用；空 = 没有检索。

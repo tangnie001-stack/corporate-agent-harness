@@ -69,3 +69,25 @@ def test_unknown_citation_is_undetermined():
     cause, reason = judge([c], cited=None, has_context_budget_high=False)
     assert cause is RootCause.UNDETERMINED
     assert "引用" in reason
+
+
+def test_5xx_skips_retrieval_judgement():
+    """服务端错误与检索事实无因果：不得落成检索类根因。"""
+    c = call(scores=(0.10, 0.09))
+    from src.rca.diagnose.models import DiagnosisKind
+
+    cause, reason = judge(
+        [c], kind=DiagnosisKind.ERROR_5XX, cited=False, has_context_budget_high=False
+    )
+    assert cause is RootCause.UNDETERMINED
+    assert "5xx" in reason
+
+
+def test_4xx_is_owned_by_ops():
+    from src.rca.diagnose.models import DiagnosisKind
+
+    cause, reason = judge(
+        [], kind=DiagnosisKind.ERROR_4XX, cited=None, has_context_budget_high=False
+    )
+    assert cause is RootCause.UNDETERMINED
+    assert "ops" in reason
