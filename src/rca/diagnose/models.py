@@ -57,6 +57,7 @@ class DiagnosisReport:
     ]  # (断言文本, 引用的 evidence id)
     next_actions: tuple[str, ...]  # 建议动作（文本，不执行）
     basis_rounds: int  # 本次结论用到了前几轮上下文（0 = 仅本 trace）
+    summary: str = ""  # 结论的一句话说明（含未判定原因）
 
 
 def reason_text(cause: RootCause) -> str:
