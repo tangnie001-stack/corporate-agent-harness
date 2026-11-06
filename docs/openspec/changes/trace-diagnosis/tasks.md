@@ -1,7 +1,7 @@
 ## 0. 前置与排期
 
 - [x] 0.1 `alert-triage` **已合并**（`558919ad`）。按其真实代码核对后，复用范围为 `models` / `collector` / `loader` / `sources/base` 三态 / `grafana` 解析辅助；`LogSource` 协议、`judge()`、`render_card` 均为延迟专用，不复用（见 design D2）
-- [ ] 0.2 **等 `bot-agent-routing` 合并**（实施中，`feat/bot-agent-routing`）：本变更依赖其 `alert_turn` trace 名、`profile` 路由与 `rca_*` metadata；日志能力同样只在该 change 的 ops 档开放
+- [x] 0.2 `bot-agent-routing` **已归档**（`archive/2026-11-06-bot-agent-routing`）。按其真实实现修正：trace 名仍是 `chat_turn`（`alert_turn` spike 已证伪回退）；无 `rca_*` metadata；日志能力在 `LOG_PROFILES={bot-ops, bot-dev}` 档开放；日志工具为接口维度（`uri` + 白名单），**不复用**
 - [x] 0.3 生成侧事实**已在 `dev-wsl` 实现**（`ce0f0cc1` 起：5 个事件 + `model turn` 温度字段 + SSE 声明 + 前端回放）；活体 trace 已验证 `prompt assembled` / `prompt messages` / `model turn` 落日志，`agent resolved` / `skill *` 按设计在空值轮不记。本项不阻塞
 - [ ] 0.4 建隔离 worktree（`git worktree add`），base 取三者合并后的 `dev-wsl`
 
@@ -16,7 +16,8 @@
 ## 2. 证据源
 
 - [ ] 2.1 `src/rca/sources/trace.py`：`TraceSource`——按 `trace_id` 取观测与 `metadata.retrieval_contexts`，复用 `src/cli/eval_trace_io.py` 的 `fetch_trace`；取不到抛 `SourceFailedError`，trace 存在但无检索快照抛 `SourceEmptyError`
-- [ ] 2.2 `ErrorLogSource`——**不复用** `bot-agent-routing` 的 `sls_query_latency` / `sls_query_requests`（两者 `uri` 必填且只查白名单接口，是"接口维度"）；复用其 MCP 客户端（`src/rca/sources/mcp.py`）与白名单语义，新增两个能力：`sls_query_by_trace(trace_id)`（反查单轮日志）与 `sls_query_errors(minutes, status>=500)`（窗口 + 状态过滤 → 提取 `trace_id`）；沿用 `ensure_query_ok` 的"成功判定不看 status、看数据体"经验
+- [ ] 2.2 `ErrorLogSource`（**本地日志**，方案 A）：读容器 volume `/data/logs` 的 `app_*.log` / `error_*.log`，按窗口取 `ERROR` 行、第 3 段即 `trace_id`；解析复用 `src/cli/replay_trace.py` 的 `parse_trace_logs`；**不复用** `sls_query_latency` / `sls_query_requests`（`uri` 必填 + 白名单 + 明细无 trace_id）。`TraceLocator` 抽象保留，MCP 实现为后续替换点
+- [ ] 2.5 **方案 B**：`deploy/nginx/edge.conf` 与 `deploy/nginx/nginx.conf` 的 `log_format` 增加 `$upstream_http_x_trace_id`；验证三点——正常请求有值、应用不可达（502）时为空、access log 脱敏格式不变
 - [ ] 2.3 `src/rca/sources/probe.py`：`RetrievalProbe`——对原问题做确定性变体（抽实体/去年份/同义）后重检；命中且相关度过线 → "表述问题"，全空 → "覆盖缺失"。**默认不用模型改写**（不可复现），模型改写作为可选第二档并标注
 - [ ] 2.4 三个 Source 实现**新窄协议** `ErrorEvidenceSource`（`trace_fetch` / `error_logs` / `retrieval_probe`），与 `LogSource` 并列、不扩展后者；三态沿用 `SourceEmptyError` / `SourceFailedError`；测试替身照 `FixtureLogSource` 的写法
 
@@ -45,7 +46,7 @@
 
 ## 6. 告警定位器
 
-- [ ] 6.1 `src/rca/locator.py`：时间窗（`T0-15min`~当前）内 ERROR 行 → `trace_id` 去重 → 按 `(错误类型, 接口, 错误码)` 聚类 → 每类取最早代表；取 trace 时按 **`alert_turn`** 而非 `chat_turn`，并优先读告警轮已有的 `rca_tier` / `rca_reason` metadata
+- [ ] 6.1 `src/rca/locator.py`：时间窗（`T0-15min`~当前）内 ERROR 行 → `trace_id` 去重 → 按 `(错误类型, 接口, 错误码)` 聚类 → 每类取最早代表；取 trace 按 **`chat_turn`**（不存在 `alert_turn`），告警轮用 tag `pf:alert` 区分；**不读** `rca_*`（已被移出归档变更）
 - [ ] 6.2 D9 分支：窗口内无 ERROR / 有 ERROR 但无 `trace_id` → 结论"未落到应用层"，不进诊断
 - [ ] 6.3 上限：最多诊断 3 个代表；超出只输出类别计数
 - [ ] 6.4 接入报警轮：error 类告警走"定位 + 诊断"，延迟类仍走 `rca-latency`；按告警名白名单灰度、默认关闭

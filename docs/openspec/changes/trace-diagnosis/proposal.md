@@ -60,12 +60,12 @@
 **接口**
 
 - 对外：无新增 HTTP 接口，沿用 `/api/alerts/webhook/{token}`
-- 对内：Langfuse 只读查询；日志窗口扫描（本地文件起步，SLS 之后替换数据源）
+- 对内：Langfuse 只读查询；日志窗口扫描读**本地应用日志**（容器 volume，7 天）；两台 nginx 的 `log_format` 增加 `$upstream_http_x_trace_id`，使网关 5xx 与 trace 可关联。MCP / SLS 维度查询列为延后项（触发条件见 design D12）
 
 **依赖**
 
 - `alert-triage`（**已合并**）：复用 `src/rca/` 的 `models` / `collector` / `loader` / 三态；`judge` / `render` / `LogSource` 为延迟专用，不复用
-- `bot-agent-routing`（**实施中**）：`bot-ops` 人设与 `profile` 路由、告警轮 `alert_turn` trace 与 `rca_*` metadata、MCP 日志客户端。诊断入口挂其 ops 档，日志查询复用客户端但不复用那两个接口维度的工具
+- `bot-agent-routing`（**已归档**）：`bot-ops` / `bot-dev` 人设与 `profile` 路由、两个接口维度的只读日志工具。按其真实实现，告警轮 trace 仍为 `chat_turn`（`alert_turn` 已证伪回退）、无 `rca_*` metadata；诊断入口挂日志能力档，日志数据源**不**走其 MCP 工具（见 design D12 的 A+B 决策）
 - `turn-provenance-observability` 组 1+4（生成侧事实字段，未开始，缺失可降级）
 
 **风险**

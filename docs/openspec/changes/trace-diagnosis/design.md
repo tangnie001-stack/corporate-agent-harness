@@ -144,11 +144,14 @@
 ### D12 与 `bot-agent-routing` 的边界：对话式值班 vs 结构化归因
 
 - **事实**：`bot-agent-routing` 提供的是**对话式值班**——人问"今天 createOrder 正常吗"，`bot-ops` 选工具查日志并直接作答；无固定流程、无落库、无引用约束、不可回归。本变更提供的是**结构化归因**——给定 `trace_id`，代码定路径、枚举根因、报告可复核。
-- **选**：两者并存，不合并 change。诊断工具挂在 `bot-ops` 的 profile 工具面上，作为"第二个能力"而非另一个机器人。
-- **弃**：把 `sls_query_latency` / `sls_query_requests` 直接当诊断证据源。理由：两者契约要求 `uri` 且只查白名单接口，回答的是"某个接口最近怎么样"；诊断要的是"这一轮里发生了什么"与"窗口内所有 5xx 的分布"。语义不同，强行复用会导致白名单外的接口永远查不到。
-- **选**：复用其 MCP 客户端与白名单机制，新增两个能力 `sls_query_by_trace` 与 `sls_query_errors`。
-- **约束**：告警轮的 trace 名为 `alert_turn`（不是 `chat_turn`），且 metadata 已有 `rca_tier` / `rca_reason` / `rca_evidence`；诊断读取这些现成字段，不重复计算。
-- **约束**：脱敏与输出裁剪必须与 `ops-log-tools` 同源（同一套 `_mask` 与行数上限），否则同一份日志在两条链路会得到两种脱敏结果。
+- **选**：两者并存，不合并 change。诊断工具挂在**日志能力档**（`LOG_PROFILES = {bot-ops, bot-dev}`）的工具面上，作为"第二个能力"而非另一个机器人；接受 `bot-dev` 同享并在 spec 写明。
+- **弃**：把 `sls_query_latency` / `sls_query_requests` 当诊断证据源。两者 `uri` 必填、精确白名单、明细不含 `trace_id`（`src/agents/tools/log_tools.py:37/41`、`log_backend.py` 无 trace 字段），只能回答"某个接口最近怎么样"。
+- **数据源决策（A+B）**：
+  - **A**：定位器读**应用日志**（容器 volume `/data/logs`，保留 7 天），按 `ERROR` 行第 3 段取 `trace_id`；解析复用 `src/cli/replay_trace.py` 的 `parse_trace_logs`。
+  - **B**：在**两台 nginx** 的 `log_format` 增加 `$upstream_http_x_trace_id`（入口机 `deploy/nginx/edge.conf` 与应用机 `deploy/nginx/nginx.conf`）。应用已在响应头返回该值（`src/main.py:363`），因此网关的 status 可与 trace 关联；**502/504 时上游无响应头 → 该字段为空**，直接作为 D9「未落到应用层」的判据。
+- **延后（C）**：MCP 服务端提供 trace / error 维度查询。**不是**"观测 MCP 自身流量"，而是"由 MCP 作为通道去查同一份网关/应用日志"。触发条件（满足其一才做）：需要超过 7 天窗口；应用扩到多副本/多机，本地文件不可达；需要把日志查询集中做鉴权与审计。届时只替换 locator 的下层实现，不改上层。
+- **约束**：trace 名为 `chat_turn`（`alert_turn` 已在归档变更里 spike 证伪并回退，见 `archive/2026-11-06-bot-agent-routing/tasks.md:50`）；告警轮靠 tags `pf:alert` 区分。**没有** `rca_*` metadata，`tier` 由本变更自算。
+- **约束**：脱敏与输出裁剪必须与 `ops-log-tools` 同源（`_mask` 与行数上限抽公共函数），否则同一份日志在两条链路会得到两种脱敏结果。
 
 ## 模块划分
 
