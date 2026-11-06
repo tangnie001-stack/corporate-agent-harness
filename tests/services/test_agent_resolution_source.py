@@ -7,12 +7,19 @@ import pytest
 from src.services.agent_service import AgentService
 
 
+def _preset(name: str):
+    """构造带真实字段形状的预设替身（channel=\"\" 表示不限渠道）。"""
+    preset = MagicMock(name=name)
+    preset.channel = ""
+    return preset
+
+
 def _service(known: list[str] | None = None):
     """构造只带注册表与会话管理替身的 AgentService（跳过 __init__）。"""
     svc = AgentService.__new__(AgentService)
     registry = MagicMock()
     registry.get = MagicMock(
-        side_effect=lambda name: MagicMock(name=name) if name in (known or []) else None
+        side_effect=lambda name: _preset(name) if name in (known or []) else None
     )
     svc._preset_registry = registry
     svc._chat_manager = MagicMock()
