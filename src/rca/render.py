@@ -9,16 +9,8 @@
 
 from __future__ import annotations
 
-import re
-
 from src.rca.models import EvidenceResult, EvidenceStatus, TriageVerdict
-
-_IP = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?")
-
-
-def _mask(text: str) -> str:
-    """把 IPv4[:port] 替换成节点别名。"""
-    return _IP.sub("node-***", text)
+from src.utils.mask import mask_nodes
 
 
 def _missing_lines(results: dict[str, EvidenceResult]) -> list[str]:
@@ -172,7 +164,7 @@ def render_card(
 
     # 首行为标题，其余走无序列表——企微气泡按行渲染列表项，普通换行会被折叠成一行
     body = "\n".join(f"- {line}" for line in lines[1:])
-    text = _mask(f"{lines[0]}\n\n{body}")
+    text = mask_nodes(f"{lines[0]}\n\n{body}")
     if len(text) > max_chars:
         text = text[: max_chars - 1] + "…"
     return text
