@@ -81,6 +81,47 @@
 **注意**：渠道在"确认要跑一轮"时才写入——回合**之前**的渠道侧日志（如启动锚点、未知机器人、
 去重命中）会是 `none`，这是预期而非缺陷。
 
+### 4.1 trace 维度约定
+
+Langfuse 里**筛** trace 用标签（只有三个低基数维度），**读**某一轮的身份与工具使用看 trace 根的
+metadata；工具名这类高基数值不在标签里。
+
+**标签（`tags`）**
+
+| 维度 | 取值 | 含义 |
+|---|---|---|
+| 知识库绑定 | `kb` / `no_kb` | 本轮是否绑定知识库 |
+| 渠道 | `web` / `wecom` / `alert` / `none` | 站点 / 企微 / 告警自动分析轮次 / 未设置（直调、CLI 等；预留渠道 `feishu` 同样归一为 `none`） |
+| 身份 | `pf:chat` / `pf:alert` / `pf:<preset 短名>` | 空 profile → `pf:chat`；告警轮恒 `pf:alert`；`bot-` 前缀去前缀（`bot-ops` → `pf:ops`），其余原样透传（`pf:financial-analyst`） |
+
+- **工具名不进标签**：工具名、Agent 显示名、知识库 ID 都是高基数值。查"这一轮调了哪些工具"看
+  metadata 的 `tools_used`；查工具的入参与返回看该轮下的工具 span。
+- **`chat` 标签已废弃**：原先所有轮次都打 `chat`、没有区分度，已由 `pf:chat` 取代。按 `tags=chat`
+  过滤的旧看板 / 脚本会恒为空，改用 `pf:chat`，或直接按 trace 名 `chat_turn` 筛。
+- 标签只能加不能删（Langfuse v2 实测），故只放稳定、可枚举的值；新增维度前先确认值域能枚举完。
+
+**metadata（trace 根）**
+
+| 字段 | 含义 |
+|---|---|
+| `profile` | 会话生效的预设名（空串 = 系统默认） |
+| `agent` | 与 `profile` 同值（历史键，兼容既有看板） |
+| `agent_display_name` | 预设展示名（来源声明文案用） |
+| `channel` | 渠道原值（未设置时 `none`），与渠道标签同源 |
+| `kb_id` | 本轮绑定的知识库 ID（空串 = 未绑定） |
+| `kb_domain` | 知识库领域（未绑定或未知时 `general`） |
+| `tools_used` | 本轮实际调用过的工具名（去重排序；未调用为空数组） |
+| `loaded_skills` | 本轮载入的技能名列表 |
+| `skill_action` | 本轮技能动作：`none` / `inline` / `preload` / `fork` / `unknown` |
+| `deep_thinking` | 深度思考开关 |
+| `has_skills` | 本轮是否启用技能面 |
+| `direct_skill` | 命令行直出的 fork 技能名（仅直出轮出现） |
+
+告警轮按判定结果还应带 `rca_tier` / `rca_reason` / `rca_evidence` / `rca_elapsed_ms`（档位 / 定档
+依据 / 各证据源三态 / 采集耗时，口径见 `docs/openspec/changes/bot-agent-routing` 的 llm-tracing
+spec）。**当前代码尚未写入这四个字段**，现阶段这些值只在告警卡片与应用日志 `[rca]` 里，别把
+"Langfuse 里读不到"当成观测缺口。
+
 **已知现象：trace 根的时间晚于子 span**。告警轮的 trace 根取在生成开始（`chat_turn`），而证据采集
 发生在根之前，Langfuse 里会看到「工具 span 的 start 早于 trace 根」约 10 秒的差。这是 Langfuse v2
 装饰器与后台任务上下文的既有限制（把根前移到告警入口的 `alert_turn` 方案已实测证伪，见 change

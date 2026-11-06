@@ -10,7 +10,7 @@
 | `[retrieval]` | 检索层（rag_tools / web_tools / retrieval.py） |
 | `[verify]` | 验证节点（verify 包） |
 | `[agent]` | agent 主循环（agent_node / middleware / workflow） |
-| `[tool]` | 只读日志工具（agents/tools/log_tools 调用留痕 + 启动期探测；事件：`mcp unavailable` = 探测失败降级，工具仍可调用） |
+| `[tool]` | 只读日志工具（agents/tools/log_tools 调用留痕 + 启动期探测；事件：`mcp call` = 每次调用留痕（成功 info / 空与失败 warning，见「日志工具调用留痕」）、`mcp unavailable` = 探测失败降级，工具仍可调用） |
 | `[session]` | 会话管理（chat manager / persistence） |
 | `[db]` | DB 层（repo / engine） |
 | `[llm]` | LLM 调用层 |
@@ -53,6 +53,24 @@ channel），业务不手写。channel 取值见 `src/config/const.py` 的 `Chan
 （`web` 站点 / `wecom` 企业微信 / `alert` 阿里云告警自动分析轮次 / `feishu` 预留），未设置时以 `none` 占位、**不留空段**
 （下游按段位解析；第 3 段 trace_id 的口径见「症状指标」）。各渠道在跑一轮之前写入
 `current_channel`，落点与排障用法见 `docs/agents/troubleshooting.md`。
+
+## 日志工具调用留痕（`[tool] mcp call`）
+
+只读日志工具（`sls_query_latency` / `sls_query_requests`）每次调用都留一行，三种形态：
+
+| 形态 | 级别 | 字段 | 判据 |
+|---|---|---|---|
+| 成功 | info | `tool` `uri` `minutes` `elapsed_ms` `rows` `session` | 有 `rows`（返回文本行数），**没有 `status` 键** |
+| 空结果 | warning | `tool` `uri` `minutes` `elapsed_ms` `status=empty` `reason=empty` `session` | 后端无数据（`SourceEmptyError`）；空 ≠ 失败 |
+| 失败 | warning | `tool` `uri` `minutes` `elapsed_ms` `status=failed` `reason` `session` | 超时（`reason=timeout`）、取数源失败、其余异常（`reason` 为异常信息或类型名） |
+
+- `session` 为当前轮会话 id，无请求上下文时为空串；`bot` / `chatid` 在工具层取不到，
+  靠同一 trace 下的 `[wecom] inbound` 行关联。
+- **排障用法**：区分「模型没调用工具」与「工具调了但失败」就看这一行——前者没有 `mcp call`，
+  后者有且带 `status=failed`。工具自身不重试，重试由模型换查询发起。
+- **不留痕的早退路径**：参数越界、接口不在白名单、后端未注入（启动期探测失败进入降级态）
+  三种情况在发起取数前就返回错误文案，**不写 `mcp call`**；降级态由启动期的
+  `[tool] mcp unavailable` 一行说明。
 
 ## 事件全集
 以 `src/core/log_events.py` 的 `Event` 枚举 + `EVENT_SPECS` 为准，本文件不抄录（防双维护）。

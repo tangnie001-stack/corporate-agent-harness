@@ -62,7 +62,7 @@ agents/            LangGraph agent 循环
   ├─ graph/        workflow(建图) / state / agent_factory(唯一装配入口 build_agent) / middleware(循环四件套) / agent_node(首轮组装 + 循环包装节点) / message_payload(消息→trace 载荷纯函数) / history_window(历史窗口切分纯函数，裁剪与摘要触发判据同口径) / nodes / verify / skill_direct(命令行直出节点)
   ├─ tools/        retrieve_kb、ask_user、search_web、task、registry( + readonly 声明表)
   ├─ skills/       主从委派运行时：loader/registry/executor/delegate_task/models/invocation/prefix(/xxx 解析与清洗纯函数) + fork 执行层 fork_stream/fork_tools/delegate_run
-  └─ presets/      智能体预设：models / loader / registry
+  └─ presets/      智能体预设：models / loader / registry / capability(profile→能力档映射)
 rag/               检索与知识库路由：retrieval / fusion(RRF 纯函数) / context / prompt / temporal
 rca/               告警三档判定：loader(skill 加载与匹配) / context(规则反查补 uri·阈值·for) / collector(两波并行采集·三态归一) / judge(档位确定性计算) / render(卡片渲染) / pipeline(开关→上下文→采集→判定→渲染) / models(值对象) / sources(取数源协议 + Grafana 实现 + fixture)
 chat/              对话管理：manager(Redis) / persistence(PostgreSQL) / streaming / task_registry / process_log / summary_store(摘要读写 mixin，Redis 优先内存降级，宿主 ChatManager) / history_summary(摘要核心：提示词组装 + 调用 + 四条不变量校验)
@@ -253,7 +253,9 @@ Nginx 容器把本目录挂到 `/usr/share/nginx/html` 直接托管，**无 npm 
   与正文长度无关。（`src/agents/skills/loader.py`）
   术语与委派机制见 `docs/agents/glossary.md`「技能委派」。
 - `agents/<name>.md`：智能体预设（frontmatter 驼峰键 display_name / description / tools /
-  skills / maxTurns；正文为 system prompt 人设）。术语见 `docs/agents/glossary.md`「智能体预设」。
+  skills / maxTurns / hidden / channel；正文为 system prompt 人设）。`hidden` 从站点清单隐藏
+  （`bot-` 前缀预设必须为 true），`channel` 限定可用渠道（如 `wecom` 仅机器人入口）。
+  术语见 `docs/agents/glossary.md`「智能体预设」。
 - 顶层 `skills/`（运行时内容）与 `.claude/skills/`（开发期工具链，如 openspec）语义不同，勿混淆。
 - 容器日志在 `/data/logs/`，按天轮转；`trace_id` 见 `docs/agents/logging-rules.md`。
 
@@ -284,7 +286,7 @@ Nginx 容器把本目录挂到 `/usr/share/nginx/html` 直接托管，**无 npm 
 | 改跨轮历史摘要（触发阈值 / 摘要提示词 / 调度） | 切分口径 `src/agents/graph/history_window.py`；摘要核心 `src/chat/history_summary.py` + 模板 `templates/task-summary-system.yaml`；调度 `src/services/summary_scheduler.py`；锁 `src/services/summary_lock.py`；存储 `src/chat/summary_store.py`；阈值在 `src/config/const.py` |
 | 加/改工具 | `src/agents/tools/`（实现 + 在 `rag_tools.py` 注册）；工具描述文案入 `src/config/` |
 | 加/改 skill 机制 | `src/agents/skills/`（loader/registry/executor/delegate_task）；内容放 `skills/<name>/SKILL.md` |
-| 加/改智能体预设 | 内容放 `agents/<name>.md`；机制在 `src/agents/presets/`（loader/registry） |
+| 加/改智能体预设 | 内容放 `agents/<name>.md`；机制在 `src/agents/presets/`（loader/registry/capability 档映射） |
 | 加/改告警三档判定（判定规则 / 取数源 / 卡片） | `src/rca/`（`judge.py` 档位、`collector.py` 采集、`sources/` 取数源、`render.py` 卡片）；skill 内容 `skills/rca-latency/SKILL.md`；配置 `src/config/rca.py`；接入点 `src/services/alert_service.py` |
 | 改前端对话页 | `deploy/nginx/html/chat.html`（自包含）；**勿改 `js/chat.js`** |
 | 改知识库管理页 | `deploy/nginx/html/index.html`（+ `js/api.js`） |
