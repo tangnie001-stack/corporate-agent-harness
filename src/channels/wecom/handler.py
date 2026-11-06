@@ -40,6 +40,20 @@ StartTurnCallable = Callable[..., Awaitable[turn_runner.TurnHandle]]
 GetServiceCallable = Callable[[], Awaitable[AppService]]
 # 澄清答复注入入口签名（生产传 `clarify_service.resolve_clarify_answer`；测试注入替身）
 ResolveAnswerCallable = Callable[..., Awaitable[bool]]
+# 机器人 profile 取用签名（生产传 `wecom_service.resolve_profile`；测试注入替身）
+ResolveProfileCallable = Callable[[str], str]
+
+
+def _no_profile(_bot_key: str) -> str:
+    """未注入 profile 取用器时的兜底：恒返回空串（走通用人设）。
+
+    Args:
+        _bot_key: 机器人别名（兜底不用）
+
+    Returns:
+        空串
+    """
+    return ""
 
 
 def compose_query(msg: InboundMessage) -> str | None:
@@ -103,6 +117,7 @@ class RagChannelHandler:
         dedup: BoundedTtlMap,
         triggers: BoundedTtlMap,
         resolve_answer: ResolveAnswerCallable,
+        resolve_profile: ResolveProfileCallable | None = None,
         kb_id: str = "",
     ) -> None:
         """初始化。
@@ -114,6 +129,8 @@ class RagChannelHandler:
             dedup: msgid 去重表（有界）
             triggers: 澄清"会话 → 触发者"登记表（有界）
             resolve_answer: 澄清答复注入入口（生产传 `clarify_service.resolve_clarify_answer`）
+            resolve_profile: bot_key → 智能体预设名（生产传 `wecom_service.resolve_profile`；
+                None 时恒返回空串，即走通用人设）
             kb_id: 本轮默认知识库（空串 = 不检索，与站点逻辑一致）
         """
         self._start_turn = start_turn
@@ -122,6 +139,10 @@ class RagChannelHandler:
         self._dedup = dedup
         self._triggers = triggers
         self._resolve_answer = resolve_answer
+        if resolve_profile is None:
+            self._resolve_profile = _no_profile
+        else:
+            self._resolve_profile = resolve_profile
         self._questions: BoundedTtlMap = BoundedTtlMap(
             capacity=wecom_channel.TRIGGER_MAP_CAPACITY,
             ttl_seconds=wecom_channel.TRIGGER_MAP_TTL_SECONDS,
@@ -135,6 +156,7 @@ class RagChannelHandler:
         start_turn: StartTurnCallable,
         get_service: GetServiceCallable,
         resolve_bot_key: Callable[[str], str | None],
+        resolve_profile: ResolveProfileCallable | None = None,
     ) -> RagChannelHandler:
         """按配置装配默认实例（去重/触发者映射取 `wecom_channel` 的窗口与容量）。
 
@@ -142,6 +164,7 @@ class RagChannelHandler:
             start_turn: 单轮生成入口
             get_service: AppService 取用器
             resolve_bot_key: aibotid → bot_key
+            resolve_profile: bot_key → 智能体预设名（不传则恒为空串）
 
         Returns:
             配置齐备的 RagChannelHandler
@@ -151,6 +174,7 @@ class RagChannelHandler:
             get_service=get_service,
             resolve_bot_key=resolve_bot_key,
             resolve_answer=clarify_service.resolve_clarify_answer,
+            resolve_profile=resolve_profile,
             dedup=BoundedTtlMap(
                 capacity=wecom_channel.DEDUP_CAPACITY,
                 ttl_seconds=wecom_channel.DEDUP_TTL_SECONDS,
@@ -305,6 +329,8 @@ class RagChannelHandler:
             from_userid=msg.from_userid,
         )
         user_id = derive_user_id(msg.from_userid)
+        # 本台机器人配置的智能体预设（空串 = 通用人设），作为本轮生成的人设来源
+        profile = self._resolve_profile(bot_key)
         trace_id = new_trace_id()
         token = current_trace_id.set(trace_id)
         # 渠道标识：本轮日志第 5 段与 Langfuse metadata 均据此标记为企微；
@@ -317,7 +343,7 @@ class RagChannelHandler:
             try:
                 logger.info(
                     "[wecom] inbound bot_key={} msgid={} chattype={} chatid={} session_id={}"
-                    " user_id={} trace_id={} text_len={}",
+                    " user_id={} trace_id={} text_len={} profile={}",
                     encode_value(bot_key),
                     msg.msgid,
                     msg.chattype,
@@ -326,6 +352,7 @@ class RagChannelHandler:
                     encode_value(user_id),
                     encode_value(trace_id),
                     len(msg.text or ""),
+                    encode_value(profile),
                 )
                 if settings.WECOM_BOT_LOG_CONTENT:
                     logger.info(
@@ -341,6 +368,7 @@ class RagChannelHandler:
                     kb_id=self._kb_id,
                     query=compose_query(msg),
                     user_id=user_id,
+                    agent=profile,
                     title=build_session_title(
                         bot_key=bot_key,
                         chattype=msg.chattype,

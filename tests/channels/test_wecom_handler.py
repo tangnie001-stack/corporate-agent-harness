@@ -57,7 +57,9 @@ def _msg(**overrides: Any) -> InboundMessage:
     return InboundMessage(**base)
 
 
-def _handler(*, start_turn=None, events=None, resolve_answer=None):
+def _handler(
+    *, start_turn=None, events=None, resolve_answer=None, resolve_profile=None
+):
     """构造被测 handler，返回 (handler, 记录用的容器)。"""
     recorded: dict[str, Any] = {"start_turn_calls": [], "channels_at_start": []}
     if events is None:
@@ -90,6 +92,7 @@ def _handler(*, start_turn=None, events=None, resolve_answer=None):
         get_service=_get_service,
         resolve_bot_key=_resolve_bot_key,
         resolve_answer=resolve_answer or _default_resolve_answer,
+        resolve_profile=resolve_profile,
         dedup=BoundedTtlMap(capacity=10, ttl_seconds=600.0),
         triggers=BoundedTtlMap(capacity=10, ttl_seconds=300.0),
         kb_id="",
@@ -113,6 +116,64 @@ async def test_text_message_runs_turn_and_replies():
     assert len(call["user_id"]) == 36
     assert sink.calls[-1][1] is True
     assert sink.calls[-1][0].startswith("甲")
+
+
+def _resolve_to(profile: str):
+    """构造恒返回给定预设名的 profile 取用器替身。"""
+
+    def _resolve(_bot_key: str) -> str:
+        return profile
+
+    return _resolve
+
+
+@pytest.mark.asyncio
+async def test_profile_from_resolver_becomes_agent():
+    """取用器给出的预设名须原样作为 start_turn 的 agent 实参。"""
+    handler, recorded = _handler(resolve_profile=_resolve_to("bot-ops"))
+
+    await handler(_msg(), _Sink())
+
+    assert recorded["start_turn_calls"][0]["agent"] == "bot-ops"
+
+
+@pytest.mark.asyncio
+async def test_empty_profile_passes_empty_agent():
+    """取用器返回空串时 agent 为空串（走通用人设）。"""
+    handler, recorded = _handler(resolve_profile=_resolve_to(""))
+
+    await handler(_msg(), _Sink())
+
+    assert recorded["start_turn_calls"][0]["agent"] == ""
+
+
+@pytest.mark.asyncio
+async def test_build_default_without_resolver_uses_empty_agent():
+    """build_default 不传 resolve_profile 仍可装配，agent 退化为空串（向后兼容）。"""
+    recorded: list[dict[str, Any]] = []
+
+    async def _start_turn(svc, **kwargs):
+        recorded.append(kwargs)
+        return cast(
+            turn_runner.TurnHandle,
+            _FakeTurnHandle(kwargs["session_id"], [SSEDoneEvent()]),
+        )
+
+    async def _get_service():
+        return cast(AppService, object())
+
+    def _resolve_bot_key(aibotid: str) -> str | None:
+        return "dev"
+
+    handler = RagChannelHandler.build_default(
+        start_turn=_start_turn,
+        get_service=_get_service,
+        resolve_bot_key=_resolve_bot_key,
+    )
+
+    await handler(_msg(), _Sink())
+
+    assert recorded[0]["agent"] == ""
 
 
 @pytest.mark.asyncio

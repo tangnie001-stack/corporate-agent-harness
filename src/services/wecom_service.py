@@ -6,6 +6,7 @@
 """
 
 import asyncio
+from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 from loguru import logger
@@ -43,6 +44,23 @@ _drivers: dict[str, ChannelDriver] = {}
 # 语义为「已配置」级：由全部配置的机器人构建，非「已连接」级（_drivers 只含连接成功者）。
 # 不要用它判断驱动是否在线；未连上者不会推消息，故当前无害，但两表语义不同，勿混用。
 _bot_key_by_aibotid: dict[str, str] = {}
+# 预设名表：bot_key → 该台配置的智能体预设（空串 = 通用人设）；同样由 start() 一次构建
+_profile_by_key: dict[str, str] = {}
+
+
+def resolve_profile(bot_key: str) -> str:
+    """取该台机器人配置的智能体预设名；未命中返回空串（走通用人设）。
+
+    作为可注入依赖传给桥接 handler：通道层据此在每轮生成时指定人设，
+    不必 import 本模块（避免通道层与编排层成环）。
+
+    Args:
+        bot_key: 机器人别名
+
+    Returns:
+        智能体预设名；未配置或未知 bot_key 为空串
+    """
+    return _profile_by_key.get(bot_key, "")
 
 
 def _resolve_bot_key(aibotid: str) -> str | None:
@@ -83,11 +101,16 @@ async def _default_handler(msg: InboundMessage, sink: ReplySink) -> None:
     await sink.reply_stream(WECOM_REPLY_PLACEHOLDER, finish=True)
 
 
-def _build_bridge_handler() -> RagChannelHandler:
+def _build_bridge_handler(
+    resolve_profile: Callable[[str], str],
+) -> RagChannelHandler:
     """构造长连接用的桥接 handler（每次 start 重建：去重/触发者表随进程生命周期）。
 
     依赖注入而非在通道层 import 本模块：`channels/wecom/handler.py` 只依赖
     `services` 的叶子模块，避免与 `wecom_service → handler` 形成环。
+
+    Args:
+        resolve_profile: bot_key → 智能体预设名（生产传本模块的 `resolve_profile`）
 
     Returns:
         配置齐备的 RagChannelHandler
@@ -96,6 +119,7 @@ def _build_bridge_handler() -> RagChannelHandler:
         start_turn=turn_runner.start_turn,
         get_service=get_app_service,
         resolve_bot_key=_resolve_bot_key,
+        resolve_profile=resolve_profile,
     )
 
 
@@ -109,7 +133,7 @@ def _validate_credentials() -> None:
 
 async def start() -> None:
     """启动通道：enabled 时按 mode 装配驱动，否则 no-op。"""
-    global _drivers, _bot_key_by_aibotid
+    global _drivers, _bot_key_by_aibotid, _profile_by_key
     if not settings.WECOM_BOT_ENABLED:
         return
     mode = settings.WECOM_BOT_MODE
@@ -123,6 +147,7 @@ async def start() -> None:
         )
         _drivers = {CALLBACK_BOT_KEY: CallbackDriver(crypto, _default_handler)}
         _bot_key_by_aibotid = {}
+        _profile_by_key = {}
         return
 
     if mode != _MODE_LONG_CONNECTION:
@@ -134,8 +159,9 @@ async def start() -> None:
         raise RuntimeError("WECOM_BOT_MODE=long_connection 但 WECOM_BOTS 为空")
 
     _bot_key_by_aibotid = {bot.bot_id: bot.key for bot in bots}
+    _profile_by_key = {bot.key: bot.profile for bot in bots}
     _drivers.clear()
-    bridge_handler = _build_bridge_handler()
+    bridge_handler = _build_bridge_handler(resolve_profile)
     built: list[tuple[str, LongConnectionDriver]] = []
     label_by_key: dict[str, str] = {}
     for bot in bots:
@@ -170,7 +196,7 @@ async def start() -> None:
 
 async def stop() -> None:
     """停止通道：逐台断开，单台失败不阻塞其余，幂等。"""
-    global _drivers, _bot_key_by_aibotid
+    global _drivers, _bot_key_by_aibotid, _profile_by_key
     for bot_key, driver in list(_drivers.items()):
         try:
             await driver.stop()
@@ -182,6 +208,7 @@ async def stop() -> None:
             )
     _drivers = {}
     _bot_key_by_aibotid = {}
+    _profile_by_key = {}
 
 
 def get_driver(bot_key: str) -> ChannelDriver:

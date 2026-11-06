@@ -3,6 +3,8 @@
 共享替身与工厂见 tests/services/wecom_service_fakes.py；状态复位见 tests/services/conftest.py。
 """
 
+import json
+
 import pytest
 from loguru import logger
 
@@ -334,3 +336,27 @@ async def test_callback_mode_keeps_placeholder_handler(monkeypatch):
     await wecom_service.start()
 
     assert captured["handler"] is wecom_service._default_handler
+
+
+@pytest.mark.asyncio
+async def test_long_connection_collects_bot_profiles(monkeypatch):
+    """profile 表按 bot_key 建立供注入取用：已配置台给预设名，未配置/未知台给空串。"""
+    monkeypatch.setattr(settings, "WECOM_BOT_ENABLED", True)
+    monkeypatch.setattr(settings, "WECOM_BOT_MODE", "long_connection")
+    monkeypatch.setenv(
+        "WECOM_BOTS",
+        json.dumps(
+            [
+                {"key": "ops", "bot_id": "aibA", "secret": "s1", "profile": "bot-ops"},
+                {"key": "dev", "bot_id": "aibB", "secret": "s2"},
+            ],
+            separators=(",", ":"),
+        ),
+    )
+    _install_stub(monkeypatch)
+
+    await wecom_service.start()
+
+    assert wecom_service.resolve_profile("ops") == "bot-ops"
+    assert wecom_service.resolve_profile("dev") == ""
+    assert wecom_service.resolve_profile("unknown") == ""

@@ -14,6 +14,8 @@ def _reset_state():
     """用例前后复位 wecom_service 的模块级注册表。"""
     wecom_service._drivers = {}
     wecom_service._bot_key_by_aibotid = {}
+    wecom_service._profile_by_key = {}
     yield
     wecom_service._drivers = {}
     wecom_service._bot_key_by_aibotid = {}
+    wecom_service._profile_by_key = {}

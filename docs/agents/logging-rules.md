@@ -82,7 +82,8 @@ channel），业务不手写。channel 取值见 `src/config/const.py` 的 `Chan
 
 - `agent resolved`（session / info）——每轮生效智能体与解析来源；`source` 取 bound
   （沿用绑定）/ new_bound（首次绑定）/ ignored（请求与会话绑定不一致，已忽略）/
-  unregistered（请求名未注册，降级为空）/ none
+  unregistered（请求名未注册，降级为空）/ routing_disabled（企微渠道路由总开关关闭，
+  请求与会话绑定一律忽略）/ none
 - `agent bind unregistered`（agent / warning）——会话绑定的预设已从注册表消失（被删 /
   改名），绑定仍生效、仅留可查证据，避免静默沿用；`bound` 为失效预设名。与
   `agent bind ignored` 语义相反：后者是本次绑定**未**生效（被忽略或降级为空）
