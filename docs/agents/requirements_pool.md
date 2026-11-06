@@ -142,13 +142,13 @@
 
 > **H-16 补充：部分恢复的判定与展示口径**（2026-11-06 定，避免实现时又落成一句模糊的「部分恢复」）
 >
-> - **数据源**：`GET {GRAFANA_BASE_URL}/api/alertmanager/grafana/api/v2/alerts`，复用现有 `GRAFANA_TOKEN`（只读；2026-11-06 实测 200）。base 走配置，将来换独立 Alertmanager 只改配置。
-> - **查询方式**：按事件簇的 label matcher（`alertname` / `service` / `folder`）过滤，不要拉全量再本地筛；故障时可能有上千条。
-> - **计数口径**：`status.state == active` 且 `silencedBy`/`inhibitedBy` 为空 → 「仍在告警」；被静默/抑制的单列「已静默 N 条」，不计入故障。
-> - **频率与失败**：只在摘要窗口 flush 时查一次（约 1 次/分钟/事件），超时 2–3 秒；查询失败写「未确认」，**不得写 0**。
-> - **展示三档**：①已恢复 N 条（收到恢复通知）②仍在告警 M 条（回查时间戳）③未确认 K 条；三档都带时间，避免把推断写成事实。
-> - **完全恢复判据**：回查 `active` 为 0 **且** 静默期（60 秒）内无新 firing 才判定；部分恢复时卡片保持故障配色，不发「已恢复」结论。
-> - **适用前提**：该接口只覆盖 Grafana 托管规则；若改为独立 Prometheus Alertmanager，需换 base。
+> - **主口径 = 指纹差集（默认，零外部调用）**：告警载荷自带 `alerts[].fingerprint`（`src/services/alert_service.py:120-144` 已解析）。按**事件簇**维护两个集合 `fired` / `resolved`，`仍在告警 = fired - resolved`；同一条通知里混合状态时按每条 `status` 分别入集。集合按事件簇存（不是按 `session_id`），TTL 需长于事件窗口（如 24h），否则进程重启后差集清零、"仍在告警"会突降为 0。
+> - **差集是「观测值」，不是事实**：漏收（网络/重启/重试耗尽）会让 resolved 缺失而高估剩余；`fingerprint` 随 labels（如 `instance`）变化而漂移，会把同一告警算成「旧的未恢复 + 新的新增」。展示时必须标注为「观测」。
+> - **兜底 = 回查校准（按需触发，非每次都查）**：`GET {GRAFANA_BASE_URL}/api/alertmanager/grafana/api/v2/alerts`，复用现有 `GRAFANA_TOKEN`（只读；2026-11-06 实测 200，base 走配置）。触发条件：差集显示 `remaining > 0` 且距上次回查 ≥5 分钟；差集为 0 时不回查（省调用）。按簇的 label matcher（`alertname`/`service`/`folder`）过滤，不拉全量。
+> - **回查计数口径**：`status.state == active` 且 `silencedBy`/`inhibitedBy` 为空 → 「仍在告警」；被静默/抑制的单列「已静默 N 条」，不计入故障。超时 2–3 秒，失败写「未确认」，**不得写 0**。
+> - **展示三档**（都带时间，避免把推断写成事实）：①已恢复 N 条（指纹差集）②仍在告警 M 条（差集；若已回查则标注「校准 M' 条 · 回查时间」）③未确认 K 条。差集与校准不一致时提示「有 X 条差异，可能漏收或指纹漂移」。
+> - **完全恢复判据**：差集 `remaining == 0` **且** 静默期（60 秒）内无新 firing；若已回查则以回查 `active == 0` 复核。部分恢复时卡片保持故障配色，不发「已恢复」结论。
+> - **适用前提**：回查只覆盖 Grafana 托管规则；若改为独立 Prometheus Alertmanager，需换 base。
 
 ## I. 评测题集
 
