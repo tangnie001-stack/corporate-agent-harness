@@ -13,7 +13,7 @@
 - 预设 schema 增加 **可见性与渠道约束**：hidden / channel；bot- 前缀强制校验，站点选择器不可见且站点请求不可用。
 - 新增 **两个只读日志工具**（仅 ops/dev）：sls_query_latency / sls_query_requests，复用现有 MCP 客户端；带接口白名单、时间窗、行数上限与脱敏。
 - 外图 **按 profile 查能力档、选对应已装配的 Agent 实例**（基础 / 含日志两档），不按 Agent 复制外图。
-- trace 约定收敛：**三个标签**（kb|no_kb / 渠道 / pf:<profile>）+ metadata 补齐（profile、tools_used、rca_*）。
+- trace 约定收敛：**三个标签**（kb|no_kb / 渠道 / pf:<profile>）+ metadata 补齐（profile、tools_used）。
 - 新增 **回滚开关** WECOM_AGENT_ROUTING_ENABLED（默认 true），关闭后全部回落通用人设。
 
 **BREAKING**：chat 标签不再写入（历史数据保留）。
@@ -29,7 +29,7 @@
 
 - agent-preset: 预设文件结构增加 hidden / channel 字段与加载期校验。
 - wecom-channel: 机器人注册表增加 profile 字段；入站分发时确定该轮 profile。
-- llm-tracing: 标签由 3 类构成；metadata 增加 profile / tools_used / rca_*。
+- llm-tracing: 标签由 3 类构成；metadata 增加 profile / tools_used。
 
 ## Impact
 
