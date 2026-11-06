@@ -2,9 +2,11 @@
 
 ### Requirement: trace 根落在后台生成任务内
 
-trace 根 SHALL 覆盖本轮从"开始处理"到"生成结束"的完整生命周期，且 SHALL 在承载该轮的 asyncio task 内部开启与结束。
+trace 根 SHALL 在承载该轮的 asyncio task 内部开启与结束。
 
-站点与企微轮次：根 SHALL 开在生成任务内，覆盖图事件循环的完整生命周期。
+站点与企微轮次：根 SHALL 覆盖「准备就绪后的整轮生成」（图事件循环的完整生命周期），开在生成任务内。
+
+告警轮次：根 SHALL 开在生成任务内（即生成开始）；采集发生在根之前，采集 span 可早于根，属已知现象（判据见 `docs/agents/troubleshooting.md` §4），不视为违反本要求。
 
 SSE 订阅与推送侧 SHALL NOT 单独产生 trace。
 

@@ -2,7 +2,7 @@
 
 当前企微 4 台机器人共用一条生成管线：handler 不传 agent，`start_turn` 以空 agent 进入，prompt 落到 `general` 人设；工具面由编译期 `build_graph(tools=...)` 固定，与预设无关。
 
-告警链路是第四个编排入口，它先取数（MCP span）后生成，但 trace 由 `_run_generation` 的 `@observe` 在生成开始时创建，导致 trace 起点晚于其子 span（实测 3.2s）。
+告警链路是第四个编排入口，它先取数（MCP span）后生成，但 trace 由 `_run_generation` 的 `@observe` 在生成开始时创建，导致 trace 根晚于其子 span 约 10s 量级（2026-11-06 本地 spike：10.8s）；本 change 不处理该起点问题，见 Risks。
 
 约束：
 
@@ -19,7 +19,7 @@
 - 入口到 Agent 的分配显式化、可配置、可回滚
 - ops/dev 能查只读日志，且工具不出现在其他 Agent 的能力面里
 - 渠道专属 Agent 对站点不可见、不可调用
-- trace 起点、标签、metadata 三者一致且可筛选
+- trace 标签与 metadata 一致且可筛选
 
 **Non-Goals:**
 
@@ -27,6 +27,7 @@
 - 每个 bot 一张外图：外图编排与角色无关
 - KB per bot、KB Agent as Tool
 - 渐进式 MCP / call_tool 代理
+- trace 根时间前移到告警入口（spike 证伪，见 Risks）
 - 群/人级日志权限（依赖企微可见范围）
 
 ## Decisions

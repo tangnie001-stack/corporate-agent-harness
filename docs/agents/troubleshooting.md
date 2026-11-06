@@ -84,8 +84,10 @@
 **已知现象：trace 根的时间晚于子 span**。告警轮的 trace 根取在生成开始（`chat_turn`），而证据采集
 发生在根之前，Langfuse 里会看到「工具 span 的 start 早于 trace 根」约 10 秒的差。这是 Langfuse v2
 装饰器与后台任务上下文的既有限制（把根前移到告警入口的 `alert_turn` 方案已实测证伪，见 change
-`bot-agent-routing` 的 tasks 6.0）。**判据**：看 span 的 `parent` 是否指向同一条 trace、trace 名是否为
-`chat_turn`，不要看 start 先后——时间差本身不是故障，不能据此判"trace 串错了"或"观测丢了一段"。
+`bot-agent-routing` 的 tasks 6.0）。**判据**：以 `trace_id` 归属为准——采集 span 是显式带 `trace_id` 开启的，不传
+`parent_observation_id`，其 `parent` 为空是正常现象；`agent_turn` 的 `parent` 是否指向同一条
+trace 也只在 `agent_turn` 上调。不要看 start 先后——时间差本身不是故障，不能据此判"trace 串错了"
+或"观测丢了一段"。
 
 ## 5. 本地 SOP
 
