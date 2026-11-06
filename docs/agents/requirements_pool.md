@@ -132,6 +132,24 @@
 | H-12 | **无指标/告警出口：Langfuse v2 无 Prometheus 端点，应用侧也不暴露 metrics** | **为什么需要**：上游可用性故障（403 额度耗尽 / 429 穷尽）要"分钟级人工介入切换"，但**没有叫醒人的通道**。**实测（2026-10-16，本地 `langfuse/langfuse:2.95.11` 容器直连，逐路径校准 401=存在需鉴权 / 404=不存在）**：① **`/metrics` = 404** ⇒ **无 Prometheus 端点**，不能直接接 Grafana 的 Prometheus 数据源；② **`/api/public/metrics/daily` 存在**（需 Basic auth），返回**日粒度**聚合（`date / countTraces / countObservations / totalCost / usage[]{model,inputUsage,outputUsage,totalCost,...}`，实测有 12 天数据、`meta.totalItems=12`）⇒ 只能做**成本/用量趋势**，**天粒度不能用于分钟级告警**；③ `/api/public/health` → `{"status":"OK","version":"2.95.11"}`（**无需鉴权**，近实时，但**只表示 Langfuse 自身活着**，**不反映模型调用失败**）；④ `/api/public/metrics`（旧路径）、`/api/public/v2/metrics`、`/api/metrics` 均 **404**（不存在）。**应用侧**同样无 metrics 端点（`grep prometheus\|/metrics` 无结果）；`src/api/alerts.py` 是**入站**（接收阿里云/Grafana 告警并跑 Agent 分析），**不是出站**。**方向（用户 2026-10-16 告知）**：后续接入**阿里云 Grafana** + **阿里云日志（SLS）**；**最小可行出站源** = 把已有的 `logger.exception`（`logs/error_*.log`）接进 **SLS 日志告警**（近乎纯配置），或暴露一个健康/指标端点由云监控打点。**依赖方**：change `timeout-and-degradation-hardening` 的 **D9-(A) 档**（"快速失败 + 明确告知 + 人工切换"）**依赖本项** —— 没有触发源，"分钟级可介入"不成立 | 2026-10-16 排查 A-03/A-05 的"长时不可用"方案时实测 | P1 | 低 | 无 |
 | H-13 | **告警轮把判定档位 / 定档依据 / 证据三态 / 采集耗时写入 trace metadata** | 变更 `bot-agent-routing` 原计划在告警轮写四个 `rca_*` 元数据键，但实现只落在告警卡片与 `[rca]` 日志，未进 trace；该 SHALL 已从 llm-tracing delta 移除（2026-11-06）。**要做**：把判定结果经 `turn_runner` 透传到生成任务，用 `update_current_trace(metadata=...)` 合并进 trace 根（与 `profile` / `tools_used` 同一写入口径）。**为何单列**：要改运行期透传链路（告警侧 → 生成任务），与文档登记不是一件事 | bot-agent-routing Task 12 评审 E1（裁定删 SHALL） | P2 | 低 | 无 |
 
+| H-14 | **告警通知节流与恢复风暴合并** | 一次 DB 抖动会产生 20 条 firing + 20 条 resolved，当前**每条各发一条消息**（恢复通知虽不走模型，但仍逐条推送），群被刷爆。要做：首条立即发；同群 60 秒窗口内其余只累计；窗口末发一条摘要「新增 N 条（DB a / Redis b / 队列 c / 微服务 d），最高优先级 X」；**恢复走同一窗口**，合并为「以下 K 条已恢复」；补「被合并条数」「未送达条数」两个计数 | 2026-11-06 告警风暴讨论；`docs/research/2026-11-06-aiops-alert-triage-gap-analysis.md` §P0-3 | P1 | 低 | 无 |
+| H-15 | **告警入口并发闸** | `src/services/alert_service.py` 对每条通过去重的告警直接 `asyncio.create_task`，**无信号量、无队列**；DB 故障时 N 条告警 = N 个并发 Agent + MCP 查询，会打满 LLM 配额/DB 连接。要做：`Semaphore(3~5)` + 有界队列（如 20），满则丢弃并记 `[alert] dropped reason=overload`，并暴露当前并发/队列深度/丢弃数 | 2026-11-06 告警风暴讨论 | P1 | 低 | H-14 |
+| H-16 | **告警事件状态机（open/closed）** | 去重键是「fingerprint + status」，只压短时重复，解决不了：`repeat_interval` 到期再发、恢复早于触发/永久不恢复、抖动（firing/resolved 交替）。要做：以稳定键（alertname + service）维护事件状态，恢复只更新状态不单独发消息；抖动要求连续 N 次评估稳定才切换；恢复到达但无对应 open 事件时忽略 | Alertmanager `group_wait`/`repeat_interval` 语义（https://prometheus.io/docs/alerting/configuration ，2026-11-06 访问）；2026-11-06 讨论 | P1 | 中 | H-14 |
+| H-17 | **一次故障只产生一次模型调用（事件聚合）** | 当前每条告警各跑一轮 Agent，同一 DB 故障会被分析 20 次，且各自只看自己那条 URI，天然看不到「同时发生」这个最强线索。要做：同窗内只分析**「可分析的最高优先级代表」**（优先级 db > redis > 队列 > 微服务；同级优先有 URI/有 skill 覆盖的），其余只按类别计数；输入必须带整簇分类计数；窗口内出现更高优先级时允许**追加一次**（每窗 ≤2 次）；并发无关故障按「时间窗 + 环境/集群 + 共享标签」分簇，不强行合并 | 2026-11-06 讨论；对照 HolmesGPT / Keep 的告警聚合与富化 | P1 | 中 | H-16 |
+| H-18 | **No Data / 「无请求记录」语义区分** | Grafana 的 `No Data`/`Error`（`DatasourceNoData`/`DatasourceError`）现在会被当普通告警分析，取证为空时判「建议观察」，**分不清「服务挂了」与「监控坏了」**；工具返回「近 N 分钟无请求记录」也可能被模型读成「服务正常」。要做：识别 no-data/error 类告警并直接判「监控不可用」；工具把「窗口无请求」与「样本量过低」分开表达 | https://grafana.com/docs/learning-hub/basic-alerting/04-evaluation/12-no-data-error （2026-11-06 访问） | P1 | 低 | 无 |
+| H-19 | **trace_id 贯通回写仓库与查询字段** | 目标机 nginx 已加 `$http_x_trace_id`，但本仓 `deploy/nginx/nginx.conf:21-23` 的 `log_format` 未同步、`src/rca/sources/grafana.py:146` 的明细 SQL 也未 select 该字段 —— 日志有 id、查询取不到，且下次发布会覆盖目标机改动。要做：回写仓库 + 明细查询加字段 + MCP 服务端同步 | 2026-11-06 讨论（延续调研 §P0-2 链路证据） | P1 | 低 | 无 |
+| H-20 | **DB 证据接入（慢日志 + 连接数）** | 告警判定目前只有访问日志，业务失败返回 200 时看不出来。可接两个只读源：DAS `DescribeSlowLogRecords`（需 RAM `hdm:DescribeSlowLogRecords`）与云监控 RDS 指标（`Connection usage` / `sessions` / `slow queries`）；连接池本身在应用进程内，云上取不到，需应用侧自采。建议做成两个 MCP 只读工具，复用白名单/超时/脱敏约束 | https://help.aliyun.com/zh/das/developer-reference/api-das-2020-01-16-describeslowlogrecords ；RDS 性能指标页（均 2026-11-06 访问） | P2 | 中 | MCP 服务扩展 |
+
+> **H-16 补充：部分恢复的判定与展示口径**（2026-11-06 定，避免实现时又落成一句模糊的「部分恢复」）
+>
+> - **数据源**：`GET {GRAFANA_BASE_URL}/api/alertmanager/grafana/api/v2/alerts`，复用现有 `GRAFANA_TOKEN`（只读；2026-11-06 实测 200）。base 走配置，将来换独立 Alertmanager 只改配置。
+> - **查询方式**：按事件簇的 label matcher（`alertname` / `service` / `folder`）过滤，不要拉全量再本地筛；故障时可能有上千条。
+> - **计数口径**：`status.state == active` 且 `silencedBy`/`inhibitedBy` 为空 → 「仍在告警」；被静默/抑制的单列「已静默 N 条」，不计入故障。
+> - **频率与失败**：只在摘要窗口 flush 时查一次（约 1 次/分钟/事件），超时 2–3 秒；查询失败写「未确认」，**不得写 0**。
+> - **展示三档**：①已恢复 N 条（收到恢复通知）②仍在告警 M 条（回查时间戳）③未确认 K 条；三档都带时间，避免把推断写成事实。
+> - **完全恢复判据**：回查 `active` 为 0 **且** 静默期（60 秒）内无新 firing 才判定；部分恢复时卡片保持故障配色，不发「已恢复」结论。
+> - **适用前提**：该接口只覆盖 Grafana 托管规则；若改为独立 Prometheus Alertmanager，需换 base。
+
 ## I. 评测题集
 
 - **v7 题集扩文档**：v6 冻结在 v5 的两份文档（50/51 块），v7 再扩到全量 4 份（161 块），保持同出题器以单独归因。
