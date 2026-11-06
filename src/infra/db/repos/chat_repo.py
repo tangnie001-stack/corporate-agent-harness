@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.infra.db.models.chat import MessageModel, SessionModel
 from src.infra.db.models.feedback import FeedbackModel
 from src.infra.db.models.kb import KbModel
+from src.infra.llm.trace_context import current_trace_id
 
 
 class ChatRepo:
@@ -143,6 +144,8 @@ class ChatRepo:
                 completion_tokens=getattr(msg, "completion_tokens", 0),
                 total_tokens=getattr(msg, "total_tokens", 0),
                 model_name=getattr(msg, "model_name", ""),
+                # 无 trace 上下文（如批处理/脚本）时留空，不猜测
+                trace_id=current_trace_id.get(),
                 process=getattr(
                     msg, "process", None
                 ),  # 白名单透传（既有 getattr 模式）

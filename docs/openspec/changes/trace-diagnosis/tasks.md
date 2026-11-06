@@ -7,32 +7,38 @@
 
 ## 1. 迁移与配置
 
-- [ ] 1.1 `src/infra/db/models/chat.py`：`MessageModel` 新增 `trace_id: Mapped[str | None]`（可空，注释写明"存量行不回填"）
-- [ ] 1.2 新增 alembic 迁移：加列 + `ix_messages_trace_id` 索引
-- [ ] 1.3 `src/infra/db/repos/chat_repo.py:127` `save_message`：从请求上下文取 `trace_id` 写入；取不到时留空
-- [ ] 1.4 `src/config/settings.py` 新增 `DIAG_SCORE_FLOOR`（默认 0.35）、`DIAG_SCORE_GAP`（默认 0.05）、`DIAG_TRACE_LOOKBACK_ROUNDS`（默认 2）、`DIAG_MAX_REPRESENTATIVE_TRACES`（默认 3），每项写明"首版未标定"
+- [x] 1.1 `src/infra/db/models/chat.py`：`MessageModel` 新增 `trace_id: Mapped[str | None]`（可空，注释写明"存量行不回填"）
+- [x] 1.2 新增 alembic 迁移：加列 + `ix_messages_trace_id` 索引
+- [x] 1.3 `src/infra/db/repos/chat_repo.py:127` `save_message`：从请求上下文取 `trace_id` 写入；取不到时留空
+- [x] 1.4 `src/config/settings.py` 新增 `DIAG_SCORE_FLOOR`（默认 0.35）、`DIAG_SCORE_GAP`（默认 0.05）、`DIAG_TRACE_LOOKBACK_ROUNDS`（默认 2）、`DIAG_MAX_REPRESENTATIVE_TRACES`（默认 3），每项写明"首版未标定"
 - [ ] 1.5 `src/core/log_events.py` + `src/core/log_event_specs.py` 双处登记新事件：`diagnose done`、`diagnose undetermined`、`trace locate done`
 
 ## 2. 证据源
 
-- [ ] 2.1 `src/rca/sources/trace.py`：`TraceSource`——按 `trace_id` 取观测与 `metadata.retrieval_contexts`，复用 `src/cli/eval_trace_io.py` 的 `fetch_trace`；取不到抛 `SourceFailedError`，trace 存在但无检索快照抛 `SourceEmptyError`
-- [ ] 2.2 `ErrorLogSource`（**本地日志**，方案 A）：读容器 volume `/data/logs` 的 `app_*.log` / `error_*.log`，按窗口取 `ERROR` 行、第 3 段即 `trace_id`；解析复用 `src/cli/replay_trace.py` 的 `parse_trace_logs`；**不复用** `sls_query_latency` / `sls_query_requests`（`uri` 必填 + 白名单 + 明细无 trace_id）。`TraceLocator` 抽象保留，MCP 实现为后续替换点
-- [ ] 2.5 **方案 B**：`deploy/nginx/edge.conf` 与 `deploy/nginx/nginx.conf` 的 `log_format` 增加 `$upstream_http_x_trace_id`；验证三点——正常请求有值、应用不可达（502）时为空、access log 脱敏格式不变
+- [x] 2.1 `src/rca/sources/trace.py`：`TraceSource`——按 `trace_id` 取观测与 `metadata.retrieval_contexts`，复用 `src/cli/eval_trace_io.py` 的 `fetch_trace`；取不到抛 `SourceFailedError`，trace 存在但无检索快照抛 `SourceEmptyError`
+- [x] 2.2 `ErrorLogSource`（**本地日志**，方案 A）：读容器 volume `/data/logs` 的 `app_*.log` / `error_*.log`，按窗口取 `ERROR` 行、第 3 段即 `trace_id`；解析复用 `src/cli/replay_trace.py` 的 `parse_trace_logs`；**不复用** `sls_query_latency` / `sls_query_requests`（`uri` 必填 + 白名单 + 明细无 trace_id）。`TraceLocator` 抽象保留，MCP 实现为后续替换点
+- [ ] 2.5 **日志可采集化（只改应用机 nginx，入口机不动）**：
+  - `deploy/nginx/nginx.conf` 的 `masked` 增加 `$upstream_addr` / `$upstream_status` / `$upstream_http_x_trace_id` / `$request_time`
+  - `access_log` 双写：保留 `/dev/stdout`（`docker logs` 习惯不变）+ 新增 `/var/log/nginx/access.log`
+  - `docker-compose.image.yml` 的 nginx 服务加挂载 `/data/nginx-logs:/var/log/nginx`
+  - 验证三点：正常请求三个新字段有值；app 不可达（502）时 `upstream_status` 与 trace 为空；脱敏格式不变（query 仍被掩）
+  - **采集器安装、机器组、SLS 采集配置不在本变更内**（运维动作，见 runbook）
 - [ ] 2.3 `src/rca/sources/probe.py`：`RetrievalProbe`——对原问题做确定性变体（抽实体/去年份/同义）后重检；命中且相关度过线 → "表述问题"，全空 → "覆盖缺失"。**默认不用模型改写**（不可复现），模型改写作为可选第二档并标注
 - [ ] 2.4 三个 Source 实现**新窄协议** `ErrorEvidenceSource`（`trace_fetch` / `error_logs` / `retrieval_probe`），与 `LogSource` 并列、不扩展后者；三态沿用 `SourceEmptyError` / `SourceFailedError`；测试替身照 `FixtureLogSource` 的写法
 
 ## 3. 判定
 
-- [ ] 3.1 `src/rca/diagnose/judge.py`：`root_cause` 枚举判定——`not_retrieved`（无 `retrieve_kb` 观测）、`low_relevance`（D5 三条件全满足）、`context_truncated`（`context_count < result_count` 且有 `context budget high`）、`not_cited`（有高分上下文但回答无引用）、`kb_stale`、`undetermined`
-- [ ] 3.2 量纲门控：`score_kind != "rerank"` 时禁止进入 `low_relevance` 分支
+- [x] 3.1 `src/rca/diagnose/judge.py`：`root_cause` 枚举判定——`not_retrieved`（无 `retrieve_kb` 观测）、`low_relevance`（D5 三条件全满足）、`context_truncated`（`context_count < result_count` 且有 `context budget high`）、`not_cited`（有高分上下文但回答无引用）、`undetermined`
+- [x] 3.2 量纲门控：`score_kind != "rerank"` 时禁止进入 `low_relevance` 分支
 - [ ] 3.3 D3 追溯：`history budget exceeded` / `context budget high` 或 `result_count == 0` 且问题含指代时，拉前 2 轮事实；禁止链式追溯
 - [ ] 3.4 `tier` 与 `root_cause` 分开计算、分开存储；`tier` 沿用 `alert-triage` 的三档口径
-- [ ] 3.5 证据不足（三态含 `empty` 或 `failed`）→ `undetermined`，并记录缺失的证据项清单
+- [x] 3.5 证据不足（三态含 `empty` 或 `failed`）→ `undetermined`，并记录缺失的证据项清单
+- [ ] 3.6 问题分型（D13）：`kind ∈ 5xx | 4xx | answer` 由入口判定，分派到 `judge_error` / `judge_answer`；4xx 只输出分类与归属（参数 / 鉴权 / 限流 / 资源不存在），不读请求体
 
 ## 4. 报告与校验
 
 - [ ] 4.1 `src/rca/diagnose/report.py`：报告结构含 `tier`、`root_cause`、`evidence[]`、`assertions[]`、`next_actions[]`、`basis_rounds`（本次用到前几轮）
-- [ ] 4.2 `src/rca/diagnose/validator.py`：校验每条断言至少引用一个存在的 `evidence_id`；失败 → 降级为"证据清单 + 未判定"
+- [x] 4.2 `src/rca/diagnose/validator.py`：校验每条断言至少引用一个存在的 `evidence_id`；失败 → 降级为"证据清单 + 未判定"
 - [ ] 4.3 模板约束：禁止出现未引用的因果断言；数字必须来自证据原文，不由模型转写（沿用 `alert-triage` D6）
 - [ ] 4.4 新增 `src/rca/diagnose/render.py`（**不复用** `render_card`，后者直接读 `stats`）：群卡片（归属建议 + 根因 + 同类计数 + 详情链接）与详情页两套；卡片沿用企微 `button_interaction` 能力
 

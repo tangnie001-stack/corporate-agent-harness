@@ -47,6 +47,10 @@ class MessageModel(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
     model_name: Mapped[str | None] = mapped_column(String(64), comment="模型名称")
+
+    trace_id: Mapped[str | None] = mapped_column(
+        String(64), comment="产生该消息的请求 trace_id；存量行不回填"
+    )
     process: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="过程事件JSON（历史回放）"
     )
@@ -57,4 +61,7 @@ class MessageModel(Base):
         UTCDateTime(), server_default=func.now(), nullable=False
     )
 
-    __table_args__ = (Index("idx_session", "session_id", "created_at"),)
+    __table_args__ = (
+        Index("idx_session", "session_id", "created_at"),
+        Index("ix_message_trace_id", "trace_id"),
+    )
