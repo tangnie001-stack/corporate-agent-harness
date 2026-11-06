@@ -17,7 +17,12 @@
 
 - [ ] 2.1 `src/rca/sources/trace.py`：`TraceSource`——按 `trace_id` 取观测与 `metadata.retrieval_contexts`，复用 `src/cli/eval_trace_io.py` 的 `fetch_trace`；取不到抛 `SourceFailedError`，trace 存在但无检索快照抛 `SourceEmptyError`
 - [ ] 2.2 `ErrorLogSource`（**本地日志**，方案 A）：读容器 volume `/data/logs` 的 `app_*.log` / `error_*.log`，按窗口取 `ERROR` 行、第 3 段即 `trace_id`；解析复用 `src/cli/replay_trace.py` 的 `parse_trace_logs`；**不复用** `sls_query_latency` / `sls_query_requests`（`uri` 必填 + 白名单 + 明细无 trace_id）。`TraceLocator` 抽象保留，MCP 实现为后续替换点
-- [ ] 2.5 **方案 B**：`deploy/nginx/edge.conf` 与 `deploy/nginx/nginx.conf` 的 `log_format` 增加 `$upstream_http_x_trace_id`；验证三点——正常请求有值、应用不可达（502）时为空、access log 脱敏格式不变
+- [ ] 2.5 **日志可采集化（只改应用机 nginx，入口机不动）**：
+  - `deploy/nginx/nginx.conf` 的 `masked` 增加 `$upstream_addr` / `$upstream_status` / `$upstream_http_x_trace_id` / `$request_time`
+  - `access_log` 双写：保留 `/dev/stdout`（`docker logs` 习惯不变）+ 新增 `/var/log/nginx/access.log`
+  - `docker-compose.image.yml` 的 nginx 服务加挂载 `/data/nginx-logs:/var/log/nginx`
+  - 验证三点：正常请求三个新字段有值；app 不可达（502）时 `upstream_status` 与 trace 为空；脱敏格式不变（query 仍被掩）
+  - **采集器安装、机器组、SLS 采集配置不在本变更内**（运维动作，见 runbook）
 - [ ] 2.3 `src/rca/sources/probe.py`：`RetrievalProbe`——对原问题做确定性变体（抽实体/去年份/同义）后重检；命中且相关度过线 → "表述问题"，全空 → "覆盖缺失"。**默认不用模型改写**（不可复现），模型改写作为可选第二档并标注
 - [ ] 2.4 三个 Source 实现**新窄协议** `ErrorEvidenceSource`（`trace_fetch` / `error_logs` / `retrieval_probe`），与 `LogSource` 并列、不扩展后者；三态沿用 `SourceEmptyError` / `SourceFailedError`；测试替身照 `FixtureLogSource` 的写法
 
