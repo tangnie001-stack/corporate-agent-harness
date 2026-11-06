@@ -313,6 +313,31 @@ class McpLogSource:
             raise SourceEmptyError("no_rows")
         return rows
 
+    async def list_tools(self) -> list[str]:
+        """返回服务端工具名列表（启动期契约探测用）。
+
+        Raises:
+            SourceFailedError: 握手或 tools/list 失败
+        """
+        await self._ensure_session()
+        message = await self._post(
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}
+        )
+        result = message.get("result")
+        if not isinstance(result, dict):
+            error = message.get("error")
+            if isinstance(error, dict):
+                raise SourceFailedError("rpc_error:" + str(error.get("code")))
+            raise SourceFailedError("missing_result")
+        tools = result.get("tools")
+        if not isinstance(tools, list):
+            raise SourceFailedError("missing_tools")
+        names: list[str] = []
+        for item in tools:
+            if isinstance(item, dict) and isinstance(item.get("name"), str):
+                names.append(item["name"])
+        return names
+
     async def business_impact(self, start_ts: int, end_ts: int) -> dict:
         """返回核心接口的请求量与昨日同时段对比。"""
         if not self._uris:

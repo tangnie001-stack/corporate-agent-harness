@@ -564,3 +564,7 @@ WECOM_BOT_LOG_CONTENT: bool = os.getenv("WECOM_BOT_LOG_CONTENT", "false").lower(
     "true",
     "yes",
 )
+# 企微 Agent 路由总开关：False 时企微渠道一律回落通用人设（不写库，重开即恢复原绑定）
+WECOM_AGENT_ROUTING_ENABLED: bool = os.getenv(
+    "WECOM_AGENT_ROUTING_ENABLED", "true"
+).lower() in ("1", "true", "yes", "on")

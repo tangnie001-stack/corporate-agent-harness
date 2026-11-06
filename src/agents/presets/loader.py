@@ -47,7 +47,8 @@ class AgentPresetLoader:
 
         Raises:
             yaml.YAMLError: frontmatter 不是合法 YAML
-            ValueError: frontmatter 非 mapping / 名称为空或非 ASCII slug
+            ValueError: frontmatter 非 mapping / 名称为空或非 ASCII slug /
+                channel 取值非法 / bot- 前缀预设未声明 hidden + wecom
             OSError: 读取文件失败
         """
         raw = path.read_text(encoding="utf-8")
@@ -59,6 +60,13 @@ class AgentPresetLoader:
         description = meta.get("description")
         if not isinstance(description, str) or not description:
             description = self._first_paragraph(body)
+        hidden = self._resolve_hidden(meta)
+        channel = self._resolve_channel(meta)
+        is_bot_prefixed = name.startswith("bot-") or path.stem.startswith("bot-")
+        if is_bot_prefixed and (not hidden or channel != "wecom"):
+            raise ValueError(
+                "bot- 前缀预设（文件名或 name）必须声明 hidden: true 且 channel: wecom"
+            )
         return AgentPreset(
             name=name,
             display_name=display_name,
@@ -67,6 +75,8 @@ class AgentPresetLoader:
             tools=self._resolve_list(meta, "tools"),
             skills=self._resolve_list(meta, "skills"),
             max_turns=self._resolve_max_turns(meta),
+            hidden=hidden,
+            channel=channel,
             source_path=path.resolve(),
         )
 
@@ -99,6 +109,38 @@ class AgentPresetLoader:
             return None
         return value
 
+    def _resolve_hidden(self, meta: dict) -> bool:
+        """解析 hidden（非 bool 一律按 False，不做隐式转换）。"""
+        value = meta.get("hidden")
+        if isinstance(value, bool):
+            return value
+        return False
+
+    def _resolve_channel(self, meta: dict) -> str:
+        """解析 channel（仅 web / wecom / 空；其它取值抛 ValueError）。
+
+        Args:
+            meta: frontmatter 解析结果
+
+        Returns:
+            归一化后的渠道；键缺省或空串返回 ""（不限渠道）
+
+        Raises:
+            ValueError: channel 非字符串，或取值不在 web / wecom / 空 之内
+        """
+        value = meta.get("channel")
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            # load_all 只把 ValueError 当作单文件解析失败并跳过，故不改成 TypeError
+            raise ValueError(  # noqa: TRY004
+                f"channel 非法（仅允许 web / wecom）: {value!r}"
+            )
+        normalized = value.strip().lower()
+        if normalized in ("", "web", "wecom"):
+            return normalized
+        raise ValueError(f"channel 非法（仅允许 web / wecom）: {value!r}")
+
     def _split_frontmatter(self, raw: str) -> tuple[dict, str]:
         """把 md 拆成 (frontmatter dict, 正文)；无 frontmatter 时返回 (空 dict, 全文)。"""
         lines = raw.splitlines()
@@ -121,3 +163,12 @@ class AgentPresetLoader:
             return ""
         paragraph = body.split("\n\n")[0].replace("\n", " ").strip()
         return paragraph[:200]
+
+
+def default_agents_root() -> Path:
+    """项目根下的 agents 目录（智能体预设内容库的唯一入口）。
+
+    Returns:
+        `<项目根>/agents`；目录不存在时由调用方自行决定降级方式
+    """
+    return Path(__file__).resolve().parents[3] / "agents"

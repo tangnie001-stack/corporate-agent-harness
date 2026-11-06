@@ -1183,6 +1183,8 @@ agent（外层节点：组装首轮 → seed 装配产物 → ainvoke）
 | 绑定 | bind-once：未绑定 + 合法 → 固化；已绑定 → 一律以绑定值为准 |
 | 不一致 | 已绑定 + 传入非空且不同 → **服务端忽略传入值 + warning，无 400**（D1/D20） |
 | 未注册 | 传入名未注册 → 忽略 + warning；未绑定时降级系统默认 prompt |
+| 渠道不符 | 预设声明了 `channel` 且与当前渠道不符（如 `wecom` 机器人预设从站点进入）→ 按未请求处理，无 400；**已绑定的值同样要过这一关**，否则跨渠道会话会沿用机器人身份 |
+| 路由开关 | 企微渠道且 `WECOM_AGENT_ROUTING_ENABLED=false` → 请求与绑定一并忽略，回落通用人设（只在内存忽略，不写库） |
 
 #### `/xxx` 前缀解析与清洗（D22/D25）
 
@@ -1201,7 +1203,7 @@ agent（外层节点：组装首轮 → seed 装配产物 → ainvoke）
 
 #### `GET /api/skills` / `GET /api/agents`
 
-统一信封 `data.skills` / `data.agents`（前端按 `body.data` 解析）。skills 服务端过滤 `user-invocable: false`（只列 `user_visible()`）；读取失败 fail-open 返回空列表 + warning（不 500）。
+统一信封 `data.skills` / `data.agents`（前端按 `body.data` 解析）。skills 服务端过滤 `user-invocable: false`（只列 `user_visible()`）；agents 服务端过滤 `hidden: true` 的预设（企微机器人专用，站点选择器不得选到），每项含 `name` / `display_name` / `description`；读取失败 fail-open 返回空列表 + warning（不 500）。
 
 ---
 

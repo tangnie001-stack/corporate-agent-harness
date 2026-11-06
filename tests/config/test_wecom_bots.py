@@ -4,7 +4,12 @@ import json
 
 import pytest
 
-from src.config.wecom_bots import CALLBACK_BOT_KEY, WeComBotConfig, load_wecom_bots
+from src.config.wecom_bots import (
+    CALLBACK_BOT_KEY,
+    WeComBotConfig,
+    load_wecom_bots,
+    validate_bot_profiles,
+)
 
 
 def _dump(items: list[dict]) -> str:
@@ -123,3 +128,67 @@ def test_name_must_be_string(monkeypatch):
         load_wecom_bots()
     assert "name" in str(excinfo.value)
     assert "s1" not in str(excinfo.value)
+
+
+def test_profile_parsed(monkeypatch):
+    """profile 解析进配置对象；缺省为空串。"""
+    monkeypatch.setenv(
+        "WECOM_BOTS",
+        _dump(
+            [
+                {
+                    "key": "ops",
+                    "bot_id": "b1",
+                    "secret": "s1",
+                    "profile": "bot-ops",
+                },
+                {"key": "dev", "bot_id": "b2", "secret": "s2"},
+            ]
+        ),
+    )
+    bots = load_wecom_bots()
+    assert bots[0].profile == "bot-ops"
+    assert bots[1].profile == ""
+
+
+def test_profile_rejects_bad_charset(monkeypatch):
+    """profile 只允许 ASCII slug（与其它配置项一致抛 ValueError）。"""
+    monkeypatch.setenv(
+        "WECOM_BOTS",
+        _dump([{"key": "ops", "bot_id": "b1", "secret": "s1", "profile": "运维"}]),
+    )
+    with pytest.raises(ValueError) as excinfo:
+        load_wecom_bots()
+    assert "WECOM_BOTS[0].profile" in str(excinfo.value)
+
+
+def test_profile_must_be_string(monkeypatch):
+    """profile 类型非法即 fail-fast，不回显原值。"""
+    monkeypatch.setenv(
+        "WECOM_BOTS",
+        _dump([{"key": "ops", "bot_id": "b1", "secret": "s1", "profile": 1}]),
+    )
+    with pytest.raises(ValueError) as excinfo:
+        load_wecom_bots()
+    assert "WECOM_BOTS[0].profile" in str(excinfo.value)
+    assert "s1" not in str(excinfo.value)
+
+
+def test_validate_bot_profiles_reports_key():
+    """存在性校验失败只定位到 key。"""
+    bots = [WeComBotConfig(key="ops", bot_id="b1", secret="s1", profile="bot-ops")]
+    with pytest.raises(ValueError) as excinfo:
+        validate_bot_profiles(bots, known={"chat"})
+    assert "key=ops" in str(excinfo.value)
+
+
+def test_validate_bot_profiles_allows_empty_profile():
+    """空 profile 表示通用人设，不参与存在性校验。"""
+    bots = [WeComBotConfig(key="ops", bot_id="b1", secret="s1")]
+    validate_bot_profiles(bots, known=set())
+
+
+def test_validate_bot_profiles_passes_for_known_name():
+    """已知预设名通过校验。"""
+    bots = [WeComBotConfig(key="ops", bot_id="b1", secret="s1", profile="bot-ops")]
+    validate_bot_profiles(bots, known={"bot-ops"})

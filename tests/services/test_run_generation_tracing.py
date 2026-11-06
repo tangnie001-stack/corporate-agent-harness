@@ -154,6 +154,7 @@ async def test_run_generation_feeds_collector_and_closes(monkeypatch):
         def __init__(self, *, enabled, trace_id, client=None):
             self.enabled = enabled
             self.trace_id = trace_id
+            self.tools_used = []
 
         def consume(self, item):
             seen.append(item)
@@ -187,6 +188,43 @@ async def test_run_generation_feeds_collector_and_closes(monkeypatch):
         "on_tool_end",
     ]
     assert closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_run_generation_writes_tools_used_metadata(monkeypatch):
+    """收尾二次写入 metadata 时必须带上本轮实际调用过的工具名。"""
+    calls: list[dict] = []
+
+    class _SpyContext:
+        def update_current_trace(self, **kwargs):
+            calls.append(kwargs)
+
+        def update_current_observation(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(agent_service, "langfuse_context", _SpyContext())
+
+    mgr = StreamingRunManager()
+    fake_graph = Mock()
+    fake_graph.astream_events = _fake_astream_with_tool
+    ctx = RequestContext(session_id="s1")
+    ctx.clarify_channel = asyncio.Queue()
+
+    await _run_generation(
+        "s1",
+        "kb1",
+        "q",
+        [],
+        False,
+        ctx,
+        mgr,
+        graph=fake_graph,
+        langfuse_observation_id="trace_unit_tools_used",  # type: ignore[reportCallIssue]
+    )
+
+    metadata_calls = [c["metadata"] for c in calls if "metadata" in c]
+    assert all("tools_used" in metadata for metadata in metadata_calls)
+    assert metadata_calls[-1]["tools_used"] == ["retrieve_kb"]
 
 
 @pytest.mark.asyncio
@@ -228,7 +266,7 @@ async def test_run_generation_writes_user_tags_metadata(monkeypatch):
     )
 
     assert captured["user_id"] == "u-42"
-    assert captured["tags"] == ["chat", "kb"]
+    assert captured["tags"] == ["kb", "none", "pf:financial-analyst"]
     metadata = captured["metadata"]
     assert metadata["agent"] == "financial-analyst"
     assert metadata["agent_display_name"] == "财务专家"
@@ -318,29 +356,138 @@ async def test_blank_user_id_is_not_written_as_empty_string(monkeypatch):
     )
 
     assert captured["user_id"] is None
-    assert captured["tags"] == ["chat", "no_kb"]
+    assert captured["tags"] == ["no_kb", "none", "pf:chat"]
 
 
 def test_trace_tags_for_alert_channel():
-    """告警分析轮次带 alert 标签，便于与主流程区分。"""
+    """告警分析轮次带 alert 标签，profile 档位恒为 pf:alert。"""
     from src.config.const import Channel
 
-    assert agent_service._trace_tags("no_kb", Channel.ALERT) == [
-        "chat",
+    assert agent_service._trace_tags("no_kb", Channel.ALERT, "bot-ops") == [
         "no_kb",
         "alert",
+        "pf:alert",
     ]
 
 
 def test_trace_tags_for_wecom_channel():
-    """企微问答轮次带 wecom 标签。"""
+    """企微问答轮次带 wecom 标签，profile 取去掉 bot- 前缀的短名。"""
     from src.config.const import Channel
 
-    assert agent_service._trace_tags("kb", Channel.WECOM) == ["chat", "kb", "wecom"]
+    assert agent_service._trace_tags("kb", Channel.WECOM, "bot-support") == [
+        "kb",
+        "wecom",
+        "pf:support",
+    ]
 
 
-def test_trace_tags_for_web_unchanged():
-    """站点轮次标签保持原样，不多打。"""
+def test_trace_tags_for_web_channel():
+    """站点轮次也带渠道标签（web），空 profile 记 pf:chat。"""
     from src.config.const import Channel
 
-    assert agent_service._trace_tags("kb", Channel.WEB) == ["chat", "kb"]
+    assert agent_service._trace_tags("kb", Channel.WEB, "") == [
+        "kb",
+        "web",
+        "pf:chat",
+    ]
+
+
+def test_trace_tags_normalize_unknown_channel():
+    """未知 / 预留渠道归一为 none，保证标签值域可枚举。"""
+    from src.config.const import Channel
+
+    assert agent_service._trace_tags("kb", Channel.FEISHU, "bot-ops") == [
+        "kb",
+        "none",
+        "pf:ops",
+    ]
+
+
+async def _astream_tool_then_raise(*args, **kwargs):
+    """先产出一次工具调用，随后抛错（验证异常路径也带 tools_used）。"""
+    from tests.services.test_agent_service import _chat_model_stream_item
+
+    yield _chat_model_stream_item("部分回答")
+    yield {
+        "event": "on_tool_start",
+        "name": "sls_query_latency",
+        "run_id": "r1",
+        "data": {},
+        "metadata": {"langgraph_node": "tools"},
+        "parent_ids": [],
+    }
+    raise RuntimeError("upstream down")
+
+
+@pytest.mark.asyncio
+async def test_tools_used_written_on_failure_path(monkeypatch):
+    """异常路径同样写入本轮已调用的工具名（排障最需要这类轮次）。"""
+    captured: dict = {}
+
+    class _SpyContext:
+        def update_current_trace(self, **kwargs):
+            captured.update(kwargs)
+
+        def update_current_observation(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(agent_service, "langfuse_context", _SpyContext())
+
+    mgr = StreamingRunManager()
+    fake_graph = Mock()
+    fake_graph.astream_events = _astream_tool_then_raise
+    ctx = RequestContext(session_id="s1", kb_id="kb1")
+    ctx.clarify_channel = asyncio.Queue()
+
+    with pytest.raises(RuntimeError):
+        await _run_generation(
+            "s1",
+            "kb1",
+            "q",
+            [],
+            False,
+            ctx,
+            mgr,
+            graph=fake_graph,
+            langfuse_observation_id="trace_unit_fail_tools",  # type: ignore[reportCallIssue]
+        )
+
+    assert captured["metadata"]["tools_used"] == ["sls_query_latency"]
+
+
+@pytest.mark.asyncio
+async def test_metadata_write_failure_does_not_fail_generation(monkeypatch):
+    """观测写入抛出只告警：不得把观测故障冒泡成生成失败。"""
+    captured: dict = {}
+
+    class _FlakyContext:
+        def update_current_trace(self, **kwargs):
+            if set(kwargs) == {"metadata"}:
+                raise RuntimeError("langfuse down")
+            captured.update(kwargs)
+
+        def update_current_observation(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(agent_service, "langfuse_context", _FlakyContext())
+
+    mgr = StreamingRunManager()
+    fake_graph = Mock()
+    fake_graph.astream_events = _fake_astream
+    ctx = RequestContext(session_id="s1", kb_id="kb1")
+    ctx.clarify_channel = asyncio.Queue()
+
+    answer = await _run_generation(
+        "s1",
+        "kb1",
+        "q",
+        [],
+        False,
+        ctx,
+        mgr,
+        graph=fake_graph,
+        langfuse_observation_id="trace_unit_meta_fail",  # type: ignore[reportCallIssue]
+    )
+
+    assert answer == "你好"
+    assert captured["metadata"]["tools_used"] == []

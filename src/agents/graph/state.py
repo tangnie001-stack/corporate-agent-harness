@@ -22,6 +22,7 @@ class AgentState:
     )  # 全链路追踪 ID（自动从 contextvar 读取）
     deep_thinking: bool = False  # 深度思考开关（来源：/chat/stream?deep_thinking；用途：agent LLM enable_thinking 参数）
     direct_skill: str = ""  # 本轮命令行直出的 fork skill 名（来源：AgentService 解析 /xxx 后注入初始 state，Plan 3 填值；用途：入口分派与重生成目标；空=常规轮）
+    profile: str = ""  # 本轮生效的 profile 名（来源：入口解析后经 make_initial_state 传入；范围：整轮执行；用途：agent 节点据此选能力档；空=通用人设）
     _summary: str = ""  # 跨轮历史摘要正文（来源：stream_chat 预取后经 make_initial_state 传入；范围：整轮执行；用途：seed 点作为独立历史消息注入；空=无摘要）
     # ── agent 循环 ──
     messages: Annotated[list[BaseMessage], add_messages] = field(
@@ -62,6 +63,7 @@ class AgentState:
         deep_thinking=False,
         direct_skill="",
         summary="",
+        profile="",
     ):
         """创建图初始状态，只设输入字段，中间态/输出由各节点填充。
 
@@ -73,6 +75,7 @@ class AgentState:
             deep_thinking: 深度思考开关（默认 False），传给 agent LLM enable_thinking
             direct_skill: 本轮命令行直出的 fork skill 名（默认空=常规轮）
             summary: 跨轮历史摘要正文（默认空=无摘要），由 seed 点作为独立历史消息注入
+            profile: 本轮生效的 profile 名（默认空=通用人设），agent 节点据此选能力档
         """
         return cls(
             session_id=session_id,
@@ -82,6 +85,7 @@ class AgentState:
             deep_thinking=deep_thinking,
             direct_skill=direct_skill,
             _summary=summary,
+            profile=profile,
         )
 
 

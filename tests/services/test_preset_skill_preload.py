@@ -113,6 +113,7 @@ def test_preload_only_on_first_round():
     svc._preset_registry = MagicMock()
     preset = MagicMock()
     preset.skills = ["a"]
+    preset.channel = ""  # 不限渠道
     svc._preset_registry.get = MagicMock(return_value=preset)
 
     text, names = svc._preload_if_first_round("finance-expert", [])
@@ -129,6 +130,7 @@ def test_preload_skipped_when_inline_already_injected():
     svc._preset_registry = MagicMock()
     preset = MagicMock()
     preset.skills = ["a"]
+    preset.channel = ""  # 不限渠道
     svc._preset_registry.get = MagicMock(return_value=preset)
 
     text, names = svc._preload_if_first_round("finance-expert", [object()])
@@ -158,6 +160,7 @@ async def test_stream_chat_preloads_on_first_round():
     preset = MagicMock()
     preset.skills = ["a"]
     preset.system_prompt = ""
+    preset.channel = ""  # 不限渠道
     preset_registry.get.return_value = preset
     svc._preset_registry = preset_registry
     svc._graph = MagicMock()

@@ -5,14 +5,16 @@ agent 节点只负责：首轮组装消息并拆两半 → seed 子图 → ainvo
 末轮收尾由 agent_finalize 提取 answer + 读入本轮材料，再交给 format。
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from src.agents.graph.history_window import exceeds_budget, split_history_window
 from src.agents.graph.message_payload import _extract_text
 from src.agents.graph.state import AgentState
+from src.agents.presets.capability import DEFAULT_CAPABILITY, capability_of
 from src.agents.skills.prefix import clean_prefix
 from src.config.const import (
     HISTORY_MAX_TURNS,
@@ -254,8 +256,13 @@ class AgentLoopBundle:
     tool_names: frozenset[str]  # 本轮实际注册的工具名（段组装条件注入判据）
 
 
-def make_agent_loop_node(bundle) -> Callable:
-    """创建外层 agent 节点：组装首轮 → seed 子图 → invoke → 按外层条数回写。
+def make_agent_loop_node(
+    bundles: Mapping[str, AgentLoopBundle], default_key: str = DEFAULT_CAPABILITY
+) -> Callable:
+    """创建外层 agent 节点：按 profile 选能力档 → 组装首轮 → seed → invoke → 回写。
+
+    选档判据只有 state.profile（经 capability_of 映射为能力档名），未命中回落
+    default_key；选中 bundle 的 tool_names 是该档 prompt 工具段的唯一来源。
 
     回写基准是**外层已有条数**（state.messages 进节点时的长度），不是喂给子图的
     输入长度：首轮外层为空 ⇒ 回写整份（组装段 + 新增段）；重生成轮外层已有整份
@@ -265,15 +272,20 @@ def make_agent_loop_node(bundle) -> Callable:
     每次 invoke 都是全新 run：计数与委派标志一律 seed 字面初值，不跨 invoke 持久。
 
     Args:
-        bundle: 装配产物束（agent=build_agent 产物 / prompt_manager / tool_names）
+        bundles: 能力档名 → 装配产物束（键为档名，至少含 default_key 这一档）
+        default_key: 未知 profile 的回落档
 
     Returns:
         异步节点函数，接收 AgentState，返回 dict 更新 messages/_system_messages/answer
     """
 
-    inner = bundle.agent
-
     async def agent_loop(state: AgentState) -> dict:
+        capability = capability_of(state.profile)
+        bundle = bundles.get(capability)
+        if bundle is None:
+            bundle = bundles[default_key]
+        # bundle.agent 的类型是 object（装配产物与 graph 层解耦），此处按协议调用
+        inner: Any = bundle.agent
         if state.messages:
             seed: list[BaseMessage] = list(state.messages)
             system_half = list(state._system_messages or [])

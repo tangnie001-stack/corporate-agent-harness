@@ -76,6 +76,7 @@ def _make_service(
         preset = MagicMock()
         preset.system_prompt = preset_system_prompt
         preset.skills = preset_skills if preset_skills is not None else []
+        preset.channel = ""  # 不限渠道
         preset_registry.get.return_value = preset
     else:
         preset_registry.get.return_value = None

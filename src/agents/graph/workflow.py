@@ -1,6 +1,8 @@
 # src/agents/graph/workflow.py
 """StateGraph 组装 — 节点注册、条件边连接、图编译。"""
 
+from collections.abc import Mapping
+
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -20,6 +22,7 @@ from src.agents.graph.nodes import format_node
 from src.agents.graph.skill_direct import route_entry, unavailable_skill_direct
 from src.agents.graph.state import AgentState, LangGraphNode
 from src.agents.graph.verify import verify_node
+from src.agents.presets.capability import DEFAULT_CAPABILITY
 from src.agents.tools.rag_tools import make_rag_tools
 from src.config.const import MAX_AGENT_ITERATIONS
 from src.core import logging as core_logging
@@ -43,6 +46,41 @@ def route_verify(state: AgentState) -> str:
     return LangGraphNode.Format.NAME
 
 
+def _make_bundle(llm, tools: list, prompt_manager, max_turns: int) -> AgentLoopBundle:
+    """按一套工具面装配主角色 Agent 与装配产物束。
+
+    装配产物：主角色四件套 middleware；AgentSpan 必须在最内层（看得到已施加的
+    system 与 model_settings）。子角色不在此处装配（executor 侧另行调用）。
+
+    Args:
+        llm: agent LLM
+        tools: 该能力档生效的工具面（基础集 + 档位增量）
+        prompt_manager: PromptManager，首轮组装用户消息模板
+        max_turns: 该档主循环轮次预算
+
+    Returns:
+        AgentLoopBundle（tool_names 为该档工具名快照，是 prompt 工具段的唯一来源）
+    """
+    loop_agent = build_agent(
+        llm,
+        tools,
+        system=None,  # 主角色：system 经运行态携带，由 SystemMessagesMiddleware 施加
+        max_turns=max_turns,
+        middleware_extra=[
+            SystemMessagesMiddleware(),
+            ModelParamsMiddleware(),
+            # AgentTurnBudget 由 build_agent 依 max_turns 自行追加（Ruling O/P）；
+            # 这里**不要**再传——create_agent 按 middleware.name 拒绝重复实例
+            AgentSpanMiddleware(),
+        ],
+    )
+    return AgentLoopBundle(
+        agent=loop_agent,
+        prompt_manager=prompt_manager,
+        tool_names=frozenset(str(t.name) for t in tools),
+    )
+
+
 def build_graph(
     vector_store: VectorStore,
     llm,
@@ -52,6 +90,8 @@ def build_graph(
     delegate_task: BaseTool | None = None,
     tool_sink: list | None = None,
     skill_direct_node=None,
+    profile_tools: Mapping[str, list] | None = None,
+    max_turns_by_profile: Mapping[str, int] | None = None,
 ) -> CompiledStateGraph:
     """构建并编译 agent 循环图：START → (agent|skill_direct) → agent_finalize → verify → format → END。
 
@@ -70,8 +110,13 @@ def build_graph(
     并追加 make_task_tools（task_create/get/list/update/output/stop，恒注册）。
     delegate_task 为可选委派工具（skill 库有内容时由 AgentService 注入），
     tools=None 默认分支原样透传给 make_rag_tools。
-    tool_sink 非 None 时把本次启用的工具追加进去，供 SkillExecutor 的延迟 provider
-    读取当前启用工具（打破工具集 ↔ executor 的循环依赖）。
+    tool_sink 非 None 时把**基础工具集**追加进去（能力档增量工具如日志工具
+    不外溢到 fork 子代理池），供 SkillExecutor 的延迟 provider 读取当前启用工具
+    （打破工具集 ↔ executor 的循环依赖）。
+    profile_tools 为「能力档名 → 该档增量工具」映射：每档单独装配一份
+    AgentLoopBundle（基础工具集 + 该档增量工具）；基础档（键 DEFAULT_CAPABILITY）
+    恒存在，不受此参数影响。max_turns_by_profile 按档给轮次预算，未列出的档位
+    用 MAX_AGENT_ITERATIONS。
     skill_direct_node 为直出节点函数（AgentService 装配 executor 时注入）；
     None 时用 unavailable_skill_direct 兜底（fail-open），恒注册避免条件边指向不存在的节点。
     """
@@ -94,30 +139,33 @@ def build_graph(
         rag_tools = [*(base_tools or []), *make_task_tools()]
 
     if tool_sink is not None:
+        # 只 extend 基础集：能力档增量工具（日志工具）不得进入 fork 子代理池
         tool_sink.extend(rag_tools)
 
-    # 装配产物：主角色四件套 middleware；AgentSpan 必须在最内层（看得到已施加的
-    # system 与 model_settings）。子角色不在此处装配（executor 侧另行调用）。
-    loop_agent = build_agent(
-        llm,
-        rag_tools,
-        system=None,  # 主角色：system 经运行态携带，由 SystemMessagesMiddleware 施加
-        max_turns=MAX_AGENT_ITERATIONS,
-        middleware_extra=[
-            SystemMessagesMiddleware(),
-            ModelParamsMiddleware(),
-            # AgentTurnBudget 由 build_agent 依 max_turns 自行追加（Ruling O/P）；
-            # 这里**不要**再传——create_agent 按 middleware.name 拒绝重复实例
-            AgentSpanMiddleware(),
-        ],
-    )
-    bundle = AgentLoopBundle(
-        agent=loop_agent,
-        prompt_manager=prompt_manager,
-        tool_names=frozenset(str(t.name) for t in rag_tools),
-    )
+    # 基础档由 build_graph 自行装配：profile_tools 若带同名键会静默覆盖它，令
+    # bundle.tool_names（prompt 工具段）与 ctx.tool_names（verify 判据）分叉。
+    if profile_tools and DEFAULT_CAPABILITY in profile_tools:
+        raise ValueError(
+            "profile_tools 不得包含 default 档：基础档由 build_graph 自行装配"
+        )
 
-    builder.add_node("agent", make_agent_loop_node(bundle))
+    # 每档一份独立装配产物：基础档恒存在，增量档（如日志档）= 基础工具集 + 该档
+    # 增量工具。middleware 实例不可跨 agent 复用，故逐档新建
+    bundles: dict[str, AgentLoopBundle] = {
+        DEFAULT_CAPABILITY: _make_bundle(
+            llm, rag_tools, prompt_manager, MAX_AGENT_ITERATIONS
+        )
+    }
+    for capability, extra_tools in (profile_tools or {}).items():
+        merged_tools = [*rag_tools, *extra_tools]
+        bundles[capability] = _make_bundle(
+            llm,
+            merged_tools,
+            prompt_manager,
+            (max_turns_by_profile or {}).get(capability, MAX_AGENT_ITERATIONS),
+        )
+
+    builder.add_node("agent", make_agent_loop_node(bundles))
     builder.add_node("agent_finalize", make_agent_finalize_node())
     builder.add_node("verify", verify_node)
     builder.add_node(LangGraphNode.Format.NAME, format_node)

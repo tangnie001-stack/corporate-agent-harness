@@ -14,12 +14,13 @@ from enum import Enum
 
 from src.core.log_event_specs import EVENT_SPECS, EventSpec
 
-# 分层前缀允许集（logging-rules.md 前缀主表：6 处理层 + cli + app + delegate + wecom）
+# 分层前缀允许集，主表见 docs/agents/logging-rules.md
 LOG_PREFIXES: frozenset[str] = frozenset(
     {
         "retrieval",
         "verify",
         "agent",
+        "tool",
         "session",
         "db",
         "llm",
@@ -83,6 +84,7 @@ class Event(str, Enum):
     EVENT_CONVERT_FAILED = "event convert failed"
     SERVICE_READY = "service ready"
     AGENT_BIND_IGNORED = "agent bind ignored"
+    AGENT_BIND_UNREGISTERED = "agent bind unregistered"
 
     # [verify] 验证管道事件（3.2 批迁移登记：态A 引用引导 / 态B 完整性+护栏）
     SKIP = "skip"
@@ -193,6 +195,9 @@ class Event(str, Enum):
     CAPABILITY_DEGRADED = "capability degraded"
     # prompt 模板启动期校验通过（fail-fast：失败直接抛错、不记本事件）
     PROMPT_VALIDATED = "prompt validated"
+
+    # [tool] 只读日志工具的后端（启动期探测失败降级：工具仍可调用，返回「查询失败」）
+    LOG_TOOLS_DEGRADED = "mcp unavailable"
 
     # [delegate] fork 子代理委派（delegate-hardening-observability）
     DELEGATE_START = "delegate start"

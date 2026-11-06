@@ -2,11 +2,11 @@
 
 ### Requirement: trace 根落在后台生成任务内
 
-trace 根 SHALL 覆盖本轮从"开始处理"到"生成结束"的完整生命周期，且 SHALL 在承载该轮的 asyncio task 内部开启与结束。
+trace 根 SHALL 在承载该轮的 asyncio task 内部开启与结束。
 
-站点与企微轮次：根 SHALL 开在生成任务内，覆盖图事件循环的完整生命周期。
+站点与企微轮次：根 SHALL 覆盖「准备就绪后的整轮生成」（图事件循环的完整生命周期），开在生成任务内。
 
-告警轮次：根 SHALL 开在告警入口（受理占位之后、证据采集之前），使采集产生的工具 span 隶属同一条 trace 且其开始时间 SHALL NOT 早于根的开始时间。
+告警轮次：根 SHALL 开在生成任务内（即生成开始）；采集发生在根之前，采集 span 可早于根，属已知现象（判据见 `docs/agents/troubleshooting.md` §4），不视为违反本要求。
 
 SSE 订阅与推送侧 SHALL NOT 单独产生 trace。
 
@@ -14,12 +14,6 @@ SSE 订阅与推送侧 SHALL NOT 单独产生 trace。
 
 - **WHEN** 一轮生成包含多轮 agent 迭代与工具调用
 - **THEN** 这些迭代与工具调用产出的 observation 均隶属于同一条 trace 之下
-
-#### Scenario: 告警轮的取数不早于根
-
-- **WHEN** 告警轮先做证据采集、再做生成
-- **THEN** trace 的起始时间不晚于任一工具 span 的起始时间
-- **AND** 该 trace 的名称标识为告警轮，可与对话轮区分
 
 #### Scenario: 生成被取消时 trace 不被丢失
 
@@ -30,9 +24,9 @@ SSE 订阅与推送侧 SHALL NOT 单独产生 trace。
 
 trace 的 generation SHALL 记录该次 LLM 调用的输入与输出原文（含 system prompt、检索上下文与回答），使链路可完整回放。工具 span SHALL 记录该次工具调用的入参与返回值原文。记录输入 SHALL 采用**显式写入**方式；被装饰函数的**内部运行时对象 SHALL NOT 进入 trace**（如请求上下文对象、流式管理器、编译后的图、事件与队列等）。
 
-trace 根的标签 SHALL 只包含低基数、稳定、可枚举的三个维度：知识库绑定（`kb` / `no_kb`）、渠道（`web` / `wecom` / `alert`）、profile（`pf:chat` / `pf:ops` / `pf:dev` / `pf:alert`）。SHALL NOT 把工具名、Agent 名、知识库 ID 等高基数值写入标签。
+trace 根的标签 SHALL 只包含低基数、稳定、可枚举的三个维度：知识库绑定（`kb` / `no_kb`）、渠道（`web` / `wecom` / `alert`，未知或未设置的渠道归一为 `none`）、profile（`pf:<preset 短名>`，如 `pf:chat` / `pf:alert` / `pf:ops`）。SHALL NOT 把工具名、Agent 显示名、知识库 ID 等高基数值写入标签（profile 维度只写预设短名）。
 
-trace 根的 metadata SHALL 包含：`profile`、`agent`、`agent_display_name`、`channel`、`kb_id`、`kb_domain`、`tools_used`（本轮实际调用的工具名，未调用时为空列表）、`loaded_skills`、`skill_action`；告警轮 SHALL 额外包含 `rca_tier`、`rca_reason`、`rca_evidence`（各证据源三态）、`rca_elapsed_ms`。
+trace 根的 metadata SHALL 包含：`profile`、`agent`、`agent_display_name`、`channel`、`kb_id`、`kb_domain`、`tools_used`（本轮实际调用的工具名，未调用时为空列表）、`loaded_skills`、`skill_action`。
 
 该行为 SHALL 在文档中作为已知事实登记，并说明 trace 的保留期可能与对话记录的保留期不一致。
 
@@ -49,17 +43,12 @@ trace 根的 metadata SHALL 包含：`profile`、`agent`、`agent_display_name`�
 #### Scenario: 标签只用低基数维度
 
 - **WHEN** 检查任一 trace 的标签
-- **THEN** 标签只取自 kb/no_kb、web/wecom/alert、pf:* 三类的并集，不含工具名或 Agent 名
+- **THEN** 标签只取自 kb/no_kb、web/wecom/alert/none、pf:* 三类的并集，不含工具名或 Agent 显示名
 
 #### Scenario: 工具使用可查询
 
 - **WHEN** 某一轮调用了日志工具
 - **THEN** metadata 的 `tools_used` 含该工具名，且对应的工具 span 可按名称检索
-
-#### Scenario: 告警轮判据可读
-
-- **WHEN** 打开一条告警轮的 trace
-- **THEN** metadata 中可直接读到判定档位、定档依据、各证据源状态与采集耗时，无需跳转应用日志
 
 #### Scenario: 内部运行时对象不进 trace
 

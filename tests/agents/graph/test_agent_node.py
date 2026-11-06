@@ -3,12 +3,11 @@
 fake 装配产物（_RecordingInner）与 stub PromptManager 均为内存实现，不发真实网络调用。
 """
 
-from dataclasses import dataclass
-
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from src.agents.graph.agent_node import (
+    AgentLoopBundle,
     _split_initial_messages,
     make_agent_finalize_node,
     make_agent_loop_node,
@@ -31,15 +30,6 @@ class StubPromptManager:
 def fake_prompt_manager() -> StubPromptManager:
     """提供只回显 query 的 PromptManager 替身（首轮组装的最小依赖）。"""
     return StubPromptManager()
-
-
-@dataclass
-class _Bundle:
-    """装配产物束（Task 9 的 build_graph 用同一形状）。"""
-
-    agent: object  # build_agent 的产物（本测试用假实现）
-    prompt_manager: object  # PromptManager 替身
-    tool_names: frozenset  # 本轮注册的工具名
 
 
 class _RecordingInner:
@@ -132,7 +122,11 @@ async def test_first_turn_writes_back_whole_assembled_list(fake_prompt_manager):
     """首轮外层 messages 为空 ⇒ 回写整份（组装段 + 新增段）。"""
     inner = _RecordingInner([AIMessage(content="A1")])
     node = make_agent_loop_node(
-        _Bundle(agent=inner, prompt_manager=fake_prompt_manager, tool_names=frozenset())
+        {
+            "default": AgentLoopBundle(
+                agent=inner, prompt_manager=fake_prompt_manager, tool_names=frozenset()
+            )
+        }
     )
     state = AgentState.make_initial_state(
         session_id="s", kb_id="", query="q", history=[]
@@ -152,7 +146,11 @@ async def test_regen_round_model_request_contains_query_and_history(
     """重生成轮的模型请求必须含原始 query 与历史（回写基准取外层条数）。"""
     inner = _RecordingInner([AIMessage(content="A2")])
     node = make_agent_loop_node(
-        _Bundle(agent=inner, prompt_manager=fake_prompt_manager, tool_names=frozenset())
+        {
+            "default": AgentLoopBundle(
+                agent=inner, prompt_manager=fake_prompt_manager, tool_names=frozenset()
+            )
+        }
     )
     first = await node(
         AgentState.make_initial_state(

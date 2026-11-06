@@ -9,6 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from src.agents.presets.capability import LOG_PROFILES
+from src.agents.presets.loader import AgentPresetLoader, default_agents_root
+from src.agents.tools import log_tools
+from src.agents.tools.log_backend import McpLogToolBackend
 from src.api import (
     alerts_router,
     chat_router,
@@ -24,10 +28,14 @@ from src.api import auth as auth_routes
 from src.api import capabilities as capabilities_routes
 from src.api import ragas_generate as ragas_generate_routes
 from src.api import wecom as wecom_routes
+from src.config import settings
 from src.config.alert import load_alert_config
+from src.config.log_tools import PROBE_TIMEOUT_SECONDS
 from src.config.prompts import validation
+from src.config.rca import load_rca_config
 from src.config.response_codes import Code
 from src.config.settings import validate_timeout_nesting
+from src.config.wecom_bots import load_wecom_bots, validate_bot_profiles
 from src.core import logging as core_logging
 from src.core.log_events import Event
 from src.core.logging import setup_logging
@@ -38,6 +46,8 @@ from src.infra.llm.tracing import configure_tracing, flush_tracing
 from src.middleware.auth import auth_middleware
 from src.middleware.response_processor import response_processor_middleware
 from src.middleware.trace_id import trace_id_middleware
+from src.rca.sources.base import SourceFailedError
+from src.rca.sources.mcp import McpLogSource
 from src.services import wecom_service
 from src.utils.errors import AppError
 
@@ -62,6 +72,14 @@ async def lifespan(app: FastAPI):
     启动阶段校验告警接入配置（`load_alert_config`）：解析 ALERT_TARGET 等非法即抛
     `ValueError`，进程启动失败（fail-fast），不在请求期降级成 500。未配置 token 属
     合法状态（不阻断启动）。
+
+    启动阶段校验企微机器人 profile（`_validate_wecom_profiles`，受 `WECOM_BOT_ENABLED`
+    门控）：agents/ 缺失时跳过并记 warning；profile 指向未注册预设即抛 `ValueError`，
+    进程启动失败，不留到首条消息才在路由处报错。
+
+    启动阶段装配日志工具后端（`_setup_log_tools`，同样受 `WECOM_BOT_ENABLED` 门控）：
+    仅当有机器人引用日志能力档时才探测 MCP 服务；服务不可达只记 warning、工具降级为
+    「查询失败」，不阻断启动；白名单为空或工具清单不符预期则启动失败。
 
     启动阶段清空残留的 chat_lock:* 键：重启后进程内无任何生成任务，
     残留锁（来自被杀进程，TTL 兜底 180s）会阻塞新请求的并发锁获取。
@@ -90,12 +108,96 @@ async def lifespan(app: FastAPI):
     load_alert_config()
     configure_tracing()
     await _ensure_model_pricing()
+    # 企微相关的两项启动期准备都必须在连接建立前完成：profile 配错直接启动失败，
+    # 而不是等到第一条消息进来才在路由处报错；日志工具后端也要先注入，
+    # 否则首轮命中日志档时会以「未注入」的降级态回答。
+    if settings.WECOM_BOT_ENABLED:
+        _validate_wecom_profiles()
+        await _setup_log_tools()
     await wecom_service.start()
     yield
     core_logging.log_event(Event.APP_STOPPING)
     await wecom_service.stop()
     # 关停前上报缓冲事件，否则最后一批 trace 随进程消失
     flush_tracing()
+
+
+def _validate_wecom_profiles() -> None:
+    """启动期校验 WECOM_BOTS 的 profile 指向已注册预设。
+
+    agents/ 缺失时跳过并记 warning：此时站点预设同样不可用，属既有降级路径，
+    不因此阻断启动。错误信息只含机器人 key，不含 secret。
+
+    Raises:
+        ValueError: WECOM_BOTS 非法，或某台机器人的 profile 未注册
+    """
+    root = default_agents_root()
+    if not root.exists():
+        logger.warning("[wecom] profile validation skipped reason=agents_dir_missing")
+        return
+    known = {preset.name for preset in AgentPresetLoader(root).load_all()}
+    validate_bot_profiles(load_wecom_bots(), known)
+
+
+# 日志工具依赖的服务端工具名（启动期契约探测、运行期不校验）
+_EXPECTED_LOG_TOOLS = frozenset({"sls_latency_stats", "sls_request_detail"})
+
+
+def _make_mcp_source() -> McpLogSource:
+    """按 RcaConfig 构造日志工具专用的 MCP 客户端。
+
+    独立实例、不与 RCA 取数共用会话：两者生命周期不同（本实例常驻进程，
+    会话状态在客户端内累积），也不希望工具调用复用判定轮的连接。
+    """
+    config = load_rca_config()
+    return McpLogSource(
+        base_url=config.mcp_base_url,
+        token=config.mcp_token,
+        datasource_id=config.mcp_datasource_id,
+        timeout=config.source_timeout_seconds,
+        uris=(),  # 日志工具不走 business_impact，不复用 RCA 的业务接口清单
+    )
+
+
+async def _setup_log_tools() -> None:
+    """按机器人引用情况装配日志工具后端（lifespan 调用，幂等）。
+
+    只有存在引用时才会连接日志服务并校验白名单：没有引用时相关环境变量缺省
+    不得影响启动（行为与改造前一致）。连接失败或探测超时不阻断启动——注入不可用态，
+    两个工具仍可调用但统一返回「查询失败：日志服务不可用」；探测只在启动期做一次，
+    服务恢复后需重启才能重新接入。
+
+    Raises:
+        RuntimeError: 有引用但白名单为空（否则所有查询被静默拒绝），
+            或服务端工具清单缺少期望工具（配置与服务端版本不一致）
+    """
+    if not settings.WECOM_BOT_ENABLED:
+        return
+    referenced = [bot for bot in load_wecom_bots() if bot.profile in LOG_PROFILES]
+    if not referenced:
+        return
+    config = load_rca_config()
+    if not config.tool_uri_whitelist:
+        raise RuntimeError(
+            "RCA_TOOL_URI_WHITELIST 为空：有机器人引用日志能力档时必须配置"
+        )
+    source = _make_mcp_source()
+    try:
+        # 探测含 initialize + tools/list 两跳，整体加预算避免启动被服务端拖住
+        names = await asyncio.wait_for(
+            source.list_tools(), timeout=PROBE_TIMEOUT_SECONDS
+        )
+    except (SourceFailedError, TimeoutError) as exc:
+        reason = str(exc)
+        if reason == "":
+            reason = type(exc).__name__
+        core_logging.log_event(Event.LOG_TOOLS_DEGRADED, reason=reason)
+        log_tools.configure(None, config.tool_uri_whitelist)
+        return
+    missing = _EXPECTED_LOG_TOOLS - set(names)
+    if missing:
+        raise RuntimeError("日志服务缺少期望工具: " + ", ".join(sorted(missing)))
+    log_tools.configure(McpLogToolBackend(source), config.tool_uri_whitelist)
 
 
 async def _clear_stale_chat_locks() -> None:
