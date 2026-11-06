@@ -28,6 +28,7 @@
 - [ ] 3.3 D3 追溯：`history budget exceeded` / `context budget high` 或 `result_count == 0` 且问题含指代时，拉前 2 轮事实；禁止链式追溯
 - [ ] 3.4 `tier` 与 `root_cause` 分开计算、分开存储；`tier` 沿用 `alert-triage` 的三档口径
 - [ ] 3.5 证据不足（三态含 `empty` 或 `failed`）→ `undetermined`，并记录缺失的证据项清单
+- [ ] 3.6 问题分型（D13）：`kind ∈ 5xx | 4xx | answer` 由入口判定，分派到 `judge_error` / `judge_answer`；4xx 只输出分类与归属（参数 / 鉴权 / 限流 / 资源不存在），不读请求体
 
 ## 4. 报告与校验
 
