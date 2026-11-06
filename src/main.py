@@ -22,6 +22,7 @@ from src.api import (
     health_router,
     kb_eval_router,
     kb_router,
+    rca_router,
     sessions_router,
 )
 from src.api import auth as auth_routes
@@ -372,6 +373,7 @@ app.include_router(chat_router, prefix="/api", tags=["chat"])
 app.include_router(clarify_router, prefix="/api", tags=["chat"])
 app.include_router(feedback_router, prefix="/api", tags=["feedback"])
 app.include_router(sessions_router, prefix="/api", tags=["sessions"])
+app.include_router(rca_router, prefix="/api", tags=["rca"])
 app.include_router(kb_eval_router, prefix="/api", tags=["evaluation"])
 app.include_router(ragas_generate_routes.router, prefix="/api", tags=["ragas"])
 app.include_router(capabilities_routes.router, prefix="/api", tags=["capabilities"])

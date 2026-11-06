@@ -12,6 +12,7 @@ from src.chat.manager import ChatManager
 from src.infra.db.models.document import DocModel as DocEntity
 from src.infra.db.repos import (
     ChatRepo,
+    DiagRepo,
     DocumentRepo,
     EvalRepo,
     KbRepo,
@@ -51,6 +52,7 @@ class AppService:
         self._chat_repo = ChatRepo(session_factory)
         self._user_repo = UserRepo(session_factory)
         self._eval_repo = EvalRepo(session_factory)
+        self._diag_repo = DiagRepo(session_factory)
 
         self.agent_service = agent_service or AgentService(
             vector_store=self.vector_store,
@@ -74,6 +76,38 @@ class AppService:
                 redis_client=get_redis_client(),
             )
         return self._auth_service
+
+    # ==================== 诊断报告 ====================
+
+    async def get_diag_report(self, diag_id: str) -> dict | None:
+        """按 id 取诊断报告（详情页只读）。
+
+        Args:
+            diag_id: 诊断报告 id
+
+        Returns:
+            报告字典；不存在返回 None
+        """
+        row = await self._diag_repo.get(diag_id)
+        if row is None:
+            return None
+        created = row.created_at.isoformat() if row.created_at else ""
+        return {
+            "diag_id": row.id,
+            "trace_id": row.trace_id,
+            "env": row.env,
+            "trigger": row.trigger,
+            "kind": row.kind,
+            "tier": row.tier,
+            "root_cause": row.root_cause,
+            "owner": row.owner,
+            "evidence": row.evidence or [],
+            "assertions": row.assertions or [],
+            "next_actions": row.next_actions or "",
+            "basis_rounds": row.basis_rounds,
+            "cost_ms": row.cost_ms,
+            "created_at": created,
+        }
 
     # ==================== 知识库 ====================
 
