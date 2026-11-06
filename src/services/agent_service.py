@@ -39,6 +39,7 @@ from src.agents.presets.capability import (
 from src.agents.skills.models import SkillContext
 from src.agents.skills.prefix import parse_prefix
 from src.agents.skills.rendering import render_skill_body
+from src.agents.tools.diagnose_tools import make_diagnose_tools
 from src.agents.tools.log_tools import make_log_tools
 from src.agents.tools.rag_tools import make_rag_tools
 from src.chat.manager import ChatManager
@@ -1120,7 +1121,9 @@ class AgentService:
         # LOG_PROFILES 时生效），基础档不受影响。两套图共用同一份映射：工具对象
         # 无状态，同一批实例可在多个编译图里注册。
         log_tools = make_log_tools()
-        profile_tools = {LOG_CAPABILITY: log_tools}
+        diag_tools = make_diagnose_tools()
+        log_capability_tools = [*log_tools, *diag_tools]
+        profile_tools = {LOG_CAPABILITY: log_capability_tools}
         max_turns_by_profile = {LOG_CAPABILITY: LOG_PROFILE_MAX_TURNS}
 
         self._graph: CompiledStateGraph = build_graph(
@@ -1142,7 +1145,7 @@ class AgentService:
         self._tool_names_by_capability = {
             DEFAULT_CAPABILITY: frozenset(str(t.name) for t in fork_tool_pool),
             LOG_CAPABILITY: frozenset(str(t.name) for t in fork_tool_pool)
-            | frozenset(str(t.name) for t in log_tools),
+            | frozenset(str(t.name) for t in log_capability_tools),
         }
         # 非交互轮次（如告警分析）禁用 ask_user：无人可答，注册只会拖到澄清超时。
         # 图是编译期固化的，故必须**再编译一套**并按轮次选择，而非透传参数。
@@ -1178,7 +1181,7 @@ class AgentService:
                 str(t.name) for t in fork_tool_pool_no_clarify
             ),
             LOG_CAPABILITY: frozenset(str(t.name) for t in fork_tool_pool_no_clarify)
-            | frozenset(str(t.name) for t in log_tools),
+            | frozenset(str(t.name) for t in log_capability_tools),
         }
         # 能力清单服务（Task 9）：由两个注册表派生只读清单，api 层只转发
         self.capability_service = CapabilityService(skill_registry, preset_registry)

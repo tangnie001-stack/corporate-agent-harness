@@ -27,6 +27,7 @@ CARD_EVIDENCE = "证据 {count} 条"  # 证据计数（与详情链接同行）
 CARD_DETAIL_LINK = "[查看详情]({url})"  # 详情链接（需登录）
 CARD_EVIDENCE_LIMIT = 3  # 卡片上最多列出的依据条数
 
+INVALID_KIND = "问题分型只能是 answer / 5xx / 4xx，收到：{kind}"
 INVALID_TRACE_ID = "trace_id 格式应为 trace_<uuid>，请检查后重试"
 TRACE_NOT_FOUND = "未找到该 trace：可能超过 30 天保留期，或 trace_id 不存在"
 TRACE_UNAVAILABLE = "trace 不可用：可能属于另一环境或检索服务异常"
