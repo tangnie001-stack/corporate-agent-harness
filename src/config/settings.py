@@ -338,6 +338,18 @@ TOP_K_RETRIEVAL: int = int(os.getenv("TOP_K_RETRIEVAL", "30"))
 TOP_K_RERANK: int = int(os.getenv("TOP_K_RERANK", "5"))
 # 扫描件检测阈值：单页可提取文字少于 200 字符视为"扫描页"
 MIN_TEXT_CHARS: int = int(os.getenv("MIN_TEXT_CHARS", "200"))
+
+# ── 诊断（trace-diagnosis）：阈值首版为经验值，未按 KB 标定 ──
+# 低相关判定：top1 分数下界，低于此值视为"没有一条像样的"
+DIAG_SCORE_FLOOR: float = float(os.getenv("DIAG_SCORE_FLOOR", "0.35"))
+# 低相关判定：top1 与 p50 的最小间距，小于此值视为"整体平庸"
+DIAG_SCORE_GAP: float = float(os.getenv("DIAG_SCORE_GAP", "0.05"))
+# 允许向前追溯的最大轮数（禁止链式追溯）
+DIAG_TRACE_LOOKBACK_ROUNDS: int = int(os.getenv("DIAG_TRACE_LOOKBACK_ROUNDS", "2"))
+# 单次告警最多诊断的代表 trace 数
+DIAG_MAX_REPRESENTATIVE_TRACES: int = int(
+    os.getenv("DIAG_MAX_REPRESENTATIVE_TRACES", "3")
+)
 # 页眉页脚边距过滤（fitz 通道按 y 坐标剔除重复页眉/页脚）
 # 顶部 45：保留页首内容标题（如 tencent 的"简明综合财务状况表"，y≈52-66）
 # 底部 80：剔除页码页脚（如 neusoft 的 "1 / 10 东软集团..."，y≈768-791）
