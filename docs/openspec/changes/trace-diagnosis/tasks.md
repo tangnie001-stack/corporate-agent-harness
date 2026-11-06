@@ -3,7 +3,7 @@
 - [x] 0.1 `alert-triage` **已合并**（`558919ad`）。按其真实代码核对后，复用范围为 `models` / `collector` / `loader` / `sources/base` 三态 / `grafana` 解析辅助；`LogSource` 协议、`judge()`、`render_card` 均为延迟专用，不复用（见 design D2）
 - [x] 0.2 `bot-agent-routing` **已归档**（`archive/2026-11-06-bot-agent-routing`）。按其真实实现修正：trace 名仍是 `chat_turn`（`alert_turn` spike 已证伪回退）；无 `rca_*` metadata；日志能力在 `LOG_PROFILES={bot-ops, bot-dev}` 档开放；日志工具为接口维度（`uri` + 白名单），**不复用**
 - [x] 0.3 生成侧事实**已在 `dev-wsl` 实现**（`ce0f0cc1` 起：5 个事件 + `model turn` 温度字段 + SSE 声明 + 前端回放）；活体 trace 已验证 `prompt assembled` / `prompt messages` / `model turn` 落日志，`agent resolved` / `skill *` 按设计在空值轮不记。本项不阻塞
-- [ ] 0.4 建隔离 worktree（`git worktree add`），base 取三者合并后的 `dev-wsl`
+- [x] 0.4 建隔离 worktree（`/root/code/corporate_rag-trace-diag`，分支 `feat/trace-diagnosis`），base 取三者合并后的 `dev-wsl`；P1 已合回 `dev-wsl`（`0c3a3425`），后续阶段在该 worktree 继续
 
 ## 1. 迁移与配置
 
@@ -15,8 +15,8 @@
 
 ## 2. 证据源
 
-- [x] 2.1 `src/rca/sources/trace.py`：`TraceSource`——按 `trace_id` 取观测与 `metadata.retrieval_contexts`，复用 `src/cli/eval_trace_io.py` 的 `fetch_trace`；取不到抛 `SourceFailedError`，trace 存在但无检索快照抛 `SourceEmptyError`
-- [x] 2.2 `ErrorLogSource`（**本地日志**，方案 A）：读容器 volume `/data/logs` 的 `app_*.log` / `error_*.log`，按窗口取 `ERROR` 行、第 3 段即 `trace_id`；解析复用 `src/cli/replay_trace.py` 的 `parse_trace_logs`；**不复用** `sls_query_latency` / `sls_query_requests`（`uri` 必填 + 白名单 + 明细无 trace_id）。`TraceLocator` 抽象保留，MCP 实现为后续替换点
+- [x] 2.1 `src/rca/diagnose/sources.py`：`TraceSource`——按 `trace_id` 取观测与 `metadata.retrieval_contexts`，复用 `src/cli/eval_trace_io.py` 的 `fetch_trace`；取不到抛 `SourceFailedError`，trace 存在但无检索快照抛 `SourceEmptyError`
+- [x] 2.2 `LocalLogSource`（`src/rca/diagnose/logs.py`，**本地日志**，方案 A）：读容器 volume `/data/logs` 的 `app_*.log` / `error_*.log`，按窗口取 `ERROR` 行、第 3 段即 `trace_id`；解析复用 `src/cli/replay_trace.py` 的 `parse_trace_logs`；**不复用** `sls_query_latency` / `sls_query_requests`（`uri` 必填 + 白名单 + 明细无 trace_id）。`TraceLocator` 抽象保留，MCP 实现为后续替换点
 - [ ] 2.5 **日志可采集化（只改应用机 nginx，入口机不动）**：
   - `deploy/nginx/nginx.conf` 的 `masked` 增加 `$upstream_addr` / `$upstream_status` / `$upstream_http_x_trace_id` / `$request_time`
   - `access_log` 双写：保留 `/dev/stdout`（`docker logs` 习惯不变）+ 新增 `/var/log/nginx/access.log`
@@ -38,7 +38,7 @@
 ## 4. 报告与校验
 
 - [ ] 4.1 `src/rca/diagnose/report.py`：报告结构含 `tier`、`root_cause`、`evidence[]`、`assertions[]`、`next_actions[]`、`basis_rounds`（本次用到前几轮）
-- [x] 4.2 `src/rca/diagnose/validator.py`：校验每条断言至少引用一个存在的 `evidence_id`；失败 → 降级为"证据清单 + 未判定"
+- [x] 4.2 `src/rca/diagnose/report.py` 的 `validate()`：校验每条断言至少引用一个存在的 `evidence_id`；失败 → 降级为"证据清单 + 未判定"
 - [ ] 4.3 模板约束：禁止出现未引用的因果断言；数字必须来自证据原文，不由模型转写（沿用 `alert-triage` D6）
 - [ ] 4.4 新增 `src/rca/diagnose/render.py`（**不复用** `render_card`，后者直接读 `stats`）：群卡片（归属建议 + 根因 + 同类计数 + 详情链接）与详情页两套；卡片沿用企微 `button_interaction` 能力
 
@@ -68,10 +68,10 @@
 
 ## 8. 测试与验证
 
-- [ ] 8.1 `tests/rca/test_judge.py`：六种 `root_cause` 各一例，含 `score_kind=fallback` 不得判 `low_relevance`
+- [x] 8.1 `tests/rca/test_diagnose_judge.py`：五类 `root_cause` 各一例，含 `score_kind=fallback` 不得判 `low_relevance`
 - [ ] 8.2 `tests/rca/test_locator.py`：聚类取代表、上限 3、空窗口 → "未落到应用层"
-- [ ] 8.3 `tests/rca/test_validator.py`：引用缺失/伪造 → 降级
-- [ ] 8.4 `tests/rca/test_trace_source.py`：用 `FixtureLogSource` 替身覆盖 `ok/empty/failed` 三态
+- [x] 8.3 `tests/rca/test_diagnose_report.py`：引用缺失/伪造 → 降级
+- [x] 8.4 `tests/rca/test_trace_source.py` / `test_local_log_source.py`：注入式替身覆盖 `ok/empty/failed` 三态
 - [ ] 8.5 回归集：`feedback` 点踩 + `prod-incident-log` 取 15~20 条，人工标注根因；根因一致率 ≥ 80%
 - [ ] 8.6 活体：真实 `trace_id` 端到端跑通，验证报告可点开原文、P50 < 30s
 - [ ] 8.7 待验证三项：`score_kind=timeout` 真实落库形态、多轮 trace 的 metadata 体积上限、告警 `details` 可提取字段
