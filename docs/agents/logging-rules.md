@@ -10,7 +10,7 @@
 | `[retrieval]` | 检索层（rag_tools / web_tools / retrieval.py） |
 | `[verify]` | 验证节点（verify 包） |
 | `[agent]` | agent 主循环（agent_node / middleware / workflow） |
-| `[tool]` | 只读日志工具（agents/tools/log_tools 调用留痕 + 启动期探测；事件：`mcp call` = 每次调用留痕（成功 info / 空与失败 warning，见「日志工具调用留痕」）、`mcp unavailable` = 探测失败降级，工具仍可调用） |
+| `[tool]` | 只读日志工具（agents/tools/log_tools 调用留痕 + 启动期探测）；`mcp call` = 每次调用留痕，**直调 logger，非 Event**（成功 info / 空与失败 warning，单条 EventSpec 承载不了两个级别，见「日志工具调用留痕」）；`mcp unavailable` = 探测失败降级（Event），工具仍可调用 |
 | `[session]` | 会话管理（chat manager / persistence） |
 | `[db]` | DB 层（repo / engine） |
 | `[llm]` | LLM 调用层 |

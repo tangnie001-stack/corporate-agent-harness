@@ -176,7 +176,7 @@
 | 术语 | 定义 | 常见错误 |
 |------|------|---------|
 | `智能体预设（agent preset）` | 磁盘声明式智能体定义（`agents/<name>.md`，frontmatter 驼峰键 + 正文 system prompt 人设）；运行时对象 `AgentPreset` 由 `AgentPresetLoader` 产出、`AgentPresetRegistry` 按名索引（`src/agents/presets/`） | ❌ 与 skill 混为一谈（身份 vs 手册） |
-| `Agent 实例（agent instance）` | 能力档在**建图期编译**出的执行体：一份 `AgentLoopBundle`（LLM + 工具面 + prompt 管理器 + 轮次预算），按档存放、运行时按 `profile` 选档取用；工具面与预算在装配期固定（`src/agents/graph/workflow.py`、`src/agents/presets/capability.py`） | ❌ 以为工具面按请求逐轮拼装；❌ 把"档"当成人设（人设由 preset 正文提供） |
+| `Agent 实例（agent instance）` | 能力档在**建图期编译**出的执行体：一份 `AgentLoopBundle`（编译图（内嵌 LLM 与轮次预算）+ 工具名快照 + prompt 管理器），按档存放、运行时按 `profile` 选档取用；工具面与预算在装配期固定（`src/agents/graph/workflow.py`、`src/agents/presets/capability.py`） | ❌ 以为工具面按请求逐轮拼装；❌ 把"档"当成人设（人设由 preset 正文提供） |
 | `profile` | 入口解析出的**身份名**：站点来自请求 `agent` / 会话绑定，企微来自 `WECOM_BOTS[].profile`，空串 = 系统默认。它既是 `capability_of` 选档的键，也是 trace 标签 `pf:*` 的来源，并随 `AgentState.profile` 贯穿一轮 | ❌ 与 preset 混用（profile 是名字，preset 是定义文件）；❌ 以为 profile 决定人设 |
 | 会话级 vs 消息级 | 预设是**会话级身份**：选定后整通会话稳定（回答"谁在干活"）；skill 是**消息级内容**：按命中注入或 fork 执行（回答"按哪本手册干"） | ❌ 把 skill 当身份、把预设当一次性指令 |
 | 双轴调用控制 | skill 的两条正交开关：`user-invocable`（允许用户 `/xxx` 调用）与 `disable-model-invocation`（禁止模型自动 `delegate_task` 调用）；未显式声明时按 `allowed-tools` 的工具只读性推导（含写类工具默认锁模型端，fail-safe；只读表为空 fail-open 不锁）；两侧皆关 = 死 skill 记 warning | ❌ 以为一个开关管两边 |

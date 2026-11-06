@@ -49,8 +49,8 @@
 
 - [x] 6.0 **spike**：本地起实例发假 webhook 实测 `alert_turn` 根方案 —— **失败，走回退分支**：加 `@observe(name="alert_turn")` 后 trace 名正确，但采集 span 仍比根早 10.8s，且 `agent_turn` 的 parent 指向另一条 trace（后台任务未继承装饰器上下文）。证据见 `.superpowers/sdd/2026-11-06-bot-agent-routing/task-11-spike-evidence.md`。回退已整组收口：取消 6.1，6.4 / 8.2 / 8.3 改为确认 trace 名仍为 `chat_turn`，llm-tracing delta、design Risks 与 proposal 的 `alert_turn` 声明同步删除
 - [ ] 6.2 标签改为三类：`kb|no_kb`、渠道、`pf:<profile>`；移除 `chat` 写入
-- [ ] 6.3 metadata 增加 `profile`、`tools_used`；告警轮增加 `rca_tier` / `rca_reason` / `rca_evidence` / `rca_elapsed_ms`
-- [ ] 6.4 补测试：标签组合；tools_used 记录；告警轮 metadata 可读；trace 名为 `chat_turn`、起点为生成开始（6.0 结论）
+- [ ] 6.3 metadata 增加 `profile`、`tools_used`（**告警轮 `rca_*` 已移出本变更**：需经 `turn_runner` 透传判定结果，属独立小 change，见 `docs/agents/requirements_pool.md` H-13）
+- [ ] 6.4 补测试：标签组合；tools_used 记录；告警轮 metadata 可读（`profile` / `tools_used` / `channel`，不含已移出的 `rca_*`）；trace 名为 `chat_turn`、起点为生成开始（6.0 结论）
 
 ## 7. 文档登记
 

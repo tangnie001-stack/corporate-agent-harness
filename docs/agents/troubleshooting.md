@@ -114,13 +114,13 @@ metadata；工具名这类高基数值不在标签里。
 | `loaded_skills` | 本轮载入的技能名列表 |
 | `skill_action` | 本轮技能动作：`none` / `inline` / `preload` / `fork` / `unknown` |
 | `deep_thinking` | 深度思考开关 |
-| `has_skills` | 本轮是否启用技能面 |
+| `has_skills` | 本会话是否有模型可见（可调用）的技能，与本轮是否实际调用无关 |
 | `direct_skill` | 命令行直出的 fork 技能名（仅直出轮出现） |
+| `retrieval_contexts` | 本轮检索命中快照：`chunk_id` / `doc_id` / `page` / `score` / `order_in_prompt`（仅发生检索的轮次出现） |
 
-告警轮按判定结果还应带 `rca_tier` / `rca_reason` / `rca_evidence` / `rca_elapsed_ms`（档位 / 定档
-依据 / 各证据源三态 / 采集耗时，口径见 `docs/openspec/changes/bot-agent-routing` 的 llm-tracing
-spec）。**当前代码尚未写入这四个字段**，现阶段这些值只在告警卡片与应用日志 `[rca]` 里，别把
-"Langfuse 里读不到"当成观测缺口。
+告警轮**本期不写入**判定档位 / 定档依据 / 各证据源三态 / 采集耗时，trace metadata 里读不到它们，
+别当成观测缺口。需要这些值时看告警卡片与应用日志 `[rca]`（follow-up：见
+`docs/agents/requirements_pool.md` H-13）。
 
 **已知现象：trace 根的时间晚于子 span**。告警轮的 trace 根取在生成开始（`chat_turn`），而证据采集
 发生在根之前，Langfuse 里会看到「工具 span 的 start 早于 trace 根」约 10 秒的差。这是 Langfuse v2

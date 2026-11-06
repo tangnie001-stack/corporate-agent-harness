@@ -26,7 +26,7 @@ trace 的 generation SHALL 记录该次 LLM 调用的输入与输出原文（含
 
 trace 根的标签 SHALL 只包含低基数、稳定、可枚举的三个维度：知识库绑定（`kb` / `no_kb`）、渠道（`web` / `wecom` / `alert`，未知或未设置的渠道归一为 `none`）、profile（`pf:<preset 短名>`，如 `pf:chat` / `pf:alert` / `pf:ops`）。SHALL NOT 把工具名、Agent 显示名、知识库 ID 等高基数值写入标签（profile 维度只写预设短名）。
 
-trace 根的 metadata SHALL 包含：`profile`、`agent`、`agent_display_name`、`channel`、`kb_id`、`kb_domain`、`tools_used`（本轮实际调用的工具名，未调用时为空列表）、`loaded_skills`、`skill_action`；告警轮 SHALL 额外包含 `rca_tier`、`rca_reason`、`rca_evidence`（各证据源三态）、`rca_elapsed_ms`。
+trace 根的 metadata SHALL 包含：`profile`、`agent`、`agent_display_name`、`channel`、`kb_id`、`kb_domain`、`tools_used`（本轮实际调用的工具名，未调用时为空列表）、`loaded_skills`、`skill_action`。
 
 该行为 SHALL 在文档中作为已知事实登记，并说明 trace 的保留期可能与对话记录的保留期不一致。
 
@@ -49,11 +49,6 @@ trace 根的 metadata SHALL 包含：`profile`、`agent`、`agent_display_name`�
 
 - **WHEN** 某一轮调用了日志工具
 - **THEN** metadata 的 `tools_used` 含该工具名，且对应的工具 span 可按名称检索
-
-#### Scenario: 告警轮判据可读
-
-- **WHEN** 打开一条告警轮的 trace
-- **THEN** metadata 中可直接读到判定档位、定档依据、各证据源状态与采集耗时，无需跳转应用日志
 
 #### Scenario: 内部运行时对象不进 trace
 
