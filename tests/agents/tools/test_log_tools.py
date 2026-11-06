@@ -395,3 +395,43 @@ async def test_whitespace_only_text_counts_zero_rows(tool_name):
     call_lines = [line for line in lines if "[tool] mcp call" in line]
     assert len(call_lines) == 1
     assert "rows=0" in call_lines[0]
+
+
+def test_configure_injects_whitelist_and_labels_into_description():
+    """白名单与中文名写进两个工具的可见描述（模型据此把业务名对到 uri）。"""
+    from src.agents.tools.log_tools import configure, make_log_tools
+
+    configure(
+        None,
+        ("/welife-pay/pay/createOrder",),
+        (("/welife-pay/pay/createOrder", "订单创建"),),
+    )
+
+    for tool_obj in make_log_tools():
+        assert "/welife-pay/pay/createOrder（订单创建）" in tool_obj.description
+
+
+def test_configure_is_idempotent_for_description():
+    """重复 configure 不得把「可用接口」段层层叠加。"""
+    from src.agents.tools.log_tools import configure, make_log_tools
+
+    labels = (("/api/a", "甲"),)
+    configure(None, ("/api/a",), labels)
+    configure(None, ("/api/a",), labels)
+
+    description = {t.name: t.description for t in make_log_tools()}["sls_query_latency"]
+    assert description.count("可用接口（uri 必须精确使用下列值") == 1
+
+
+def test_rca_config_parses_uri_labels(monkeypatch):
+    """RCA_TOOL_URI_WHITELIST 支持 "<uri>|<中文名>"，白名单只保留 uri。"""
+    from src.config import rca
+
+    monkeypatch.setenv("RCA_TOOL_URI_WHITELIST", "/api/a|甲接口,/api/b")
+    rca.reset_for_test()
+
+    cfg = rca.load_rca_config()
+
+    assert cfg.tool_uri_whitelist == ("/api/a", "/api/b")
+    assert cfg.tool_uri_labels == (("/api/a", "甲接口"),)
+    rca.reset_for_test()

@@ -57,6 +57,8 @@ class RcaConfig:
     )
     # 日志工具可查询接口（精确匹配）；空 = 全部拒绝（引用日志档时启动期 fail-fast）
     tool_uri_whitelist: tuple[str, ...] = ()
+    # 接口中文名（uri → 展示名）；来源：RCA_TOOL_URI_WHITELIST 的 "<uri>|<中文名>" 写法
+    tool_uri_labels: tuple[tuple[str, str], ...] = ()
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -152,7 +154,15 @@ def load_rca_config() -> RcaConfig:
         business_min_base_pv=_env_int(
             "RCA_BUSINESS_MIN_BASE_PV", _DEFAULT_BUSINESS_MIN_BASE_PV
         ),
-        tool_uri_whitelist=_env_list("RCA_TOOL_URI_WHITELIST"),
+        tool_uri_whitelist=tuple(
+            entry.split("|", 1)[0].strip()
+            for entry in _env_list("RCA_TOOL_URI_WHITELIST")
+        ),
+        tool_uri_labels=tuple(
+            (entry.split("|", 1)[0].strip(), entry.split("|", 1)[1].strip())
+            for entry in _env_list("RCA_TOOL_URI_WHITELIST")
+            if "|" in entry and entry.split("|", 1)[1].strip() != ""
+        ),
     )
     return _CACHE
 

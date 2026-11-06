@@ -47,16 +47,58 @@ _backend: LogToolBackend | None = None
 _whitelist: tuple[str, ...] = ()
 
 
-def configure(backend: LogToolBackend | None, whitelist: tuple[str, ...]) -> None:
-    """注入后端与接口白名单（启动期一次；None 表示日志服务不可用）。
+def configure(
+    backend: LogToolBackend | None,
+    whitelist: tuple[str, ...],
+    labels: tuple[tuple[str, str], ...] = (),
+) -> None:
+    """注入后端、接口白名单与中文名，并据此重写两个工具的可见描述。
+
+    描述重写必须在图编译前完成（lifespan 里调用），否则模型看到的工具说明仍是基础版。
 
     Args:
         backend: 取数后端；None = 启动期连接失败，工具进入降级态（返回查询失败）
         whitelist: 可查询接口（精确匹配）；空 = 全部拒绝（启动期 fail-fast 在 lifespan）
+        labels: uri → 中文名（来源：RCA_TOOL_URI_WHITELIST 的 "<uri>|<中文名>"）
     """
     global _backend, _whitelist
     _backend = backend
     _whitelist = whitelist
+    for tool_obj in (sls_query_latency, sls_query_requests):
+        base = _BASE_DESCRIPTIONS.get(str(tool_obj.name), "")
+        tool_obj.description = base + _render_whitelist_block(whitelist, labels)
+
+
+def _render_whitelist_block(
+    whitelist: tuple[str, ...], labels: tuple[tuple[str, str], ...]
+) -> str:
+    """渲染「可用接口」段：每个 uri 一行，有中文名时附在括号里。
+
+    Args:
+        whitelist: 可查询接口
+        labels: uri → 中文名
+
+    Returns:
+        追加到工具描述末尾的文本；未配置接口时说明未开放
+    """
+    if not whitelist:
+        return chr(10) + chr(10) + "当前未配置可查询接口。"
+    label_map = dict(labels)
+    lines: list[str] = []
+    for uri in whitelist:
+        label = label_map.get(uri, "")
+        if label:
+            lines.append(f"- {uri}（{label}）")
+        else:
+            lines.append(f"- {uri}")
+    body = chr(10).join(lines)
+    return (
+        chr(10)
+        + chr(10)
+        + "可用接口（uri 必须精确使用下列值；用户说业务名时按括号内名称对应）："
+        + chr(10)
+        + body
+    )
 
 
 def _session_id() -> str:
@@ -277,6 +319,13 @@ async def sls_query_requests(
     if normalized == "":
         return LogToolTexts.NO_ROWS.format(minutes=minutes)
     return text
+
+
+#: 工具描述的基础版快照（configure 每次基于它重建，避免反复调用层层叠加）
+_BASE_DESCRIPTIONS: dict[str, str] = {
+    "sls_query_latency": sls_query_latency.description,
+    "sls_query_requests": sls_query_requests.description,
+}
 
 
 def make_log_tools() -> list[BaseTool]:

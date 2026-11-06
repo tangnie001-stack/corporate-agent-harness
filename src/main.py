@@ -192,12 +192,14 @@ async def _setup_log_tools() -> None:
         if reason == "":
             reason = type(exc).__name__
         core_logging.log_event(Event.LOG_TOOLS_DEGRADED, reason=reason)
-        log_tools.configure(None, config.tool_uri_whitelist)
+        log_tools.configure(None, config.tool_uri_whitelist, config.tool_uri_labels)
         return
     missing = _EXPECTED_LOG_TOOLS - set(names)
     if missing:
         raise RuntimeError("日志服务缺少期望工具: " + ", ".join(sorted(missing)))
-    log_tools.configure(McpLogToolBackend(source), config.tool_uri_whitelist)
+    log_tools.configure(
+        McpLogToolBackend(source), config.tool_uri_whitelist, config.tool_uri_labels
+    )
 
 
 async def _clear_stale_chat_locks() -> None:
