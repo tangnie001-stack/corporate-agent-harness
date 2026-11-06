@@ -63,3 +63,6 @@ Thumbs.db
 
 # 评测证据产物（--evidence / --evidence-all 写出的逐题 JSON 与 summary）
 data/deepeval/evidence/
+
+# .env 手工备份（含密钥，绝不入库）
+.env.bak.*
