@@ -295,6 +295,7 @@
 | `分型（kind）` | 入口判定，取值 `answer` / `5xx` / `4xx`；决定走 `judge_answer` 还是 `judge_error`。模型不得改道（D1） | ❌ 让模型挑判定分支；❌ 4xx 进入检索判定 |
 | `证据 id（evidence_id）` | 报告内唯一的证据引用：trace 证据为 `E1…`、日志证据为 `L1…`；每条断言至少引用一个存在的 id，引用悬空即降级为未判定 | ❌ 断言不引用证据；❌ 引用不存在的 id |
 | `分数量纲（score_kind）` | 进入 prompt 的分数来源：`rerank`（真精排）/ `fallback` / `timeout` / `none`。**只有 rerank 参与低相关判定** | ❌ 用 fallback 分数判低相关；❌ 跨查询比较绝对分 |
+| `追溯（lookback）` | 有界向前取前序轮次事实：触发条件是预算告警，或零召回且问题含指代；最多 `DIAG_TRACE_LOOKBACK_ROUNDS`（默认 2）轮，**不重新判定、不链式**。轮次数写进报告的 `basis_rounds`，卡片显示"结论基于前 N 轮上下文" | ❌ 无界回溯整个 session；❌ 对前序轮次单独出根因；❌ 追溯结果覆盖本轮证据 |
 
 ## prompt 组装
 
