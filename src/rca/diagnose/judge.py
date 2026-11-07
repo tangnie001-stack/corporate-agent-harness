@@ -9,6 +9,7 @@ from __future__ import annotations
 import statistics
 
 from src.config import settings
+from src.rca.diagnose.history import HistoryRound
 from src.rca.diagnose.models import DiagnosisKind, RetrievalCall, RootCause
 
 
@@ -18,6 +19,7 @@ def judge(
     kind: DiagnosisKind = DiagnosisKind.ANSWER,
     cited: bool | None,
     has_context_budget_high: bool,
+    prior: HistoryRound | None = None,
 ) -> tuple[RootCause, str]:
     """按分型分派判定，返回 (根因, 人可读依据)。
 
@@ -26,11 +28,15 @@ def judge(
         kind: 问题分型（入口判定）；错误类走 judge_error，不进入检索判定。
         cited: 回答是否引用了上下文；None = 未知（无法判定"未引用"）。
         has_context_budget_high: 本轮是否出现上下文预算告警。
+        prior: 最近一轮追溯事实；仅在本轮未检索时参与"被裁"判定。
     """
     if kind is not DiagnosisKind.ANSWER:
         return judge_error(kind)
     return judge_answer(
-        calls, cited=cited, has_context_budget_high=has_context_budget_high
+        calls,
+        cited=cited,
+        has_context_budget_high=has_context_budget_high,
+        prior=prior,
     )
 
 
@@ -59,6 +65,7 @@ def judge_answer(
     *,
     cited: bool | None,
     has_context_budget_high: bool,
+    prior: HistoryRound | None = None,
 ) -> tuple[RootCause, str]:
     """答错类判定（检索证据 → 根因）。
 
@@ -66,8 +73,17 @@ def judge_answer(
         calls: 本轮全部 retrieve_kb 调用；空 = 没有检索。
         cited: 回答是否引用了上下文；None = 未知（无法判定"未引用"）。
         has_context_budget_high: 本轮是否出现上下文预算告警。
+        prior: 最近一轮追溯事实；本轮未检索且上一轮被预算截断时归为"上下文被截断"。
     """
     if not calls:
+        if prior is not None and prior.truncated:
+            return (
+                RootCause.CONTEXT_TRUNCATED,
+                (
+                    f"本轮未检索（追问沿用上一轮）；上一轮召回 {prior.result_count} 条"
+                    f"仅 {prior.context_count} 条进入上下文"
+                ),
+            )
         return RootCause.NOT_RETRIEVED, "本轮没有发起检索"
 
     rerank_calls = [c for c in calls if c.score_kind == "rerank" and c.scores]

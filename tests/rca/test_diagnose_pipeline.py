@@ -1,5 +1,8 @@
 """pipeline.diagnose：证据 → 判定 → 报告的组装与失败路径。"""
 
+from dataclasses import replace
+
+from src.rca.diagnose.history import HistoryRound
 from src.rca.diagnose.models import RetrievalCall, RootCause
 from src.rca.diagnose.pipeline import diagnose
 from src.rca.sources.base import SourceEmptyError, SourceFailedError
@@ -151,3 +154,74 @@ def test_4xx_is_ops_watch_case():
     rep = diagnose("t", kind=DiagnosisKind.ERROR_4XX, log_source=_LogRows([_row()]))
     assert rep.tier is Tier.WATCH
     assert rep.owner is Owner.OPS
+
+
+class _History:
+    def __init__(self, rounds):
+        self._rounds = rounds
+        self.calls = 0
+
+    def rounds_before(self, trace_id, *, limit):
+        self.calls += 1
+        return self._rounds[:limit]
+
+
+_PRIOR = HistoryRound(
+    offset=-1,
+    trace_id="trace_prev",
+    model="qwen",
+    result_count=46,
+    context_count=4,
+    score_kind="rerank",
+    context_budget_high=True,
+    history_budget_exceeded=False,
+)
+
+
+def _prior_round(**kw):
+    return replace(_PRIOR, **kw)
+
+
+def test_lookback_adds_history_evidence_and_basis_rounds():
+    history = _History((_prior_round(),))
+    rep = diagnose(
+        "t",
+        trace_source=_TraceEmpty(),
+        history_source=history,
+        has_context_budget_high=True,
+    )
+    assert history.calls == 1
+    assert rep.basis_rounds == 1
+    assert [e.id for e in rep.evidence] == ["H1"]
+    assert rep.root_cause is RootCause.CONTEXT_TRUNCATED
+    assert mid_assertion_refs(rep) == ("H1",)
+
+
+def test_no_lookback_when_not_triggered():
+    history = _History((_prior_round(),))
+    rep = diagnose("t", trace_source=_TraceOk([_call()]), history_source=history)
+    assert history.calls == 0
+    assert rep.basis_rounds == 0
+
+
+def test_lookback_failure_does_not_block_report():
+    class _Boom:
+        def rounds_before(self, trace_id, *, limit):
+            raise RuntimeError("langfuse down")
+
+    rep = diagnose(
+        "t",
+        trace_source=_TraceOk([_call()]),
+        history_source=_Boom(),
+        has_context_budget_high=True,
+    )
+    assert rep.root_cause is RootCause.CONTEXT_TRUNCATED
+    assert rep.basis_rounds == 0
+
+
+def mid_assertion_refs(rep):
+    """取含"前 1 轮上下文"的那条断言的引用（历史断言）。"""
+    for text, refs in rep.assertions:
+        if "前 1 轮" in text:
+            return refs
+    return ()

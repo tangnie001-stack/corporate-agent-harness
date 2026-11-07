@@ -91,3 +91,22 @@ def test_4xx_is_owned_by_ops():
     )
     assert cause is RootCause.UNDETERMINED
     assert "ops" in reason
+
+
+def test_followup_with_truncated_prior_is_context_truncated():
+    """D3：本轮未检索但上一轮被预算截断 → 归为"上下文被截断"，不是"未检索"。"""
+    from src.rca.diagnose.history import HistoryRound
+
+    prior = HistoryRound(
+        offset=-1,
+        trace_id="trace_prev",
+        model="qwen",
+        result_count=46,
+        context_count=4,
+        score_kind="rerank",
+        context_budget_high=True,
+        history_budget_exceeded=False,
+    )
+    cause, reason = judge([], cited=None, has_context_budget_high=False, prior=prior)
+    assert cause is RootCause.CONTEXT_TRUNCATED
+    assert "上一轮" in reason

@@ -21,6 +21,7 @@ OWNER_LABELS: dict[str, str] = {
 CARD_HEADER = "**诊断 · {kind}**"  # 卡片首行；{kind} 已翻译成中文
 CARD_TIER = "> 档位：{tier} ｜ 归属：{owner}"  # 第二行：档位与归属
 CARD_CAUSE = "> 根因：{cause}"  # 第三行：根因或未判定原因
+CARD_BASIS = "> 结论基于前 {rounds} 轮上下文"  # 追溯轮次（basis_rounds > 0 时出现）
 CARD_BASIS_ITEM = "- {text}"  # 依据条目
 CARD_BASIS_MORE = "- 另 {count} 条依据见详情"  # 依据超过上限时的收尾
 CARD_EVIDENCE = "证据 {count} 条"  # 证据计数（与详情链接同行）
