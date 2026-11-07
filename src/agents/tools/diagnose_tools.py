@@ -26,6 +26,7 @@ from src.core import logging as core_logging
 from src.core.log_events import Event
 from src.infra.db.engine import session_factory
 from src.infra.db.repos.diag_repo import DiagRepo
+from src.rca.diagnose.history import HistorySource
 from src.rca.diagnose.logs import LocalLogSource
 from src.rca.diagnose.models import DiagnosisKind, DiagnosisReport
 from src.rca.diagnose.pipeline import diagnose
@@ -41,11 +42,15 @@ _KINDS: dict[str, DiagnosisKind] = {
 
 _trace_source: Any = None
 _log_source: Any = None
+_history_source: Any = None
 _repo: Any = None
 
 
 def configure(
-    trace_source: Any = None, log_source: Any = None, repo: Any = None
+    trace_source: Any = None,
+    log_source: Any = None,
+    repo: Any = None,
+    history_source: Any = None,
 ) -> None:
     """注入证据源与仓库（测试用）；传 None 表示恢复按配置默认构造。
 
@@ -53,14 +58,16 @@ def configure(
         trace_source: 具备 `fetch(trace_id)` 的证据源
         log_source: 具备 `errors_between(start, end)` 的证据源
         repo: 具备 `save(report, ...)` 的报告仓库
+        history_source: 具备 `rounds_before(trace_id, limit=...)` 的追溯源
     """
-    global _trace_source, _log_source, _repo
+    global _trace_source, _log_source, _repo, _history_source
     _trace_source = trace_source
     _log_source = log_source
     _repo = repo
+    _history_source = history_source
 
 
-def _sources() -> tuple[Any, Any]:
+def _sources() -> tuple[Any, Any, Any]:
     """返回当前证据源；未注入时按配置构造（trace 走 Langfuse，日志走本地目录）。"""
     trace_source = _trace_source if _trace_source is not None else TraceSource()
     log_source = (
@@ -68,7 +75,8 @@ def _sources() -> tuple[Any, Any]:
         if _log_source is not None
         else LocalLogSource(settings.DIAG_LOG_DIR)
     )
-    return trace_source, log_source
+    history_source = _history_source if _history_source is not None else HistorySource()
+    return trace_source, log_source, history_source
 
 
 def _repo_or_default() -> Any:
@@ -103,7 +111,9 @@ def _failure_text(report: DiagnosisReport) -> str | None:
 
 
 @tool("diagnose_trace")
-async def diagnose_trace(trace_id: str, kind: str = "answer") -> str:
+async def diagnose_trace(
+    trace_id: str, kind: str = "answer", question: str = ""
+) -> str:
     """诊断一条 trace：给出档位、归属、根因与证据计数，并附详情链接。
 
     何时调用：用户给出 trace_id 并问"为什么报错/为什么答错/查一下这条"时。
@@ -112,6 +122,7 @@ async def diagnose_trace(trace_id: str, kind: str = "answer") -> str:
     Args:
         trace_id: 形如 trace_<uuid> 的请求标识
         kind: 问题分型，answer（答错，默认）/ 5xx（服务端错误）/ 4xx（客户端错误）
+        question: 本轮用户问题原文（只用于判断"追问"是否需要追溯上一轮，可省略）
 
     Returns:
         可转述给用户的 markdown 卡片；格式或取数失败时返回对应的提示文案
@@ -122,14 +133,16 @@ async def diagnose_trace(trace_id: str, kind: str = "answer") -> str:
     if parsed_kind is None:
         return INVALID_KIND.format(kind=kind)
 
-    trace_source, log_source = _sources()
+    trace_source, log_source, history_source = _sources()
     started = time.monotonic()
     report = await asyncio.to_thread(
         diagnose,
         trace_id.strip(),
         kind=parsed_kind,
+        question=question,
         trace_source=trace_source,
         log_source=log_source,
+        history_source=history_source,
     )
     failure = _failure_text(report)
     if failure is not None:

@@ -6,8 +6,9 @@ import pytest
 
 from src.agents.tools import diagnose_tools
 from src.config import settings
+from src.rca.diagnose.history import HistoryRound
 from src.rca.diagnose.models import Evidence, RetrievalCall
-from src.rca.sources.base import SourceFailedError
+from src.rca.sources.base import SourceEmptyError, SourceFailedError
 
 pytestmark = pytest.mark.asyncio
 
@@ -24,6 +25,11 @@ class _TraceOk:
             for i, c in enumerate(self._calls, 1)
         ]
         return list(self._calls), ev
+
+
+class _TraceEmpty:
+    def fetch(self, trace_id):
+        raise SourceEmptyError("no_retrieval_snapshot")
 
 
 class _TraceNotFound:
@@ -93,3 +99,40 @@ async def test_success_returns_card_and_persists(monkeypatch):
     assert "http://diag.local/diagnose.html?diag_id=diag_test_id" in text
     assert len(repo.saved) == 1
     assert repo.saved[0][0].tier.value == "需要处理"
+
+
+class _HistoryOne:
+    def __init__(self):
+        self.called = 0
+
+    def rounds_before(self, trace_id, *, limit):
+        self.called += 1
+        return (
+            HistoryRound(
+                offset=-1,
+                trace_id="trace_prev",
+                model="qwen",
+                result_count=46,
+                context_count=4,
+                score_kind="rerank",
+                context_budget_high=True,
+                history_budget_exceeded=False,
+            ),
+        )
+
+
+async def test_followup_question_triggers_lookback():
+    """追问（含指代）且本轮无检索 → 追溯上一轮，卡片标注轮次。"""
+    history = _HistoryOne()
+    diagnose_tools.configure(
+        trace_source=_TraceEmpty(),
+        log_source=None,
+        repo=_Repo(),
+        history_source=history,
+    )
+    text = await diagnose_tools.diagnose_trace.ainvoke(
+        {"trace_id": _VALID, "kind": "answer", "question": "那它去年呢"}
+    )
+    assert history.called == 1
+    assert "前 1 轮" in text
+    assert "上一轮召回 46 条仅 4 条进入上下文" in text

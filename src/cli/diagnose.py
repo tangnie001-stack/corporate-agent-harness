@@ -18,6 +18,7 @@ import argparse
 import sys
 
 from src.config import settings
+from src.rca.diagnose.history import HistorySource
 from src.rca.diagnose.logs import LocalLogSource
 from src.rca.diagnose.models import DiagnosisReport
 from src.rca.diagnose.pipeline import diagnose
@@ -50,6 +51,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--langfuse-host", default=settings.LANGFUSE_HOST)
     parser.add_argument("--log-dir", default="/data/logs")
     parser.add_argument("--no-logs", action="store_true", help="跳过日志证据")
+    parser.add_argument("--no-history", action="store_true", help="跳过前序轮次追溯")
+    parser.add_argument("--question", default="", help="本轮用户问题（用于追问判定）")
     args = parser.parse_args(argv)
 
     def _fetch(trace_id: str):
@@ -59,8 +62,10 @@ def main(argv: list[str] | None = None) -> int:
 
     report = diagnose(
         args.trace_id,
+        question=args.question,
         trace_source=TraceSource(fetcher=_fetch),
         log_source=None if args.no_logs else LocalLogSource(args.log_dir),
+        history_source=None if args.no_history else HistorySource(),
     )
     _print(report)
     return 0
