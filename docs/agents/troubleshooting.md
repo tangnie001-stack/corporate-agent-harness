@@ -182,6 +182,7 @@ docker exec corporate-rag-app grep "<trace_id>" /data/logs/app_YYYY-MM-DD.log
 | 不知道是哪个渠道来的 | 日志第 5 段 `channel` | 本文件 §4 |
 | 企微不回 / 被顶号 | 渠道侧日志 + SDK 实测事实 | `docs/agents/wecom-sdk-facts.md` |
 | 部署/端口/发布异常 | 部署槽位日志与运行形态 | `docs/agents/deploy-runbook.md` |
+| 值班助手给了 trace_id 但结论为"未判定" | 该 trace 的 `diagnose done`（档位/归属/根因）与 `diagnose undetermined`（缺哪类证据），再按本文件 §2/§3 补查 | 本文件 §8 + `docs/agents/logging-rules.md`（`[diagnose]` 前缀） |
 | 评测指标出现 `error` / 评测总耗时异常 | 该题 trace_id 下的 `judge call`（measure 汇总；`error` 为异常链摘要，NaN 无异常时为空）与 `judge http`（每次 HTTP 明细，含传输失败） | 本文件 §10 + **ADR-0026** |
 
 ### 评测 trace 链

@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from src.rca.models import Tier
+
 
 class RootCause(str, Enum):
     """根因枚举（闭合集合）。"""
@@ -18,6 +20,22 @@ class RootCause(str, Enum):
     CONTEXT_TRUNCATED = "context_truncated"  # 有召回但进 prompt 的条数被截
     NOT_CITED = "not_cited"  # 有高分上下文但回答未引用
     UNDETERMINED = "undetermined"  # 证据不足，未判定
+
+
+class DiagnosisKind(str, Enum):
+    """问题分型：由入口判定，决定走哪条判定分支（D13）。"""
+
+    ANSWER = "answer"  # 模型答错 / 答不准
+    ERROR_5XX = "5xx"  # 服务端错误
+    ERROR_4XX = "4xx"  # 客户端侧错误（参数 / 鉴权 / 限流 / 不存在）
+
+
+class Owner(str, Enum):
+    """归属建议：结论该交给谁跟进。"""
+
+    OPS = "ops"  # 运维受理（客户端侧、证据不足）
+    DEV = "dev"  # 研发排查（服务端错误）
+    KB = "kb"  # 知识库 / 检索侧修正（答错）
 
 
 @dataclass(frozen=True)
@@ -58,6 +76,10 @@ class DiagnosisReport:
     next_actions: tuple[str, ...]  # 建议动作（文本，不执行）
     basis_rounds: int  # 本次结论用到了前几轮上下文（0 = 仅本 trace）
     summary: str = ""  # 结论的一句话说明（含未判定原因）
+    kind: DiagnosisKind = DiagnosisKind.ANSWER  # 问题分型（入口判定）
+    tier: Tier = Tier.WATCH  # 档位：要不要处理（与根因分开算，D4）
+    owner: Owner = Owner.OPS  # 归属：该谁跟进
+    diag_id: str = ""  # 落库后回填的报告 id；未落库为空
 
 
 def reason_text(cause: RootCause) -> str:

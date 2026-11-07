@@ -8,6 +8,7 @@ from src.api.feedback import router as feedback_router
 from src.api.health import router as health_router
 from src.api.kb_eval import router as kb_eval_router
 from src.api.knowledge_base import router as kb_router
+from src.api.rca import router as rca_router
 from src.api.sessions import router as sessions_router
 
 __all__ = [
@@ -19,5 +20,6 @@ __all__ = [
     "health_router",
     "kb_eval_router",
     "kb_router",
+    "rca_router",
     "sessions_router",
 ]

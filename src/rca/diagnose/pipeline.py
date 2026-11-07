@@ -1,21 +1,30 @@
-"""诊断流水线：证据 → 判定 → 报告（P1 不含入口与投递）。"""
+"""诊断流水线：证据 → 判定 → 报告（P2a 含分型/档位，不含投递）。"""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
 from src.rca.diagnose.judge import judge
-from src.rca.diagnose.models import DiagnosisReport, RootCause
+from src.rca.diagnose.models import (
+    DiagnosisKind,
+    DiagnosisReport,
+    Evidence,
+    RootCause,
+)
 from src.rca.diagnose.report import validate
+from src.rca.diagnose.tier import assess
 from src.rca.sources.base import SourceEmptyError, SourceFailedError
 
 # 日志窗口：与告警时间窗一致，取 trace 发生时前后各 15 分钟
 _LOG_WINDOW = timedelta(minutes=15)
+# 日志证据上限：卡片只放摘要，其余走详情页
+_MAX_LOG_EVIDENCE = 5
 
 
 def diagnose(
     trace_id: str,
     *,
+    kind: DiagnosisKind = DiagnosisKind.ANSWER,
     cited: bool | None = None,
     has_context_budget_high: bool = False,
     trace_source: object | None = None,
@@ -26,6 +35,7 @@ def diagnose(
 
     Args:
         trace_id: 目标 trace。
+        kind: 问题分型（入口判定）；错误类不依赖检索快照。
         cited: 回答是否引用了上下文；None 表示未知（不判"未引用"）。
         has_context_budget_high: 本轮是否出现上下文预算告警。
         trace_source: 具备 `fetch(trace_id)` 的证据源；None 表示无 trace 证据。
@@ -35,33 +45,49 @@ def diagnose(
     Returns:
         DiagnosisReport（已过引用校验）。
     """
-    if trace_source is None:
-        return _undetermined(trace_id, "未提供 trace 证据源")
+    if trace_source is None and kind is DiagnosisKind.ANSWER:
+        return _undetermined(trace_id, "未提供 trace 证据源", kind)
 
-    try:
-        calls, evidence = trace_source.fetch(trace_id)  # type: ignore[attr-defined]
-    except SourceEmptyError:
-        return _undetermined(
-            trace_id, "无检索快照：本轮可能未检索，或该 trace 早于字段上线"
-        )
-    except SourceFailedError as exc:
-        return _undetermined(trace_id, f"trace 不可用：{exc}")
+    calls = []
+    evidence: list[Evidence] = []
+    if trace_source is not None:
+        try:
+            calls, evidence = trace_source.fetch(trace_id)  # type: ignore[attr-defined]
+        except SourceEmptyError:
+            # 错误类不依赖检索快照：5xx 的 trace 可能根本没有 retrieve_kb 观测
+            if kind is DiagnosisKind.ANSWER:
+                return _undetermined(
+                    trace_id,
+                    "无检索快照：本轮可能未检索，或该 trace 早于字段上线",
+                    kind,
+                )
+        except SourceFailedError as exc:
+            return _undetermined(trace_id, f"trace 不可用：{exc}", kind)
 
+    rows = []
     if log_source is not None:
         end = now or datetime.now(UTC)
         try:
-            log_source.errors_between(end - _LOG_WINDOW, end)  # type: ignore[attr-defined]
+            rows = log_source.errors_between(end - _LOG_WINDOW, end)  # type: ignore[attr-defined]
         except SourceFailedError as exc:
-            return _undetermined(trace_id, f"日志源不可用：{exc}")
+            return _undetermined(trace_id, f"日志源不可用：{exc}", kind)
         except SourceEmptyError:
-            pass
+            rows = []
+
+    if kind is not DiagnosisKind.ANSWER:
+        evidence = evidence + _log_evidence(rows)
 
     cause, reason = judge(
-        calls, cited=cited, has_context_budget_high=has_context_budget_high
+        calls,
+        kind=kind,
+        cited=cited,
+        has_context_budget_high=has_context_budget_high,
     )
-    assertions: tuple[tuple[str, tuple[str, ...]], ...] = ()
-    if evidence:
-        assertions = ((reason, tuple(e.id for e in evidence)),)
+    assertions = _assertions(kind, cause, reason, evidence, rows)
+    summary = reason
+    if kind is not DiagnosisKind.ANSWER and not rows:
+        summary = "窗口内无 ERROR 记录：可能未落到应用层"
+    tier, owner = assess(kind, cause)
     report = DiagnosisReport(
         trace_id=trace_id,
         root_cause=cause,
@@ -69,13 +95,54 @@ def diagnose(
         assertions=assertions,
         next_actions=(),
         basis_rounds=0,
-        summary=reason,
+        summary=summary,
+        kind=kind,
+        tier=tier,
+        owner=owner,
     )
     return validate(report)
 
 
-def _undetermined(trace_id: str, summary: str) -> DiagnosisReport:
+def _log_evidence(rows: list[object]) -> list[Evidence]:
+    """把错误日志行转成证据（只留事件名，不带原文）。"""
+    out: list[Evidence] = []
+    for index, row in enumerate(rows[:_MAX_LOG_EVIDENCE], 1):
+        event = getattr(row, "event", "") or getattr(row, "level", "")
+        ts = getattr(row, "ts", None)
+        locator = ""
+        if isinstance(ts, datetime):
+            locator = f"log:{ts.strftime('%Y-%m-%d %H:%M:%S')}"
+        out.append(Evidence(id=f"L{index}", kind="log", locator=locator, summary=event))
+    return out
+
+
+def _assertions(
+    kind: DiagnosisKind,
+    cause: RootCause,
+    reason: str,
+    evidence: list[Evidence],
+    rows: list[object],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """按分型生成断言；每条必须引用存在的证据 id。"""
+    if not evidence:
+        return ()
+    if kind is DiagnosisKind.ANSWER:
+        return ((reason, tuple(e.id for e in evidence)),)
+    first_event = "unknown"
+    if rows:
+        first_event = getattr(rows[0], "event", "") or "unknown"
+    text = f"窗口内 ERROR {len(rows)} 条，首条事件 {first_event}"
+    log_ids = tuple(e.id for e in evidence if e.kind == "log")
+    if not log_ids:
+        return ()
+    return ((text, log_ids),)
+
+
+def _undetermined(
+    trace_id: str, summary: str, kind: DiagnosisKind = DiagnosisKind.ANSWER
+) -> DiagnosisReport:
     """构造"未判定"报告：无断言，原因写进 summary。"""
+    tier, owner = assess(kind, RootCause.UNDETERMINED)
     return DiagnosisReport(
         trace_id=trace_id,
         root_cause=RootCause.UNDETERMINED,
@@ -84,4 +151,7 @@ def _undetermined(trace_id: str, summary: str) -> DiagnosisReport:
         next_actions=(summary,),
         basis_rounds=0,
         summary=summary,
+        kind=kind,
+        tier=tier,
+        owner=owner,
     )

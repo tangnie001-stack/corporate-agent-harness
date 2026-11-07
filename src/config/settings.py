@@ -350,6 +350,12 @@ DIAG_TRACE_LOOKBACK_ROUNDS: int = int(os.getenv("DIAG_TRACE_LOOKBACK_ROUNDS", "2
 DIAG_MAX_REPRESENTATIVE_TRACES: int = int(
     os.getenv("DIAG_MAX_REPRESENTATIVE_TRACES", "3")
 )
+# 诊断：报告落库的环境标识（一套部署一个值；不按 bot 区分环境）
+DIAG_ENV: str = os.getenv("DIAG_ENV", "local")
+# 诊断：本地应用日志目录（与 core/logging.py 的 LOG_DIR 同源）
+DIAG_LOG_DIR: str = os.getenv("LOG_DIR", "logs")
+# 诊断：详情页基地址（卡片链接用；未配置时卡片不带链接）
+DIAG_DETAIL_BASE_URL: str = os.getenv("DIAG_DETAIL_BASE_URL", "")
 # 页眉页脚边距过滤（fitz 通道按 y 坐标剔除重复页眉/页脚）
 # 顶部 45：保留页首内容标题（如 tencent 的"简明综合财务状况表"，y≈52-66）
 # 底部 80：剔除页码页脚（如 neusoft 的 "1 / 10 东软集团..."，y≈768-791）

@@ -25,7 +25,6 @@ class LogToolTexts:
     NODE_MORE = "另 {count} 个节点"  # 分布行超出 MAX_NODE_PARTS 时的收尾片段
     NODE_ALIAS = "node-{index}"  # 明细行的节点别名（按 upstream_addr 首次出现顺序编号）
     NODE_UNKNOWN = "node-?"  # 明细行缺 upstream_addr 时的占位别名（不臆造节点号）
-    MASKED_NODE = "node-***"  # 兜底脱敏：任何漏出的 IPv4[:port] 替换值
     NO_STATS = "无可用统计"  # 聚合结果整段缺失时的返回值（区别于「各项为 0」）
     MISSING_VALUE = "N/A"  # 明细行数值字段缺失时的占位（不把「没采到」写成 0）
     DETAIL_TRUNCATED = (

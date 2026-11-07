@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import re
 import time
 
 from src.config.log_tools import (
@@ -23,8 +22,7 @@ from src.config.log_tools import (
     LogToolTexts,
 )
 from src.rca.sources.mcp import McpLogSource
-
-_IPV4 = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b")
+from src.utils.mask import mask_nodes
 
 
 def _as_int(value: object) -> int | None:
@@ -41,11 +39,6 @@ def _text(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return " ".join(value.split())
-
-
-def _mask(text: str) -> str:
-    """把漏出的 IPv4[:port] 替换成节点别名（与 RCA 卡片同口径）。"""
-    return _IPV4.sub(LogToolTexts.MASKED_NODE, text)
 
 
 def format_latency(data: dict) -> str:
@@ -104,7 +97,7 @@ def format_latency(data: dict) -> str:
             lines.append(LogToolTexts.LATENCY_ERRORS.format(count=count))
     if not lines:
         return LogToolTexts.NO_STATS
-    return _mask("\n".join(lines[:MAX_LATENCY_LINES]))
+    return mask_nodes("\n".join(lines[:MAX_LATENCY_LINES]))
 
 
 def _node_aliases(rows: list[dict]) -> dict[str, str]:
@@ -183,7 +176,7 @@ def format_detail(rows: list, limit: int = MAX_LIMIT) -> str:
         lines.append(
             LogToolTexts.DETAIL_TRUNCATED.format(sampled=len(ordered), shown=limit)
         )
-    return _mask("\n".join(lines))
+    return mask_nodes("\n".join(lines))
 
 
 def _window(minutes: int) -> tuple[int, int]:

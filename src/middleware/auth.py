@@ -26,8 +26,8 @@ async def auth_middleware(
     if path.startswith("/api/auth/") or path == "/api/health":
         return await call_next(request)
 
-    # 知识库端点：必须登录
-    if path.startswith("/api/kbs"):
+    # 知识库与诊断详情端点：必须登录（诊断报告含用户原文摘要，禁止免登链接）
+    if path.startswith(("/api/kbs", "/api/rca")):
         token = request.cookies.get("token")
         if not token:
             return JSONResponse(
