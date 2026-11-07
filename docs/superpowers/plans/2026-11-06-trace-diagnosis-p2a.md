@@ -198,3 +198,22 @@
 - 规格覆盖：D4（tier/root_cause 分离）→ T1；D13（分型）→ T2；D6（引用校验）→ 沿用 P1 + T3；D10（摘要卡片 + 登录详情）→ T5/T9；7.2（只存摘要）→ T6。
 - 不做的：追溯（3.3）、RetrievalProbe（2.3）、窄协议（2.4）、nginx（2.5）、定位器（6.x）、回归集（8.5）→ P2b / P3。
 - 类型一致：`DiagnosisReport` 新字段全带默认值，P1 调用方与测试不需改动。
+
+
+## 实施结果（2026-11-07 回填）
+
+十个任务全部落地，提交 `42188485`..`9c329947`（9 个提交）：
+
+- 判定：`tier.py`（档位+归属，D4）、`judge` 按 `kind` 分派（`judge_answer` / `judge_error`，D13）。
+- 证据：错误类把窗口内 ERROR 行转成 `L*` 证据（最多 5 条），答案类沿用 `E*`。
+- 渲染：`src/rca/diagnose/render.py` + `src/config/diag.py`（文案集中），脱敏统一走 `src/utils/mask.py`。
+- 落库：`diagnosis_reports` + alembic `0004` + `DiagRepo`；详情页 `diagnose.html` 与 `GET /api/rca/diag/{diag_id}`（需登录）。
+- 入口：`diagnose_trace` 工具并入 `LOG_CAPABILITY` 工具面；`skills/rca-error` 为 agent 侧技能（模型可自动调用）。
+- 验证：`pytest` 2467 passed / 2 skipped、`ruff check` 0、`pyright src/` 0 error；活体对 `trace_afe90f74` 跑通并落库（`diag_id=e9c836ef…`），卡片含详情链接。
+
+**与计划的偏差（均有登记）：**
+
+1. 4xx 细分（参数/鉴权/限流/不存在）依赖 access 日志状态码，随 nginx 采集（2.5）落 P3；本期只给归属。
+2. 答案类的 `cited` 仍为未知（P1 起即如此）：工具没有回答文本，因此不会判 `not_cited`。要判需要在 P2b 引入回答文本/引用比对。
+3. `skills/rca-error` 未声明 `evidence` 清单——证据在工具内的确定性流水线采集，agent 技能只负责触发与措辞。
+4. 详情页本期无"展开原文"：7.2 只存摘要，原文来源待 P2b。
