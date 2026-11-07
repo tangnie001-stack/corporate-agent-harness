@@ -21,6 +21,34 @@ def _default_fetcher(trace_id: str) -> Any:
     return fetch_trace(trace_id, settings.LANGFUSE_HOST)
 
 
+def parse_retrieval_calls(raw_calls: list[Any]) -> list[RetrievalCall]:
+    """把 trace metadata 的 `retrieval_contexts` 归一成检索事实。
+
+    Args:
+        raw_calls: metadata 里的原始条目（每项是一次 retrieve_kb 调用）
+
+    Returns:
+        RetrievalCall 列表；字段缺失按 0 / 空串处理
+    """
+    calls: list[RetrievalCall] = []
+    for raw in raw_calls:
+        contexts = raw.get("contexts") or []
+        calls.append(
+            RetrievalCall(
+                call_index=int(raw.get("call_index") or 0),
+                query=str(raw.get("query") or ""),
+                top_k=int(raw.get("top_k") or 0),
+                iteration=int(raw.get("iteration") or 0),
+                result_count=int(raw.get("result_count") or 0),
+                context_count=int(raw.get("context_count") or len(contexts)),
+                score_kind=str(raw.get("score_kind") or "none"),
+                scores=tuple(float(c.get("score") or 0.0) for c in contexts),
+                chunk_ids=tuple(str(c.get("chunk_id") or "") for c in contexts),
+            )
+        )
+    return calls
+
+
 class TraceSource:
     """从单条 trace 的 metadata 还原检索事实。"""
 
@@ -49,23 +77,9 @@ class TraceSource:
         if not raw_calls:
             raise SourceEmptyError("no_retrieval_snapshot")
 
-        calls: list[RetrievalCall] = []
+        calls = parse_retrieval_calls(raw_calls)
         evidence: list[Evidence] = []
         for index, raw in enumerate(raw_calls, 1):
-            contexts = raw.get("contexts") or []
-            calls.append(
-                RetrievalCall(
-                    call_index=int(raw.get("call_index") or 0),
-                    query=str(raw.get("query") or ""),
-                    top_k=int(raw.get("top_k") or 0),
-                    iteration=int(raw.get("iteration") or 0),
-                    result_count=int(raw.get("result_count") or 0),
-                    context_count=int(raw.get("context_count") or len(contexts)),
-                    score_kind=str(raw.get("score_kind") or "none"),
-                    scores=tuple(float(c.get("score") or 0.0) for c in contexts),
-                    chunk_ids=tuple(str(c.get("chunk_id") or "") for c in contexts),
-                )
-            )
             evidence.append(
                 Evidence(
                     id=f"E{index}",

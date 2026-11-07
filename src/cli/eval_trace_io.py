@@ -90,3 +90,35 @@ def fetch_recent(host: str, *, since: datetime | None, limit: int) -> list[Any]:
         return list(client.fetch_traces(**kwargs).data)
     finally:
         client.shutdown()
+
+
+def fetch_session_traces(
+    trace_id: str, host: str, *, limit: int = 20
+) -> tuple[datetime | None, list[Any]]:
+    """取同 session 内早于该 trace 的历史 trace（按时间升序）。
+
+    Args:
+        trace_id: 目标 trace
+        host: Langfuse 地址
+        limit: 最多拉取的条数（服务端上限，调用方再截断）
+
+    Returns:
+        (目标 trace 的时间戳, 历史 trace 列表)；目标 trace 无 session 时列表为空
+    """
+    client = _client(host)
+    try:
+        current = client.fetch_trace(trace_id).data
+        session_id = getattr(current, "session_id", "") or ""
+        ts = getattr(current, "timestamp", None)
+        if not session_id or ts is None:
+            return ts, []
+        resp = client.fetch_traces(session_id=session_id, to_timestamp=ts, limit=limit)
+        prior = [
+            t
+            for t in resp.data
+            if t.id != trace_id and t.timestamp is not None and t.timestamp < ts
+        ]
+        prior.sort(key=lambda t: t.timestamp)
+        return ts, prior
+    finally:
+        client.shutdown()
