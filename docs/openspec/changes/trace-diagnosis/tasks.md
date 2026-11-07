@@ -11,7 +11,7 @@
 - [x] 1.2 新增 alembic 迁移：加列 + `ix_messages_trace_id` 索引
 - [x] 1.3 `src/infra/db/repos/chat_repo.py:127` `save_message`：从请求上下文取 `trace_id` 写入；取不到时留空
 - [x] 1.4 `src/config/settings.py` 新增 `DIAG_SCORE_FLOOR`（默认 0.35）、`DIAG_SCORE_GAP`（默认 0.05）、`DIAG_TRACE_LOOKBACK_ROUNDS`（默认 2）、`DIAG_MAX_REPRESENTATIVE_TRACES`（默认 3），每项写明"首版未标定"
-- [ ] 1.5 `src/core/log_events.py` + `src/core/log_event_specs.py` 双处登记新事件：`diagnose done`、`diagnose undetermined`、`trace locate done`
+- [x] 1.5 `src/core/log_events.py` + `src/core/log_event_specs.py` 双处登记新事件：`diagnose done`、`diagnose undetermined`（新增 `[diagnose]` 前缀）。`trace locate done` 随 6.x 定位器落 P3
 
 ## 2. 证据源
 
@@ -31,24 +31,24 @@
 - [x] 3.1 `src/rca/diagnose/judge.py`：`root_cause` 枚举判定——`not_retrieved`（无 `retrieve_kb` 观测）、`low_relevance`（D5 三条件全满足）、`context_truncated`（`context_count < result_count` 且有 `context budget high`）、`not_cited`（有高分上下文但回答无引用）、`undetermined`
 - [x] 3.2 量纲门控：`score_kind != "rerank"` 时禁止进入 `low_relevance` 分支
 - [ ] 3.3 D3 追溯：`history budget exceeded` / `context budget high` 或 `result_count == 0` 且问题含指代时，拉前 2 轮事实；禁止链式追溯
-- [ ] 3.4 `tier` 与 `root_cause` 分开计算、分开存储；`tier` 沿用 `alert-triage` 的三档口径
+- [x] 3.4 `tier` 与 `root_cause` 分开计算、分开存储（`src/rca/diagnose/tier.py`，报文档位/归属/根因三个字段）；`tier` 沿用 `alert-triage` 的三档口径
 - [x] 3.5 证据不足（三态含 `empty` 或 `failed`）→ `undetermined`，并记录缺失的证据项清单
-- [ ] 3.6 问题分型（D13）：`kind ∈ 5xx | 4xx | answer` 由入口判定，分派到 `judge_error` / `judge_answer`；4xx 只输出分类与归属（参数 / 鉴权 / 限流 / 资源不存在），不读请求体
+- [x] 3.6 问题分型（D13）：`kind ∈ 5xx | 4xx | answer` 由入口判定，分派到 `judge_error` / `judge_answer`；4xx 只输出归属（ops）。**4xx 的细分（参数/鉴权/限流/不存在）依赖 access 日志状态码**，随 2.5 落 P3
 
 ## 4. 报告与校验
 
-- [ ] 4.1 `src/rca/diagnose/report.py`：报告结构含 `tier`、`root_cause`、`evidence[]`、`assertions[]`、`next_actions[]`、`basis_rounds`（本次用到前几轮）
+- [x] 4.1 报告结构含 `kind`、`tier`、`owner`、`root_cause`、`evidence[]`、`assertions[]`、`next_actions[]`、`basis_rounds`、`diag_id`（`src/rca/diagnose/models.py`）；`basis_rounds` 恒 0，待 3.3 追溯落地
 - [x] 4.2 `src/rca/diagnose/report.py` 的 `validate()`：校验每条断言至少引用一个存在的 `evidence_id`；失败 → 降级为"证据清单 + 未判定"
-- [ ] 4.3 模板约束：禁止出现未引用的因果断言；数字必须来自证据原文，不由模型转写（沿用 `alert-triage` D6）
-- [ ] 4.4 新增 `src/rca/diagnose/render.py`（**不复用** `render_card`，后者直接读 `stats`）：群卡片（归属建议 + 根因 + 同类计数 + 详情链接）与详情页两套；卡片沿用企微 `button_interaction` 能力
+- [x] 4.3 模板约束：本期报告文本全部由代码拼装（模型不产出任何断言与数字），未引用断言由 `validate()` 拦截
+- [x] 4.4 `src/rca/diagnose/render.py`（**不复用** `render_card`）：群卡片（档位 + 归属 + 根因 + 依据 + 详情链接）与详情页 `deploy/nginx/html/diagnose.html`；同类计数属告警级聚合，随 6.x 落 P3
 
 ## 5. 人工入口
 
-- [ ] 5.1 `src/agents/tools/` 新增 `diagnose_trace` 工具（只读；输入 `trace_id`），**挂在 `bot-ops` 的 profile 工具面**，不新建独立机器人
-- [ ] 5.2 `skills/rca-error/SKILL.md`：frontmatter 声明证据清单（`trace_fetch` required、`error_log`、`retrieval_probe`、`history_lookback` 的 `when` 条件）；**前置声明依赖 ops 档**（日志能力只在 ops/dev 开放）
-- [ ] 5.3 入口校验：`trace_id` 格式不符/不存在/属于另一环境 → 分别给出三种明确文案，不落到"诊断失败"
-- [ ] 5.4 输出裁剪与脱敏口径与 `ops-log-tools` 对齐（同一套 `_mask` 与行数/字符上限），避免两条链路给出两种脱敏结果
-- [ ] 5.5 环境隔离**不按 bot 区分**：`WeComBotConfig` 只有 `key/bot_id/secret/name/profile`，没有环境字段；日志源配置是单例（`load_rca_config()`）。诊断随部署环境走（一套部署一套日志源），profile 只决定工具面
+- [x] 5.1 `src/agents/tools/diagnose_tools.py` 的 `diagnose_trace`（只读 + 落库），并入 `LOG_CAPABILITY` 工具面（`bot-ops` / `bot-dev` 同享），不新建独立机器人
+- [x] 5.2 `skills/rca-error/SKILL.md`：agent 侧技能（模型可自动调用），正文写明分型选择、只调一次、原样转述、未判定不猜。**未声明 `evidence` 清单**——证据采集在工具内的确定性流水线里完成，agent 技能不参与采集编排
+- [x] 5.3 入口校验三文案：格式不符 / 未找到（含超保留期）/ 不可用（另一环境或检索异常），见 `src/config/diag.py`
+- [x] 5.4 脱敏同源：抽取 `src/utils/mask.py::mask_nodes`，日志工具与诊断卡片共用
+- [x] 5.5 环境隔离**不按 bot 区分**（`DIAG_ENV` 一个部署一个值）：`WeComBotConfig` 只有 `key/bot_id/secret/name/profile`，没有环境字段；日志源配置是单例（`load_rca_config()`）。诊断随部署环境走（一套部署一套日志源），profile 只决定工具面
 
 ## 6. 告警定位器
 
@@ -62,9 +62,9 @@
 
 ## 7. 落库与投递
 
-- [ ] 7.1 新增诊断报告表：`diag_id / trace_id / env / trigger(manual|alert) / tier / root_cause / evidence(jsonb) / next_actions / basis_rounds / cost_ms / confirmed`，保留 180 天
-- [ ] 7.2 写入口径：证据存摘要与定位，不存原文；原文只在详情页按需展开并留痕
-- [ ] 7.3 详情页：复用现有登录，禁止免登链接；展开原文记录"谁、何时、哪个 diag_id"
+- [x] 7.1 `diagnosis_reports` 表（另有 `kind` / `owner` / `assertions`）+ alembic `0004`；`created_at` 建索引，180 天清理属运维
+- [x] 7.2 证据存摘要与定位（`DiagRepo.save` 只写 id/kind/locator/summary），不存原文
+- [x] 7.3 详情页 `deploy/nginx/html/diagnose.html` + `GET /api/rca/diag/{diag_id}`，`/api/rca` 走必须登录分支。**本期无原文可展开**（7.2 只存摘要），展开留痕随原文来源落地一并做
 
 ## 8. 测试与验证
 
@@ -78,7 +78,7 @@
 
 ## 9. 文档
 
-- [ ] 9.1 `docs/agents/troubleshooting.md`：在"症状 → 该查哪个事件"表加一行"值班助手诊断"入口
-- [ ] 9.2 `docs/agents/api_contract.md`：若新增对内工具接口，登记参数与返回
-- [ ] 9.3 `docs/agents/logging-rules.md`：登记 3 个新事件
-- [ ] 9.4 `docs/agents/glossary.md`：`root_cause` / `tier` / `evidence_id` / `score_kind` 四个术语
+- [x] 9.1 `docs/agents/troubleshooting.md` 症状表加"值班助手结论未判定"一行
+- [x] 9.2 `docs/agents/api_contract.md` §2.10 登记 `GET /api/rca/diag/{diag_id}`
+- [x] 9.3 `docs/agents/logging-rules.md` 登记 `[diagnose]` 前缀与两个事件（`trace locate done` 随 P3）
+- [x] 9.4 `docs/agents/glossary.md` 新增「trace 诊断」小节：`root_cause` / `tier` / `kind` / `evidence_id` / `score_kind`

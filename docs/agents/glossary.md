@@ -284,6 +284,18 @@
 | `严重阈值（severe_latency_ms）` | 独立于告警自身阈值的第二判据，默认 3000ms（`RCA_SEVERE_LATENCY_MS`）；窗口 p95 ≥ 该值即置 `severe_hit` 并落"建议观察" | ❌ 与告警阈值混用；❌ 当成"需要处理"的门槛 |
 | `语义未知` | 规则反查未能补齐 `uri` / 阈值 / `for` 时长时的降级态，对应字段为 `None`。`uri` 为 `None` 时整轮不判定、退回原有自由分析；其余字段缺失只表现为"不可引用" | ❌ 把未知数值当 0 或照抄；❌ 在解释里引用"语义未知"的数值 |
 
+## trace 诊断（trace-diagnosis）
+
+> 代码落点 `src/rca/diagnose/`；入口是 `diagnose_trace` 工具（挂日志能力档，不是独立机器人）。
+
+| 术语 | 定义 | 常见错误 |
+|------|------|---------|
+| `根因（root_cause）` | 闭合枚举：`not_retrieved`（本轮没检索）/ `low_relevance`（精排整体低且无尖峰）/ `context_truncated`（召回后进 prompt 被截）/ `not_cited`（上下文够但回答未引用）/ `undetermined`（证据不足）。**未判定是合法结论**，不得用推测填补 | ❌ 新增枚举外取值；❌ 把 undetermined 改写成某个根因 |
+| `档位（tier）` | 与根因**分开算**：`5xx` → 需要处理（归属 dev）；`4xx` → 建议观察（归属 ops）；`answer` 有根因 → 需要处理（归属 kb）；未判定 → 建议观察（归属 ops）。口径复用告警三档 | ❌ 由根因反推档位；❌ 与告警侧的 tier 混用同一字段 |
+| `分型（kind）` | 入口判定，取值 `answer` / `5xx` / `4xx`；决定走 `judge_answer` 还是 `judge_error`。模型不得改道（D1） | ❌ 让模型挑判定分支；❌ 4xx 进入检索判定 |
+| `证据 id（evidence_id）` | 报告内唯一的证据引用：trace 证据为 `E1…`、日志证据为 `L1…`；每条断言至少引用一个存在的 id，引用悬空即降级为未判定 | ❌ 断言不引用证据；❌ 引用不存在的 id |
+| `分数量纲（score_kind）` | 进入 prompt 的分数来源：`rerank`（真精排）/ `fallback` / `timeout` / `none`。**只有 rerank 参与低相关判定** | ❌ 用 fallback 分数判低相关；❌ 跨查询比较绝对分 |
+
 ## prompt 组装
 
 ### 六段模型

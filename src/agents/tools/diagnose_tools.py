@@ -22,6 +22,8 @@ from src.config.diag import (
     TRACE_NOT_FOUND,
     TRACE_UNAVAILABLE,
 )
+from src.core import logging as core_logging
+from src.core.log_events import Event
 from src.infra.db.engine import session_factory
 from src.infra.db.repos.diag_repo import DiagRepo
 from src.rca.diagnose.logs import LocalLogSource
@@ -151,6 +153,23 @@ async def diagnose_trace(trace_id: str, kind: str = "answer") -> str:
         )
     if diag_id:
         report = replace(report, diag_id=diag_id)
+    core_logging.log_event(
+        Event.DIAGNOSE_DONE,
+        trace_id=trace_id.strip(),
+        kind=parsed_kind.value,
+        tier=report.tier.value,
+        root_cause=report.root_cause.value,
+        owner=report.owner.value,
+        cost_ms=cost_ms,
+        diag_id=diag_id,
+    )
+    if report.root_cause.value == "undetermined":
+        core_logging.log_event(
+            Event.DIAGNOSE_UNDETERMINED,
+            trace_id=trace_id.strip(),
+            kind=parsed_kind.value,
+            reason=report.summary,
+        )
     return render_card(report, detail_url=_detail_url(diag_id))
 
 

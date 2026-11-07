@@ -27,6 +27,18 @@ class EventSpec:
 
 
 EVENT_SPECS: dict[str, EventSpec] = {
+    "diagnose done": EventSpec(
+        "diagnose done",
+        "diagnose",
+        "info",
+        ("trace_id", "kind", "tier", "root_cause", "owner", "cost_ms", "diag_id"),
+    ),
+    "diagnose undetermined": EventSpec(
+        "diagnose undetermined",
+        "diagnose",
+        "warning",
+        ("trace_id", "kind", "reason"),
+    ),
     "search done": EventSpec(
         "search done", "retrieval", "info", ("kb_id", "query_len", "result_count")
     ),

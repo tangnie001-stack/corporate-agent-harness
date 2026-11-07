@@ -848,6 +848,24 @@ Grafana contact point **直连**本端点的告警接入入口，非前端消费
 
 ---
 
+
+### 2.10 诊断详情（`GET /api/rca/diag/{diag_id}`）
+
+需登录（token Cookie）；诊断报告含用户原文摘要，禁止免登链接。
+
+```json
+{"code": "SUCCESS", "message": "操作成功", "data": {
+  "diag_id": "uuid", "trace_id": "trace_<uuid>", "env": "prod", "trigger": "manual|alert",
+  "kind": "answer|5xx|4xx", "tier": "需要处理|建议观察|无需处理", "root_cause": "low_relevance|...",
+  "owner": "ops|dev|kb",
+  "evidence": [{"id": "E1", "kind": "trace|log", "locator": "retrieve_kb#1", "summary": "result=30 ctx=4"}],
+  "assertions": [{"text": "…", "evidence_ids": ["E1"]}],
+  "next_actions": "", "basis_rounds": 0, "cost_ms": 12, "created_at": "2026-11-06T10:00:00+00:00"
+}}
+```
+
+不存在 → 404 `NOT_FOUND`；未登录 → 401 `AUTH_REQUIRED`。**踩坑**：`evidence` / `assertions` 存的是摘要与定位，不存原文——详情页不要假设能拿到原始日志行。
+
 ## 3. 接口层：AppService ↔ Repo 层
 
 ### 3.1 `KbRepo.get_all_kb() → list[KbModel]`
