@@ -16,15 +16,21 @@ _VALID = "trace_abcdefab-1234-5678-9abc-def012345678"
 
 
 class _TraceOk:
-    def __init__(self, calls):
+    def __init__(self, calls, kb_id=""):
         self._calls = calls
+        self._kb_id = kb_id
 
     def fetch(self, trace_id):
         ev = tuple(
             Evidence(f"E{i}", "trace", f"retrieve_kb#{c.call_index}", "result=30")
             for i, c in enumerate(self._calls, 1)
         )
-        return TraceFacts(calls=tuple(self._calls), evidence=ev, cited=None)
+        return TraceFacts(
+            calls=tuple(self._calls),
+            evidence=ev,
+            cited=None,
+            kb_id=self._kb_id,
+        )
 
 
 class _TraceEmpty:
@@ -136,3 +142,31 @@ async def test_followup_question_triggers_lookback():
     assert history.called == 1
     assert "前 1 轮" in text
     assert "上一轮召回 46 条仅 4 条进入上下文" in text
+
+
+class _ProbeOne:
+    def __init__(self):
+        self.calls = 0
+
+    async def run(self, query, kb_id):
+        from src.rca.diagnose.probe import ProbeFacts, ProbeVariant
+
+        self.calls += 1
+        return ProbeFacts((ProbeVariant("腾讯营业收入", 3, 0.81),))
+
+
+async def test_low_relevance_triggers_probe():
+    probe = _ProbeOne()
+    diagnose_tools.configure(
+        trace_source=_TraceOk([_call(scores=(0.20, 0.19))], kb_id="kb1"),
+        log_source=None,
+        repo=_Repo(),
+        history_source=None,
+    )
+    diagnose_tools.set_probe(probe)
+    try:
+        text = await diagnose_tools.diagnose_trace.ainvoke({"trace_id": _VALID})
+    finally:
+        diagnose_tools.set_probe(None)
+    assert probe.calls == 1
+    assert "表述问题" in text

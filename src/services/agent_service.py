@@ -67,6 +67,7 @@ from src.infra.llm.prompt_manager import PromptManager
 from src.infra.llm.request_context import RequestContext
 from src.infra.llm.tool_trace import ToolTraceCollector
 from src.infra.llm.trace_context import current_channel, current_trace_id
+from src.rca.diagnose.probe import RetrievalProbe, make_score_fn
 from src.services.capability_service import CapabilityService
 from src.utils.sse import (
     SSEAbstentionEvent,
@@ -1121,7 +1122,9 @@ class AgentService:
         # LOG_PROFILES 时生效），基础档不受影响。两套图共用同一份映射：工具对象
         # 无状态，同一批实例可在多个编译图里注册。
         log_tools = make_log_tools()
-        diag_tools = make_diagnose_tools()
+        diag_tools = make_diagnose_tools(
+            probe=RetrievalProbe(make_score_fn(self._vector_store, self._reranker))
+        )
         log_capability_tools = [*log_tools, *diag_tools]
         profile_tools = {LOG_CAPABILITY: log_capability_tools}
         max_turns_by_profile = {LOG_CAPABILITY: LOG_PROFILE_MAX_TURNS}
