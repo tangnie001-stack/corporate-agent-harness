@@ -99,6 +99,7 @@ class TraceSource:
             calls=tuple(calls),
             evidence=tuple(evidence),
             cited=_detect_cited(getattr(trace, "output", None)),
+            kb_id=str(metadata.get("kb_id") or ""),
         )
 
 

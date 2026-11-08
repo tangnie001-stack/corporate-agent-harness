@@ -70,6 +70,7 @@ class TraceFacts:
     calls: tuple[RetrievalCall, ...]  # 各次 retrieve_kb 调用
     evidence: tuple[Evidence, ...]  # 与调用一一对应的证据
     cited: bool | None  # 回答是否带引用标记；None = trace 无输出，无法判断
+    kb_id: str = ""  # 该轮绑定的知识库（探针重检用）；未绑定时为空
 
 
 @dataclass(frozen=True)
