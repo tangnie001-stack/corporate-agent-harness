@@ -31,4 +31,12 @@
 
 1. 模型名取 trace metadata 的 `model` 键；当前 trace metadata 没有该键，历史轮次也会显示 `N/A`——补字段属 turn-provenance 变更。
 2. 预算标记只扫本地日志（7 天）；超窗口的历史轮次 `truncated=False`，属"未判定"而非"未发生"。
-3. `cited` 仍未知，答错类判不到 `not_cited`（与 P2a 相同）。
+3. ~~`cited` 仍未知~~ —— 已补：`TraceSource` 从 trace 输出按 `\[\d+\]` 判定引用（与 format 节点同一规则），输出为空时仍记 `None` 不猜。
+
+
+## 补充：cited 判定（2026-11-08）
+
+- `TraceSource.fetch` 返回 `TraceFacts(calls, evidence, cited)`：`cited` 由 trace 输出的 `[n]` 标记判定；`output` 为空或非文本 → `None`（不猜）。
+- `diagnose(cited=None)` 时取 `facts.cited`；显式传参优先（测试与批量回放可覆盖）。
+- 影响：高分上下文 + 回答无 `[n]` → 判 `not_cited`，不再落"无法判断回答是否引用"。
+- 活体验证：`trace_afe90f74…` 输出含 `[3]` → `cited=True`，结论由"无法判断"变为"证据不足以归入已定义根因"（该轮实际答对）。

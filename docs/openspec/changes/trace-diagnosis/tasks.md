@@ -28,7 +28,7 @@
 
 ## 3. 判定
 
-- [x] 3.1 `src/rca/diagnose/judge.py`：`root_cause` 枚举判定——`not_retrieved`（无 `retrieve_kb` 观测）、`low_relevance`（D5 三条件全满足）、`context_truncated`（`context_count < result_count` 且有 `context budget high`）、`not_cited`（有高分上下文但回答无引用）、`undetermined`
+- [x] 3.1 `src/rca/diagnose/judge.py`：`root_cause` 枚举判定——`not_retrieved`（无 `retrieve_kb` 观测）、`low_relevance`（D5 三条件全满足）、`context_truncated`（`context_count < result_count` 且有 `context budget high`）、`not_cited`（有高分上下文但回答无引用；引用与否取 trace 输出的 `[n]` 标记）、`undetermined`
 - [x] 3.2 量纲门控：`score_kind != "rerank"` 时禁止进入 `low_relevance` 分支
 - [x] 3.3 D3 追溯（`src/rca/diagnose/history.py`）：`history budget exceeded` / `context budget high` 或零召回且问题含指代时拉前 2 轮事实；只取事实（条数/是否被裁/模型名），不重新判定，不再触发追溯。本轮未检索且上一轮被截 → 归 `context_truncated`
 - [x] 3.4 `tier` 与 `root_cause` 分开计算、分开存储（`src/rca/diagnose/tier.py`，报文档位/归属/根因三个字段）；`tier` 沿用 `alert-triage` 的三档口径
