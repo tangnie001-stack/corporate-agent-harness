@@ -63,7 +63,11 @@ def diagnose(
     no_snapshot = False
     if trace_source is not None:
         try:
-            calls, evidence = trace_source.fetch(trace_id)  # type: ignore[attr-defined]
+            facts = trace_source.fetch(trace_id)  # type: ignore[attr-defined]
+            calls = list(facts.calls)
+            evidence = list(facts.evidence)
+            if cited is None:
+                cited = facts.cited
         except SourceEmptyError:
             # 错误类不依赖检索快照：5xx 的 trace 可能根本没有 retrieve_kb 观测；
             # 答错类先记下"无快照"，等追溯结果决定是"未检索"还是"上一轮被截"

@@ -6,11 +6,14 @@ SourceEmptyError（查到但无数据）/ SourceFailedError（没查到）。
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any
 
-from src.rca.diagnose.models import Evidence, RetrievalCall
+from src.rca.diagnose.models import Evidence, RetrievalCall, TraceFacts
 from src.rca.sources.base import SourceEmptyError, SourceFailedError
+
+_CITATION_RE = re.compile(r"\[\d+\]")
 
 
 def _default_fetcher(trace_id: str) -> Any:
@@ -58,8 +61,8 @@ class TraceSource:
         """
         self._fetcher = fetcher or _default_fetcher
 
-    def fetch(self, trace_id: str) -> tuple[list[RetrievalCall], list[Evidence]]:
-        """返回 (检索调用列表, 证据列表)。
+    def fetch(self, trace_id: str) -> TraceFacts:
+        """返回该 trace 的检索事实与引用情况。
 
         Raises:
             SourceEmptyError: trace 存在但没有检索快照（未检索，或旧版本无字段）。
@@ -92,4 +95,22 @@ class TraceSource:
                     ),
                 )
             )
-        return calls, evidence
+        return TraceFacts(
+            calls=tuple(calls),
+            evidence=tuple(evidence),
+            cited=_detect_cited(getattr(trace, "output", None)),
+        )
+
+
+def _detect_cited(output: Any) -> bool | None:
+    """从 trace 输出判断回答是否带引用标记（格式 `[n]`，与 format 节点同一规则）。
+
+    Args:
+        output: trace 的最终输出
+
+    Returns:
+        True/False；输出为空或非文本时返回 None（不猜）
+    """
+    if not isinstance(output, str) or not output.strip():
+        return None
+    return _CITATION_RE.search(output) is not None

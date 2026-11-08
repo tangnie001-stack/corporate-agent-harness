@@ -64,6 +64,15 @@ class Evidence:
 
 
 @dataclass(frozen=True)
+class TraceFacts:
+    """一条 trace 能取到的全部检索侧事实。"""
+
+    calls: tuple[RetrievalCall, ...]  # 各次 retrieve_kb 调用
+    evidence: tuple[Evidence, ...]  # 与调用一一对应的证据
+    cited: bool | None  # 回答是否带引用标记；None = trace 无输出，无法判断
+
+
+@dataclass(frozen=True)
 class DiagnosisReport:
     """一次诊断的结论与依据。"""
 

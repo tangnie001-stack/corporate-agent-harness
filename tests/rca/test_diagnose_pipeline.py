@@ -9,17 +9,18 @@ from src.rca.sources.base import SourceEmptyError, SourceFailedError
 
 
 class _TraceOk:
-    def __init__(self, calls):
+    def __init__(self, calls, cited=None):
         self._calls = calls
+        self._cited = cited
 
     def fetch(self, trace_id):
-        from src.rca.diagnose.models import Evidence
+        from src.rca.diagnose.models import Evidence, TraceFacts
 
         ev = tuple(
             Evidence(f"E{i}", "trace", f"retrieve_kb#{c.call_index}", "ok")
             for i, c in enumerate(self._calls, 1)
         )
-        return list(self._calls), list(ev)
+        return TraceFacts(calls=tuple(self._calls), evidence=ev, cited=self._cited)
 
 
 class _TraceEmpty:
@@ -225,3 +226,9 @@ def mid_assertion_refs(rep):
         if "前 1 轮" in text:
             return refs
     return ()
+
+
+def test_cited_comes_from_trace_facts_when_not_passed():
+    """工具不传 cited：由 trace 输出判定（无 [n] 标记 → 未引用）。"""
+    rep = diagnose("t", trace_source=_TraceOk([_call(scores=(0.7, 0.6))], cited=False))
+    assert rep.root_cause is RootCause.NOT_CITED

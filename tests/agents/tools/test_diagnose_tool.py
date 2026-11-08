@@ -7,7 +7,7 @@ import pytest
 from src.agents.tools import diagnose_tools
 from src.config import settings
 from src.rca.diagnose.history import HistoryRound
-from src.rca.diagnose.models import Evidence, RetrievalCall
+from src.rca.diagnose.models import Evidence, RetrievalCall, TraceFacts
 from src.rca.sources.base import SourceEmptyError, SourceFailedError
 
 pytestmark = pytest.mark.asyncio
@@ -20,11 +20,11 @@ class _TraceOk:
         self._calls = calls
 
     def fetch(self, trace_id):
-        ev = [
+        ev = tuple(
             Evidence(f"E{i}", "trace", f"retrieve_kb#{c.call_index}", "result=30")
             for i, c in enumerate(self._calls, 1)
-        ]
-        return list(self._calls), ev
+        )
+        return TraceFacts(calls=tuple(self._calls), evidence=ev, cited=None)
 
 
 class _TraceEmpty:

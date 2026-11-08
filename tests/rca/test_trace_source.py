@@ -8,8 +8,10 @@ from src.rca.diagnose.sources import TraceSource
 from src.rca.sources.base import SourceEmptyError, SourceFailedError
 
 
-def _trace(contexts):
-    return SimpleNamespace(id="trace_x", metadata={"retrieval_contexts": contexts})
+def _trace(contexts, output=None):
+    return SimpleNamespace(
+        id="trace_x", metadata={"retrieval_contexts": contexts}, output=output
+    )
 
 
 def test_parses_counts_scores_and_kind():
@@ -32,7 +34,8 @@ def test_parses_counts_scores_and_kind():
             ]
         )
     )
-    calls, evidence = src.fetch("trace_x")
+    facts = src.fetch("trace_x")
+    calls, evidence = facts.calls, facts.evidence
     assert len(calls) == 1
     call = calls[0]
     assert (call.result_count, call.context_count, call.score_kind) == (46, 2, "rerank")
@@ -63,7 +66,36 @@ def test_missing_optional_fields_default_safely():
             [{"call_index": 2, "contexts": [{"chunk_id": "c9"}]}]
         )
     )
-    calls, _ = src.fetch("trace_x")
+    calls = src.fetch("trace_x").calls
     assert calls[0].result_count == 0
     assert calls[0].score_kind == "none"
     assert calls[0].scores == (0.0,)
+
+
+def test_detects_citation_marker():
+    src = TraceSource(
+        fetcher=lambda tid: _trace(
+            [{"call_index": 1, "result_count": 3, "context_count": 1, "contexts": []}],
+            output="总收入 6,603 亿元 [3]。",
+        )
+    )
+    assert src.fetch("trace_x").cited is True
+
+
+def test_no_marker_is_not_cited():
+    src = TraceSource(
+        fetcher=lambda tid: _trace(
+            [{"call_index": 1, "result_count": 3, "context_count": 1, "contexts": []}],
+            output="总收入 6,603 亿元。",
+        )
+    )
+    assert src.fetch("trace_x").cited is False
+
+
+def test_missing_output_is_unknown():
+    src = TraceSource(
+        fetcher=lambda tid: _trace(
+            [{"call_index": 1, "result_count": 3, "context_count": 1, "contexts": []}]
+        )
+    )
+    assert src.fetch("trace_x").cited is None
