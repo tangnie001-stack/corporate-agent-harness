@@ -146,6 +146,7 @@
 > **H-16 补充：部分恢复的判定与展示口径**（2026-11-06 定，避免实现时又落成一句模糊的「部分恢复」）
 >
 > - **主口径 = 指纹差集（默认，零外部调用）**：告警载荷自带 `alerts[].fingerprint`（`src/services/alert_service.py:120-144` 已解析）。按**事件簇**维护两个集合 `fired` / `resolved`，`仍在告警 = fired - resolved`；同一条通知里混合状态时按每条 `status` 分别入集。集合按事件簇存（不是按 `session_id`），TTL 需长于事件窗口（如 24h），否则进程重启后差集清零、"仍在告警"会突降为 0。
+> - **复燃判据（与差集配套，缺了会把复燃当重复丢掉）**：同一 `fingerprint`、`status=firing`，但 `startsAt` 变新 ⇒ **复燃，按新事件处理，必须重新分析**。当前去重键是 `fingerprint|status`（`src/services/alert_service.py:191-203`），窗口内复燃会被当成「重复」直接丢弃；应改为 `fingerprint|status|startsAt`，或在窗口内检测到 `startsAt` 变化时放行。反向要记住：`repeat_interval`（Alertmanager 默认 4h）与 `group_interval`（默认 5m）触发的重发**保持 `startsAt` 不变**，仍按重复处理，不要误判成复燃；`endsAt` 每次都会变，不能拿它做判据。
 > - **差集是「观测值」，不是事实**：漏收（网络/重启/重试耗尽）会让 resolved 缺失而高估剩余；`fingerprint` 随 labels（如 `instance`）变化而漂移，会把同一告警算成「旧的未恢复 + 新的新增」。展示时必须标注为「观测」。
 > - **兜底 = 回查校准（按需触发，非每次都查）**：`GET {GRAFANA_BASE_URL}/api/alertmanager/grafana/api/v2/alerts`，复用现有 `GRAFANA_TOKEN`（只读；2026-11-06 实测 200，base 走配置）。触发条件：差集显示 `remaining > 0` 且距上次回查 ≥5 分钟；差集为 0 时不回查（省调用）。按簇的 label matcher（`alertname`/`service`/`folder`）过滤，不拉全量。
 > - **回查计数口径**：`status.state == active` 且 `silencedBy`/`inhibitedBy` 为空 → 「仍在告警」；被静默/抑制的单列「已静默 N 条」，不计入故障。超时 2–3 秒，失败写「未确认」，**不得写 0**。
