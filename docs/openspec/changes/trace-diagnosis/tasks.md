@@ -23,7 +23,7 @@
   - `docker-compose.image.yml` 的 nginx 服务加挂载 `/data/nginx-logs:/var/log/nginx`
   - 验证三点：正常请求三个新字段有值；app 不可达（502）时 `upstream_status` 与 trace 为空；脱敏格式不变（query 仍被掩）
   - **采集器安装、机器组、SLS 采集配置不在本变更内**（运维动作，见 runbook）
-- [ ] 2.3 `src/rca/sources/probe.py`：`RetrievalProbe`——对原问题做确定性变体（抽实体/去年份/同义）后重检；命中且相关度过线 → "表述问题"，全空 → "覆盖缺失"。**默认不用模型改写**（不可复现），模型改写作为可选第二档并标注
+- [x] 2.3 `src/rca/diagnose/probe.py`：`RetrievalProbe`——确定性变体（去年份 / 去口语前缀与问句尾）后重检；任一变体 top1 ≥ `DIAG_SCORE_FLOOR` → "表述问题"，否则 "覆盖缺失"。**不用模型改写**。只在 `low_relevance` 时由工具触发（省掉无意义重检），结果只作附加断言，不改根因
 - [ ] 2.4 三个 Source 实现**新窄协议** `ErrorEvidenceSource`（`trace_fetch` / `error_logs` / `retrieval_probe`），与 `LogSource` 并列、不扩展后者；三态沿用 `SourceEmptyError` / `SourceFailedError`；测试替身照 `FixtureLogSource` 的写法
 
 ## 3. 判定

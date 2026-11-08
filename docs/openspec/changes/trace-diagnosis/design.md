@@ -173,7 +173,7 @@ src/rca/
 ├── sources/
 │   ├── trace.py          # Langfuse 观测 + metadata.retrieval_contexts
 │   ├── error_log.py      # 窗口内 ERROR 行 → trace_id（复用 Grafana 的 frames 判空经验）
-│   └── probe.py          # 改写后重检：区分"表述问题"与"覆盖缺失"
+│   └── probe.py          # 改写后重检（实际落点：src/rca/diagnose/probe.py）
 ├── diagnose/
 │   ├── pipeline.py       # 五段编排（代码定路径）
 │   ├── judge.py          # root_cause 枚举判定（D5 三条件、D3 追溯）

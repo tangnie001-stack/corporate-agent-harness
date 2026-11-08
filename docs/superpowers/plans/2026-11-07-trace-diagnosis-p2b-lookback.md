@@ -40,3 +40,14 @@
 - `diagnose(cited=None)` 时取 `facts.cited`；显式传参优先（测试与批量回放可覆盖）。
 - 影响：高分上下文 + 回答无 `[n]` → 判 `not_cited`，不再落"无法判断回答是否引用"。
 - 活体验证：`trace_afe90f74…` 输出含 `[3]` → `cited=True`，结论由"无法判断"变为"证据不足以归入已定义根因"（该轮实际答对）。
+
+
+## 补充：RetrievalProbe（2026-11-08）
+
+- 落点 `src/rca/diagnose/probe.py`：`build_variants`（去年份 / 去口语前缀 / 去问句尾，去重，≤3 条）+ `RetrievalProbe.run`。
+- 判据：任一变体 `top1 ≥ DIAG_SCORE_FLOOR` → `rephrased`（表述问题）；否则 `missing`（覆盖缺失）；无变体 `unknown`。
+- 触发：仅 `low_relevance`，且 trace 有 `kb_id` 与该次检索的 query；工具先预取 `TraceFacts` 复用，避免二次拉 trace。
+- 输出：`P*` 证据 + 一条附加断言；**不改根因**，探针失败只记 warning。
+- 装配：`make_diagnose_tools(probe=RetrievalProbe(make_score_fn(vector_store, reranker)))`，共享 app 的向量库与精排实例，不每次新建连接。
+- 代价：探针 = 2~3 次检索 + 精排，约数秒；只在低相关轮次发生。
+- 未覆盖：零召回轮（无 `low_relevance`）不触发探针；变体不做实体抽取（避免不可复现的 NLP 启发式）。
