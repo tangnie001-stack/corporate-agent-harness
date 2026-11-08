@@ -14,7 +14,9 @@ from src.rca.diagnose.models import (
     DiagnosisReport,
     Evidence,
     RootCause,
+    TraceFacts,
 )
+from src.rca.diagnose.probe import ProbeFacts
 from src.rca.diagnose.report import validate
 from src.rca.diagnose.tier import assess
 from src.rca.sources.base import SourceEmptyError, SourceFailedError
@@ -36,6 +38,8 @@ def diagnose(
     trace_source: object | None = None,
     log_source: object | None = None,
     history_source: object | None = None,
+    facts: TraceFacts | None = None,
+    probe: ProbeFacts | None = None,
     now: datetime | None = None,
 ) -> DiagnosisReport:
     """对单个 trace 产出诊断报告。
@@ -50,6 +54,8 @@ def diagnose(
         trace_source: 具备 `fetch(trace_id)` 的证据源；None 表示无 trace 证据。
         log_source: 具备 `errors_between(start, end)` 的证据源；None 表示不查日志。
         history_source: 具备 `rounds_before(trace_id, limit=...)` 的追溯源；None 不追溯。
+        facts: 已取到的 trace 事实（避免重复拉取）；None 表示由 trace_source 现场取。
+        probe: 换表述重检的事实（由调用方异步取好后传入）；只作附加断言，不改根因。
         now: 当前时间（测试注入），默认取 UTC 当前时刻。
 
     Returns:
@@ -61,13 +67,18 @@ def diagnose(
     calls = []
     evidence: list[Evidence] = []
     no_snapshot = False
-    if trace_source is not None:
+    if facts is not None:
+        calls = list(facts.calls)
+        evidence = list(facts.evidence)
+        if cited is None:
+            cited = facts.cited
+    elif trace_source is not None:
         try:
-            facts = trace_source.fetch(trace_id)  # type: ignore[attr-defined]
-            calls = list(facts.calls)
-            evidence = list(facts.evidence)
+            fetched = trace_source.fetch(trace_id)  # type: ignore[attr-defined]
+            calls = list(fetched.calls)
+            evidence = list(fetched.evidence)
             if cited is None:
-                cited = facts.cited
+                cited = fetched.cited
         except SourceEmptyError:
             # 错误类不依赖检索快照：5xx 的 trace 可能根本没有 retrieve_kb 观测；
             # 答错类先记下"无快照"，等追溯结果决定是"未检索"还是"上一轮被截"
@@ -106,6 +117,8 @@ def diagnose(
             rounds = ()
     if rounds:
         evidence = evidence + _history_evidence(rounds)
+    if probe is not None and probe.variants:
+        evidence = evidence + _probe_evidence(probe)
 
     if no_snapshot and not rounds:
         return _undetermined(
@@ -122,7 +135,7 @@ def diagnose(
         has_context_budget_high=has_context_budget_high,
         prior=prior,
     )
-    assertions = _assertions(kind, cause, reason, evidence, rows, rounds)
+    assertions = _assertions(kind, cause, reason, evidence, rows, rounds, probe)
     summary = reason
     if kind is not DiagnosisKind.ANSWER and not rows:
         summary = "窗口内无 ERROR 记录：可能未落到应用层"
@@ -174,6 +187,37 @@ def _history_evidence(rounds: tuple[HistoryRound, ...]) -> list[Evidence]:
     return out
 
 
+def _probe_evidence(probe: ProbeFacts) -> list[Evidence]:
+    """把探针变体结果转成证据（只留问法与分数，不留原文）。"""
+    out: list[Evidence] = []
+    for index, variant in enumerate(probe.variants, 1):
+        out.append(
+            Evidence(
+                id=f"P{index}",
+                kind="probe",
+                locator=f"probe:{variant.query}",
+                summary=(f"result={variant.result_count} top1={variant.top_score:.3f}"),
+            )
+        )
+    return out
+
+
+def _probe_assertion(
+    probe: ProbeFacts, evidence: list[Evidence]
+) -> tuple[str, tuple[str, ...]] | None:
+    """探针结论：换说法命中 → 表述问题；否则 → 覆盖缺失。"""
+    probe_ids = tuple(e.id for e in evidence if e.kind == "probe")
+    if not probe_ids:
+        return None
+    if probe.verdict == "rephrased":
+        best = max(probe.variants, key=lambda v: v.top_score)
+        return (
+            f"换表述后命中（top1={best.top_score:.3f}）：属表述问题，不是知识缺失",
+            probe_ids,
+        )
+    return ("换表述后仍无相关内容：知识库覆盖缺失", probe_ids)
+
+
 def _assertions(
     kind: DiagnosisKind,
     cause: RootCause,
@@ -181,21 +225,30 @@ def _assertions(
     evidence: list[Evidence],
     rows: list[object],
     rounds: tuple[HistoryRound, ...],
+    probe: ProbeFacts | None = None,
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """按分型生成断言；每条必须引用存在的证据 id。"""
     if not evidence:
         return ()
     if kind is DiagnosisKind.ANSWER:
         first: tuple[str, tuple[str, ...]] = (reason, tuple(e.id for e in evidence))
-        if not rounds:
-            return (first,)
-        prior = rounds[-1]
-        history_text = (
-            f"结论基于前 {len(rounds)} 轮上下文；最近一轮召回 {prior.result_count} 条，"
-            f"{prior.context_count} 条进入上下文"
-        )
-        history_ids = tuple(e.id for e in evidence if e.kind == "history")
-        return (first, (history_text, history_ids))
+        out: list[tuple[str, tuple[str, ...]]] = [first]
+        if rounds:
+            prior = rounds[-1]
+            out.append(
+                (
+                    (
+                        f"结论基于前 {len(rounds)} 轮上下文；最近一轮召回 "
+                        f"{prior.result_count} 条，{prior.context_count} 条进入上下文"
+                    ),
+                    tuple(e.id for e in evidence if e.kind == "history"),
+                )
+            )
+        if probe is not None:
+            probe_assertion = _probe_assertion(probe, evidence)
+            if probe_assertion is not None:
+                out.append(probe_assertion)
+        return tuple(out)
     first_event = "unknown"
     if rows:
         first_event = getattr(rows[0], "event", "") or "unknown"

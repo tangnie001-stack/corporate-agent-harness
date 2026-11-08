@@ -232,3 +232,29 @@ def test_cited_comes_from_trace_facts_when_not_passed():
     """工具不传 cited：由 trace 输出判定（无 [n] 标记 → 未引用）。"""
     rep = diagnose("t", trace_source=_TraceOk([_call(scores=(0.7, 0.6))], cited=False))
     assert rep.root_cause is RootCause.NOT_CITED
+
+
+def test_probe_adds_rephrase_assertion():
+    from src.rca.diagnose.probe import ProbeFacts, ProbeVariant
+
+    probe = ProbeFacts((ProbeVariant("腾讯营业收入", 12, 0.82),))
+    rep = diagnose(
+        "t",
+        trace_source=_TraceOk([_call(scores=(0.20, 0.19))], cited=False),
+        probe=probe,
+    )
+    assert rep.root_cause is RootCause.LOW_RELEVANCE
+    assert any("表述问题" in text for text, _refs in rep.assertions)
+    assert rep.evidence[-1].id == "P1"
+
+
+def test_probe_missing_coverage_assertion():
+    from src.rca.diagnose.probe import ProbeFacts, ProbeVariant
+
+    probe = ProbeFacts((ProbeVariant("腾讯营业收入", 0, 0.0),))
+    rep = diagnose(
+        "t",
+        trace_source=_TraceOk([_call(scores=(0.20, 0.19))], cited=False),
+        probe=probe,
+    )
+    assert any("覆盖缺失" in text for text, _refs in rep.assertions)
