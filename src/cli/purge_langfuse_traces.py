@@ -21,14 +21,7 @@ import os
 import sys
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy.exc import SQLAlchemyError
-
-from src.config import (
-    LANGFUSE_PG_DATABASE,
-    LANGFUSE_PG_USER,
-    POSTGRES_HOST,
-    POSTGRES_PORT,
-)
+from src.config import settings
 from src.config.const import PURGE_ALLOW_ENV_VAR as ALLOW_ENV_VAR
 from src.config.const import PURGE_DEFAULT_RETENTION_DAYS as DEFAULT_RETENTION_DAYS
 from src.config.const import PURGE_MAX_DELETE_PER_RUN as MAX_DELETE_PER_RUN
@@ -36,8 +29,8 @@ from src.config.const import PURGE_MIN_RETENTION_DAYS as MIN_RETENTION_DAYS
 from src.infra.llm.langfuse_purge import (
     CascadeCounts,
     ExpiredTrace,
-    LangfuseProjectScopeError,
-    LangfuseSqlPurgeBackend,
+    LangfuseApiPurgeBackend,
+    LangfusePurgeError,
     PurgeBackend,
 )
 
@@ -48,10 +41,7 @@ def _target_label() -> str:
     Returns:
         `host:port/db (user=...)`；不含密码，也不含完整 DSN。
     """
-    return (
-        f"{POSTGRES_HOST}:{POSTGRES_PORT}/{LANGFUSE_PG_DATABASE}"
-        f" (user={LANGFUSE_PG_USER})"
-    )
+    return settings.LANGFUSE_HOST
 
 
 def _check_preflight_guardrails(
@@ -152,7 +142,7 @@ async def run(
         allowed: 环境是否已武装（`LANGFUSE_PURGE_ALLOW=1`）
 
     Returns:
-        0 = 正常结束；2 = 被护栏拒绝；1 = 执行失败（DB 不可达 / SQL 报错）
+        0 = 正常结束；2 = 被护栏拒绝；1 = 执行失败（后端不可达 / API 报错）
     """
     refusal = _check_preflight_guardrails(
         retention_days=retention_days,
@@ -168,10 +158,7 @@ async def run(
     cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=retention_days)
     try:
         traces = await backend.list_expired(cutoff, MAX_DELETE_PER_RUN + 1)
-    except LangfuseProjectScopeError as exc:
-        print(f"[error] {exc}，拒绝执行", file=sys.stderr)
-        return 2
-    except (SQLAlchemyError, OSError) as exc:
+    except (LangfusePurgeError, OSError) as exc:
         # 显式列出后端实际会抛的失败面：SQLAlchemyError（SQL/驱动错误）与 OSError
         # （连接期 gaierror 等网络错误）。不裸 except Exception，避免把编程错误
         # 误报成「查询失败」；统一收敛为一行 [error]，不向上裸抛 traceback。
@@ -198,11 +185,7 @@ async def run(
 
     try:
         counts = await backend.delete(traces)
-    except LangfuseProjectScopeError as exc:
-        # 项目作用域守卫在 delete 路径与 list 路径同样表现为拒绝（exit 2 的一行 [error]）
-        print(f"[error] {exc}，拒绝执行", file=sys.stderr)
-        return 2
-    except (SQLAlchemyError, OSError) as exc:
+    except (LangfusePurgeError, OSError) as exc:
         # 与 list_expired 同：显式列出后端实际会抛的失败面，收敛为一行 [error]。
         print(f"[error] 删除失败：{exc}", file=sys.stderr)
         return 1
@@ -222,7 +205,7 @@ async def _run_cli(args: argparse.Namespace) -> int:
         run() 的退出码；后端构造失败时为 1；释放连接池失败且原本成功时也置 1
     """
     try:
-        backend = LangfuseSqlPurgeBackend()
+        backend = LangfuseApiPurgeBackend()
     except RuntimeError as exc:
         print(f"[error] 无法构造 Langfuse 删除后端：{exc}", file=sys.stderr)
         return 1
@@ -238,7 +221,7 @@ async def _run_cli(args: argparse.Namespace) -> int:
     finally:
         try:
             await backend.aclose()
-        except (SQLAlchemyError, OSError) as exc:
+        except (LangfusePurgeError, OSError) as exc:
             # dispose() 的失败面与查询 / 删除同：SQLAlchemyError 与 OSError（关连接时
             # 的网络错误）。收敛为一行 [error]，且只在原本成功时把 0 改 1，不覆盖
             # run() 已有的非 0 退出码。

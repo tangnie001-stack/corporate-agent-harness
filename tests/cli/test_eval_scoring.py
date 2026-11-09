@@ -169,11 +169,9 @@ def test_write_scores_noop_when_disabled() -> None:
 
     from src.cli.eval_scoring import write_scores
 
-    with patch(
-        "langfuse.decorators.langfuse_decorator.LangfuseDecorator.client_instance"
-    ) as ci:
+    with patch("src.infra.llm.tracing.get_client") as ci:
         write_scores(["t1"], {"faithfulness": [0.9]}, enabled=False)
-    ci.score.assert_not_called()
+    ci.return_value.create_score.assert_not_called()
 
 
 def test_write_scores_uses_trace_id() -> None:
@@ -182,11 +180,11 @@ def test_write_scores_uses_trace_id() -> None:
 
     from src.cli.eval_scoring import write_scores
 
-    with patch(
-        "langfuse.decorators.langfuse_decorator.LangfuseDecorator.client_instance"
-    ) as ci:
+    with patch("src.infra.llm.tracing.get_client") as ci:
         write_scores(["t1"], {"faithfulness": [0.9]}, enabled=True)
-    ci.score.assert_called_once_with(trace_id="t1", name="faithfulness", value=0.9)
+    ci.return_value.create_score.assert_called_once_with(
+        trace_id="t1", name="faithfulness", value=0.9
+    )
 
 
 def test_write_scores_skips_none_and_nan() -> None:
@@ -199,11 +197,9 @@ def test_write_scores_skips_none_and_nan() -> None:
     # 生产路径只出现 NaN；None 为防御分支，故用 Any 承载
     values: list[Any] = [None, float("nan")]
 
-    with patch(
-        "langfuse.decorators.langfuse_decorator.LangfuseDecorator.client_instance"
-    ) as ci:
+    with patch("src.infra.llm.tracing.get_client") as ci:
         write_scores(["t1", "t2"], {"context_recall": values}, enabled=True)
-    ci.score.assert_not_called()
+    ci.return_value.create_score.assert_not_called()
 
 
 def test_write_scores_swallows_client_error() -> None:
@@ -212,10 +208,8 @@ def test_write_scores_swallows_client_error() -> None:
 
     from src.cli.eval_scoring import write_scores
 
-    with patch(
-        "langfuse.decorators.langfuse_decorator.LangfuseDecorator.client_instance"
-    ) as ci:
-        ci.score.side_effect = RuntimeError("boom")
+    with patch("src.infra.llm.tracing.get_client") as ci:
+        ci.return_value.create_score.side_effect = RuntimeError("boom")
         # 不应抛出
         write_scores(["t1"], {"faithfulness": [0.9]}, enabled=True)
 
@@ -227,7 +221,7 @@ def test_write_scores_swallows_client_acquisition_error() -> None:
     from src.cli.eval_scoring import write_scores
 
     with patch(
-        "langfuse.decorators.langfuse_decorator.LangfuseDecorator.client_instance",
+        "src.infra.llm.tracing.get_client",
         new_callable=PropertyMock,
         side_effect=RuntimeError("no client"),
     ):

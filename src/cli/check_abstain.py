@@ -123,7 +123,7 @@ async def _run_sample(
     graph, sample: HardSample, kb_id: str, session_id: str
 ) -> tuple[str, bool]:
     """跑单个样本，返回 (answer, 是否命中目标)。"""
-    trace_id = f"abstain_{uuid.uuid4().hex[:12]}"
+    trace_id = uuid.uuid4().hex
     final_state = await graph.ainvoke(
         {
             "kb_id": kb_id,

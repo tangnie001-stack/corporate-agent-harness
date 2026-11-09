@@ -21,7 +21,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from langchain_core.messages import ToolMessage
-from langfuse.decorators import langfuse_context
+from langfuse.types import TraceContext
+
+from src.infra.llm.tracing import get_client as _lf_get_client
 
 logger = logging.getLogger(__name__)
 
@@ -110,10 +112,10 @@ class ToolTraceCollector:
         if not self._enabled:
             return None
         try:
-            self._delegate_span = self._get_client().span(
-                trace_id=self._trace_id,
+            self._delegate_span = self._get_client().start_observation(
+                trace_context=TraceContext(trace_id=self._trace_id),
                 name=_DELEGATE_SPAN,
-                start_time=_now(),
+                as_type="span",
                 metadata={"delegate_id": delegate_id, "skill": skill},
             )
         except Exception:
@@ -211,7 +213,7 @@ class ToolTraceCollector:
     def _get_client(self) -> Any:
         """取 Langfuse 客户端单例（与 configure / flush 同源）。"""
         if self._client is None:
-            self._client = langfuse_context.client_instance
+            self._client = _lf_get_client()
         return self._client
 
     def _open_round(self) -> None:
@@ -222,11 +224,14 @@ class ToolTraceCollector:
         if self._parent_span is not None:
             parent_id = self._parent_span.id
         try:
-            self._round = self._get_client().span(
-                trace_id=self._trace_id,
-                parent_observation_id=parent_id,
+            self._round = self._get_client().start_observation(
+                trace_context=(
+                    TraceContext(trace_id=self._trace_id, parent_span_id=parent_id)
+                    if parent_id
+                    else TraceContext(trace_id=self._trace_id)
+                ),
                 name=self._name_prefix + _TOOLS_NODE,
-                start_time=_now(),
+                as_type="span",
             )
         except Exception:  # 观测失败不得影响对话
             logger.warning("[tool_trace] open round span failed", exc_info=True)
@@ -244,12 +249,15 @@ class ToolTraceCollector:
         else:
             parent_id = None
         try:
-            span = self._get_client().span(
-                trace_id=self._trace_id,
-                parent_observation_id=parent_id,
+            span = self._get_client().start_observation(
+                trace_context=(
+                    TraceContext(trace_id=self._trace_id, parent_span_id=parent_id)
+                    if parent_id
+                    else TraceContext(trace_id=self._trace_id)
+                ),
                 name=self._name_prefix + str(item.get("name", "")),
+                as_type="tool",
                 input=self._normalize_input(item),
-                start_time=_now(),
             )
         except Exception:
             logger.warning("[tool_trace] open tool span failed", exc_info=True)
@@ -286,11 +294,7 @@ class ToolTraceCollector:
     ) -> None:
         """关一条 span；异常吞掉只记 warning。"""
         try:
-            span.end(
-                end_time=_now(),
-                output=output,
-                level=level,
-                status_message=status_message,
-            )
+            span.update(output=output, level=level, status_message=status_message)
+            span.end()
         except Exception:
             logger.warning("[tool_trace] end span failed", exc_info=True)

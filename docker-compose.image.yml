@@ -101,7 +101,7 @@ services:
     container_name: corporate-rag-minio
     restart: unless-stopped
     entrypoint: sh
-    command: -c 'minio server --address ":9000" --console-address ":9001" /data'
+    command: -c 'mkdir -p /data/langfuse-events && minio server --address ":9000" --console-address ":9001" /data'
     environment:
       # 服务端凭据与**应用侧同源**（都取 .env 的 MINIO_ACCESS_KEY / MINIO_SECRET_KEY）
       # —— 结构上杜绝"只改一边 → 应用连不上存储"的静默故障（旧写法用 MINIO_ROOT_*，需人工保持相等）
@@ -122,19 +122,89 @@ services:
     networks:
       - app-network
 
+  clickhouse:
+    image: crpi-u3ezxc1o5hirfddw.cn-shanghai.personal.cr.aliyuncs.com/deploy_demo/deploy_base:clickhouse-26.3.62.3
+    user: "101:101"
+    mem_limit: 1536m
+    mem_reservation: 512m
+    container_name: corporate-rag-clickhouse
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+      TZ: UTC
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - app-network
+
+  langfuse-worker:
+    image: crpi-u3ezxc1o5hirfddw.cn-shanghai.personal.cr.aliyuncs.com/deploy_demo/deploy_base:langfuse-worker-4.76.0
+    mem_limit: 512m
+    mem_reservation: 256m
+    container_name: corporate-rag-langfuse-worker
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+    environment: &langfuse_env
+      NODE_OPTIONS: --max-old-space-size=384
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASS:-langfuse_pass}@postgres:5432/langfuse_v4
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-changeme}
+      SALT: ${LANGFUSE_SALT:-changeme}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-false}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_CONNECTION_STRING: redis://:${REDIS_PASSWORD:-corporate_rag_pass}@redis:6379/0
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_EVENT_UPLOAD_BUCKET:-langfuse-events}
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minio}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-miniosecret}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: ${LANGFUSE_S3_EVENT_UPLOAD_BUCKET:-langfuse-events}
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minio}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-miniosecret}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+    networks:
+      - app-network
+
   langfuse-web:
-    image: crpi-u3ezxc1o5hirfddw.cn-shanghai.personal.cr.aliyuncs.com/deploy_demo/deploy_base:langfuse-2.95.11
-    mem_limit: 256m
-    mem_reservation: 128m
+    image: crpi-u3ezxc1o5hirfddw.cn-shanghai.personal.cr.aliyuncs.com/deploy_demo/deploy_base:langfuse-4.76.0
+    mem_limit: 1g
+    mem_reservation: 512m
     container_name: corporate-rag-langfuse-web
     profiles: ["langfuse"]
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
     # 生产**不再发布 3000 端口**：控制台经 nginx 的 langfuse.tangnie.cn 反代进来，
     # 3000 只留在 compose 网络内（本地 dev 档 docker-compose.yml 仍对外开 3000，便于直连调试）。
     environment:
-      DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASS:-langfuse_pass}@postgres:5432/langfuse
+      <<: *langfuse_env
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASS:-langfuse_pass}@postgres:5432/langfuse_v4
       # 对外门牌号：NextAuth 用它拼绝对 URL（跳转 / 邮件里的链接 / SSO 回调）。
       # **硬编码而非变量插值**：这是"生产独有"的值（dev 是 localhost、生产是公网地址），
       # 走 .env 会被"从开发机拷 .env 上机"覆盖成 localhost（2026-10-10 实测踩中：
@@ -256,6 +326,10 @@ volumes:
     name: corporate_rag_minio_data
   app_logs:
     name: corporate_rag_app_logs
+  clickhouse_data:
+    name: corporate_rag_clickhouse_data
+  clickhouse_logs:
+    name: corporate_rag_clickhouse_logs
 
 networks:
   app-network:

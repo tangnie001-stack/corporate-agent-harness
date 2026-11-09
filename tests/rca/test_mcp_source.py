@@ -181,24 +181,23 @@ async def test_span_opened_and_closed(monkeypatch):
             self.kwargs = kwargs
             self.end_kwargs = None
 
-        def end(self, **kwargs):
+        def update(self, **kwargs):
             self.end_kwargs = kwargs
+
+        def end(self):
+            pass
 
     class _SpyClient:
         def __init__(self):
             self.spans = []
 
-        def span(self, **kwargs):
+        def start_observation(self, **kwargs):
             span = _SpySpan(**kwargs)
             self.spans.append(span)
             return span
 
     spy_client = _SpyClient()
-
-    class _SpyContext:
-        client_instance = spy_client
-
-    monkeypatch.setattr(mcp_mod, "langfuse_context", _SpyContext())
+    monkeypatch.setattr(mcp_mod, "get_client", lambda: spy_client)
     monkeypatch.setattr(mcp_mod.settings, "LANGFUSE_ENABLE", True)
 
     token = trace_ctx.current_trace_id.set("trace_rca_test")
@@ -212,7 +211,7 @@ async def test_span_opened_and_closed(monkeypatch):
     assert len(spy_client.spans) == 1
     span = spy_client.spans[0]
     assert span.kwargs["name"] == "mcp:sls_latency_stats"
-    assert span.kwargs["trace_id"] == "trace_rca_test"
+    assert span.kwargs["trace_context"]["trace_id"] == "trace_rca_test"
     assert span.kwargs["input"]["slow_ms"] == 2000
     assert span.end_kwargs["output"]["status"] == "ok"
     assert span.end_kwargs["output"]["total"] == 2

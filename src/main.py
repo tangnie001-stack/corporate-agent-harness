@@ -244,12 +244,12 @@ async def _ensure_model_pricing() -> None:
     if not settings.LANGFUSE_ENABLE:
         return
 
-    from langfuse.decorators import langfuse_context
+    from src.infra.llm.tracing import get_client
 
     await asyncio.to_thread(
         ensure_model_pricing,
         _registry(),
-        client=langfuse_context.client_instance,
+        client=get_client(),
     )
 
 

@@ -3158,7 +3158,9 @@ document.addEventListener('click', (e) => {
 // ── Sidebar / 会话历史 / 用户区 ──
 
 function generateTraceId() {
-  return 'trace_' + (crypto.randomUUID ? crypto.randomUUID() : Date.now() + '_' + Math.random().toString(36).slice(2, 10));
+  // 32 位小写 hex（W3C Trace Context）：Langfuse v4 只接受该形态
+  if (crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '');
+  return (Date.now().toString(16) + Math.random().toString(16).slice(2)).padEnd(32, '0').slice(0, 32);
 }
 
 function toggleSidebar() {

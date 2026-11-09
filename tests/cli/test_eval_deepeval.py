@@ -9,6 +9,7 @@
 
 import asyncio
 import os
+import re
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -233,7 +234,7 @@ class TestGenerateAnswers:
         # mock 图未回填 messages，逐题摘要为空轨迹但仍与题目一一对应
         assert len(trajectories) == 2
         assert trajectories[0] == {"tool_calls": [], "iterations": 0}
-        assert trace_ids[0].startswith("eval_")
+        assert re.fullmatch(r"[0-9a-f]{32}", trace_ids[0])
         assert "Answer for" in answers[0]
         assert len(contexts[0]) == 2
         # 检索明细与 contexts 一一对应，逐条含 source/score/kind 三键
@@ -323,7 +324,7 @@ class TestGenerateAnswers:
         assert "[ERROR]" in answers[1]
         assert contexts[1] == []
         # 失败的问题也要有 trace_id，便于回溯；检索明细为空，轨迹摘要带 failed 标记
-        assert trace_ids[1].startswith("eval_")
+        assert re.fullmatch(r"[0-9a-f]{32}", trace_ids[1])
         assert retrieval_details[0] == [{"source": "s.pdf", "score": 0.5, "kind": "kb"}]
         assert retrieval_details[1] == []
         assert trajectories[1] == {

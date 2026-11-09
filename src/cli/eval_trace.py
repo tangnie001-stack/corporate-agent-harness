@@ -99,7 +99,7 @@ def parse_trace(trace: Any) -> dict:
                 }
             )
             continue
-        if obs.type == "SPAN" and name in {"search_web", "delegate_task"}:
+        if obs.type in {"SPAN", "TOOL"} and name in {"search_web", "delegate_task"}:
             tool_calls.append(
                 {
                     "name": name,

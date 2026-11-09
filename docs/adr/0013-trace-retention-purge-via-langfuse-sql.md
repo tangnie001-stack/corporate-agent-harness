@@ -1,6 +1,6 @@
 # ADR-0013：trace 保留期清理的后端定为直连 Langfuse PostgreSQL 的 SQL
 
-- **Status**：Accepted
+- **Status**：Accepted（**已被 ADR-0029 取代**——v4 后清理改走官方删除 API）
 - **Date**：2026-09-23
 - **Deciders**：用户（决策）；Claude（调研、实测与评审）
 - **关系**：为 ADR-0012 的「30 天保留期」提供**可工作的删除机制**，不取代 0012 —— 0012 定「记原文 + 留 30 天」并落了清理 CLI 的入口与护栏，本 ADR 提供其真正可工作的删除后端。

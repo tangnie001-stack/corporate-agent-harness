@@ -19,16 +19,16 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from langfuse.decorators import langfuse_context
+from langfuse.types import TraceContext
 from loguru import logger
 
 from src.config import settings
 from src.core.logging import encode_value
 from src.infra.llm.trace_context import current_trace_id
+from src.infra.llm.tracing import get_client
 from src.rca.sources.base import SourceEmptyError, SourceFailedError
 
 _PROTOCOL_VERSION = "2025-06-18"
@@ -108,11 +108,11 @@ def _open_span(tool: str, arguments: dict) -> Any | None:
     if trace_id is None:
         return None
     try:
-        return langfuse_context.client_instance.span(
-            trace_id=trace_id,
+        return get_client().start_observation(
+            trace_context=TraceContext(trace_id=trace_id),
             name="mcp:" + tool,
+            as_type="tool",
             input=arguments,
-            start_time=datetime.now(UTC),
         )
     except Exception as exc:  # noqa: BLE001  观测失败不得影响取数
         logger.warning(
@@ -126,7 +126,8 @@ def _close_span(span: Any | None, output: dict) -> None:
     if span is None:
         return
     try:
-        span.end(end_time=datetime.now(UTC), output=output)
+        span.update(output=output)
+        span.end()
     except Exception as exc:  # noqa: BLE001
         logger.warning("[rca] mcp span close failed err={}", type(exc).__name__)
 

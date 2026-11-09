@@ -32,7 +32,7 @@ async function handleLogin(){
   if(!acct||!pw){err.textContent='请输入账号和密码';err.style.display='block';return}
   btn.disabled=true;btn.textContent='登录中...';err.style.display='none';
   try{
-    const traceId='trace_'+(crypto.randomUUID?crypto.randomUUID():Date.now()+'_'+Math.random().toString(36).slice(2,10));
+    const traceId=(crypto.randomUUID?crypto.randomUUID().replace(/-/g,''):(Date.now().toString(16)+Math.random().toString(16).slice(2)).padEnd(32,'0').slice(0,32));
     const r=await fetch(`${API}/auth/login`,{method:'POST',headers:{'Content-Type':'application/json','X-Trace-ID':traceId},body:JSON.stringify({account:acct,password:pw})});
     const d=await r.json();
     if(!r.ok)throw new Error(d.detail||'登录失败');

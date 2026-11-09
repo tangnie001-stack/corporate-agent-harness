@@ -1,6 +1,6 @@
 # ADR-0011：自托管 Langfuse 由 v3 降至 v2，去掉 ClickHouse 与 worker
 
-- **Status**：Accepted（**「暴露面收敛到仅回环」一条已被 ADR-0019 取代**，其余仍有效）
+- **Status**：Accepted（**「暴露面收敛到仅回环」一条已被 ADR-0019 取代**；**整体已被 ADR-0028 取代**——2026-11-09 起升级到 v4 并全新部署）
 - **Date**：2026-09-22
 - **Deciders**：用户（决策）；Claude（调研、实测与评审）
 - **Supersedes**：ADR-0004 的**一条附带陈述**（局部）。ADR-0004 写「trace 在 ClickHouse」；本决策后 trace 落在 PostgreSQL。ADR-0004 的主决策（**一个 PG 实例、两个 database**）不但仍成立，且被本决策强化 —— 降级后 Langfuse 完全依赖它。

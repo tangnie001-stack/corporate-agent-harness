@@ -459,70 +459,71 @@ async def test_agent_turn_writes_imperative_generation(monkeypatch):
     实证：middleware 里 `get_current_observation_id()` 指向外层 chat_turn span，
     `update_current_observation` 会改写它而非新建 generation 观察，故回退命令式。
     """
-    recorded: list[tuple[str, dict]] = []
+    opened: list[dict] = []
+    recorded: list[dict] = []
 
-    class _FakeGeneration:
-        def end(self, **kwargs):
-            recorded.append(("end", kwargs))
+    class _FakeSpan:
+        def update(self, **kwargs):
+            recorded.append(kwargs)
+
+        def end(self):
+            pass
 
     class _FakeClient:
-        def generation(self, **kwargs):
-            recorded.append(("generation", kwargs))
-            return _FakeGeneration()
-
-    class _FakeCtx:
-        client_instance = _FakeClient()
-
-        @staticmethod
-        def get_current_trace_id():
-            return "trace-x"
-
-        @staticmethod
-        def get_current_observation_id():
+        def get_current_observation_id(self):
             return "obs-parent"
 
+        def start_observation(self, **kwargs):
+            opened.append(kwargs)
+            return _FakeSpan()
+
+    class _FakeTid:
+        def get(self):
+            return "trace-x"
+
     monkeypatch.setattr(settings, "LANGFUSE_ENABLE", True)
-    monkeypatch.setattr("src.agents.graph.middleware.langfuse_context", _FakeCtx)
+    monkeypatch.setattr("src.agents.graph.middleware.tracing_enabled", lambda: True)
+    monkeypatch.setattr("src.agents.graph.middleware.get_client", lambda: _FakeClient())
+    monkeypatch.setattr("src.agents.graph.middleware.current_trace_id", _FakeTid())
     model = _RecordingModel(messages=iter([AIMessage(content="ok")]))
     agent = build_agent(
         model, tools=[], system="S", middleware_extra=[AgentSpanMiddleware()]
     )
     await agent.ainvoke({"messages": [HumanMessage(content="hi")], "kb_id": "kb-1"})
-    generation = [c for c in recorded if c[0] == "generation"]
-    assert len(generation) == 1
-    _, kwargs = generation[0]
-    assert kwargs["name"] == "agent_turn"
-    assert kwargs["trace_id"] == "trace-x"
-    assert kwargs["parent_observation_id"] == "obs-parent"
-    assert kwargs["usage"]["input"] >= 1
+    assert len(opened) == 1
+    assert opened[0]["name"] == "agent_turn"
+    assert opened[0]["as_type"] == "generation"
+    assert opened[0]["trace_context"]["trace_id"] == "trace-x"
+    assert opened[0]["trace_context"]["parent_span_id"] == "obs-parent"
+    assert recorded[0]["usage_details"]["input"] >= 1
 
 
 def _patch_langfuse(monkeypatch) -> list[dict]:
     """把 langfuse context 换成记录式 fake，返回收到的 generation kwargs 列表。"""
     recorded: list[dict] = []
 
-    class _FakeGeneration:
-        def end(self, **kwargs):
+    class _FakeSpan:
+        def update(self, **kwargs):
+            recorded.append(kwargs)
+
+        def end(self):
             pass
 
     class _FakeClient:
-        def generation(self, **kwargs):
-            recorded.append(kwargs)
-            return _FakeGeneration()
-
-    class _FakeCtx:
-        client_instance = _FakeClient()
-
-        @staticmethod
-        def get_current_trace_id():
-            return "trace-x"
-
-        @staticmethod
-        def get_current_observation_id():
+        def get_current_observation_id(self):
             return "obs-parent"
 
+        def start_observation(self, **kwargs):
+            return _FakeSpan()
+
+    class _FakeTid:
+        def get(self):
+            return "trace-x"
+
     monkeypatch.setattr(settings, "LANGFUSE_ENABLE", True)
-    monkeypatch.setattr("src.agents.graph.middleware.langfuse_context", _FakeCtx)
+    monkeypatch.setattr("src.agents.graph.middleware.tracing_enabled", lambda: True)
+    monkeypatch.setattr("src.agents.graph.middleware.get_client", lambda: _FakeClient())
+    monkeypatch.setattr("src.agents.graph.middleware.current_trace_id", _FakeTid())
     return recorded
 
 
@@ -591,7 +592,7 @@ async def test_agent_turn_usage_estimate_includes_system(monkeypatch):
             HumanMessage(content="hi"),
         ]
     )
-    assert recorded[0]["usage"]["input"] == expected
+    assert recorded[0]["usage_details"]["input"] == expected
 
 
 @pytest.mark.asyncio

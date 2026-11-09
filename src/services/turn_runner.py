@@ -368,9 +368,6 @@ def _make_answer_builder(
             direct_skill=launch_ctx["direct_skill"],
             user_id=user_id,
             summary=launch_ctx.get("summary", ""),
-            # @observe 包装器在调用前取走 langfuse_observation_id（静态签名看不到），
-            # 类型检查无法感知该 kwarg
-            langfuse_observation_id=current_trace_id.get() or "",  # type: ignore[reportCallIssue]
         )
 
     return answer_builder

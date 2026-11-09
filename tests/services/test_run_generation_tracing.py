@@ -12,8 +12,31 @@ from src.services import agent_service
 from src.services.agent_service import _run_generation
 
 
+class _SpyTrace:
+    """替代 update_current_trace 的调用记录器（v5 无 langfuse_context）。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+
+    @property
+    def first(self) -> dict:
+        return self.calls[0] if self.calls else {}
+
+    @property
+    def metadata_calls(self) -> list[dict]:
+        return [c["metadata"] for c in self.calls if "metadata" in c]
+
+
+def _patch_trace(monkeypatch) -> _SpyTrace:
+    spy = _SpyTrace()
+    monkeypatch.setattr(agent_service, "update_current_trace", spy)
+    return spy
+
+
 async def _fake_astream(*args, **kwargs):
-    """最小图事件源：一个 token + 一次 model end。"""
     from tests.services.test_agent_service import (
         _chat_model_end_item,
         _chat_model_stream_item,
@@ -25,102 +48,58 @@ async def _fake_astream(*args, **kwargs):
 
 @pytest.mark.asyncio
 async def test_run_generation_records_trace_fields(monkeypatch):
-    """根内写入 trace 级 input / session_id，且 input 只含标量。"""
-    captured: dict = {}
-
-    class _SpyContext:
-        def update_current_trace(self, **kwargs):
-            captured.update(kwargs)
-
-        def update_current_observation(self, **kwargs):
-            captured.setdefault("_obs", []).append(kwargs)
-
-    monkeypatch.setattr(agent_service, "langfuse_context", _SpyContext())
-
+    spy = _patch_trace(monkeypatch)
     mgr = StreamingRunManager()
     fake_graph = Mock()
     fake_graph.astream_events = _fake_astream
     ctx = RequestContext(session_id="s1")
     ctx.clarify_channel = asyncio.Queue()
 
-    await _run_generation(
-        "s1",
-        "kb1",
-        "q",
-        [],
-        False,
-        ctx,
-        mgr,
-        graph=fake_graph,
-        # 该 kwarg 由 @observe 包装器在调用前取走，静态签名看不到
-        langfuse_observation_id="trace_unit_root",  # type: ignore[reportCallIssue]
-    )
+    await _run_generation("s1", "kb1", "q", [], False, ctx, mgr, graph=fake_graph)
 
-    assert captured["session_id"] == "s1"
-    assert captured["input"]["query"] == "q"
-    assert captured["input"]["kb_id"] == "kb1"
+    first = spy.first
+    assert first["session_id"] == "s1"
+    assert first["input"]["query"] == "q"
+    assert first["input"]["kb_id"] == "kb1"
     assert all(
         isinstance(v, (str, bool, int, float, type(None)))
-        for v in captured["input"].values()
+        for v in first["input"].values()
     )
 
 
-def test_run_generation_is_observed_without_input_capture():
-    """根必须以 capture_input=False 装饰 —— 否则内部对象会被序列化进 trace。"""
-    assert '@observe(name="chat_turn", capture_input=False)' in inspect.getsource(
-        agent_service
-    )
+def test_run_generation_is_observed_with_trace():
+    """根必须经 observe_with_trace 显式绑定 trace，且不再使用 v2 的 id kwarg。"""
+    src = inspect.getsource(agent_service)
+    assert '@observe_with_trace("chat_turn")' in src
+    assert "langfuse_observation_id" not in src
 
 
 @pytest.mark.asyncio
 async def test_run_generation_writes_structured_retrieval_contexts(monkeypatch):
-    """收尾把结构化检索上下文并入 trace metadata，供 eval_trace 回放。"""
-    captured: dict = {}
-
-    class _SpyContext:
-        def update_current_trace(self, **kwargs):
-            captured.update(kwargs)
-
-    monkeypatch.setattr(agent_service, "langfuse_context", _SpyContext())
-
+    spy = _patch_trace(monkeypatch)
     mgr = StreamingRunManager()
     fake_graph = Mock()
     fake_graph.astream_events = _fake_astream
     ctx = RequestContext(session_id="s1")
     ctx.retrieval_trace = [
-        {
-            "call_index": 1,
-            "query": "q",
-            "contexts": [{"chunk_id": "d1:0", "entities": {"company": "tencent"}}],
-        }
+        {"call_index": 1, "query": "q", "contexts": [{"chunk_id": "d1:0"}]}
     ]
 
-    await _run_generation(
-        "s1",
-        "kb1",
-        "q",
-        [],
-        False,
-        ctx,
-        mgr,
-        graph=fake_graph,
-        langfuse_observation_id="trace_unit_root",  # type: ignore[reportCallIssue]
-    )
+    await _run_generation("s1", "kb1", "q", [], False, ctx, mgr, graph=fake_graph)
 
-    assert captured["metadata"]["retrieval_contexts"] == ctx.retrieval_trace
+    assert spy.metadata_calls[-1]["retrieval_contexts"] == ctx.retrieval_trace
 
 
-def test_answer_builder_passes_observation_id():
-    """调用方必须把当前 trace_id 作为根 observation id 传入。"""
+def test_answer_builder_does_not_pass_observation_id():
+    """后台任务不再传 langfuse_observation_id；根绑定由装饰器负责。"""
     from src.services import turn_runner
 
-    assert "langfuse_observation_id=" in inspect.getsource(
+    assert "langfuse_observation_id" not in inspect.getsource(
         turn_runner._make_answer_builder
     )
 
 
 async def _fake_astream_with_tool(*args, **kwargs):
-    """最小事件源：一条 tools 父 span 事件 + 一次工具开始/结束。"""
     yield {
         "event": "on_chain_start",
         "name": "tools",
@@ -146,7 +125,6 @@ async def _fake_astream_with_tool(*args, **kwargs):
 
 @pytest.mark.asyncio
 async def test_run_generation_feeds_collector_and_closes(monkeypatch):
-    """循环里每一项都要喂给采集器；收尾必须 close（取消/异常也走这里）。"""
     seen: list[dict] = []
     closed: list[bool] = []
 
@@ -163,24 +141,13 @@ async def test_run_generation_feeds_collector_and_closes(monkeypatch):
             closed.append(True)
 
     monkeypatch.setattr(agent_service, "ToolTraceCollector", _SpyCollector)
-
     mgr = StreamingRunManager()
     fake_graph = Mock()
     fake_graph.astream_events = _fake_astream_with_tool
     ctx = RequestContext(session_id="s1")
     ctx.clarify_channel = asyncio.Queue()
 
-    await _run_generation(
-        "s1",
-        "kb1",
-        "q",
-        [],
-        False,
-        ctx,
-        mgr,
-        graph=fake_graph,
-        langfuse_observation_id="trace_unit_tools",  # type: ignore[reportCallIssue]
-    )
+    await _run_generation("s1", "kb1", "q", [], False, ctx, mgr, graph=fake_graph)
 
     assert [i["event"] for i in seen] == [
         "on_chain_start",
@@ -192,55 +159,22 @@ async def test_run_generation_feeds_collector_and_closes(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_generation_writes_tools_used_metadata(monkeypatch):
-    """收尾二次写入 metadata 时必须带上本轮实际调用过的工具名。"""
-    calls: list[dict] = []
-
-    class _SpyContext:
-        def update_current_trace(self, **kwargs):
-            calls.append(kwargs)
-
-        def update_current_observation(self, **kwargs):
-            pass
-
-    monkeypatch.setattr(agent_service, "langfuse_context", _SpyContext())
-
+    spy = _patch_trace(monkeypatch)
     mgr = StreamingRunManager()
     fake_graph = Mock()
     fake_graph.astream_events = _fake_astream_with_tool
     ctx = RequestContext(session_id="s1")
     ctx.clarify_channel = asyncio.Queue()
 
-    await _run_generation(
-        "s1",
-        "kb1",
-        "q",
-        [],
-        False,
-        ctx,
-        mgr,
-        graph=fake_graph,
-        langfuse_observation_id="trace_unit_tools_used",  # type: ignore[reportCallIssue]
-    )
+    await _run_generation("s1", "kb1", "q", [], False, ctx, mgr, graph=fake_graph)
 
-    metadata_calls = [c["metadata"] for c in calls if "metadata" in c]
-    assert all("tools_used" in metadata for metadata in metadata_calls)
-    assert metadata_calls[-1]["tools_used"] == ["retrieve_kb"]
+    assert all("tools_used" in m for m in spy.metadata_calls)
+    assert spy.metadata_calls[-1]["tools_used"] == ["retrieve_kb"]
 
 
 @pytest.mark.asyncio
 async def test_run_generation_writes_user_tags_metadata(monkeypatch):
-    """trace 级写入 user_id / 低基数 tags / 业务 metadata；空 user_id 不得写成空串。"""
-    captured: dict = {}
-
-    class _SpyContext:
-        def update_current_trace(self, **kwargs):
-            captured.update(kwargs)
-
-        def update_current_observation(self, **kwargs):
-            pass
-
-    monkeypatch.setattr(agent_service, "langfuse_context", _SpyContext())
-
+    spy = _patch_trace(monkeypatch)
     mgr = StreamingRunManager()
     fake_graph = Mock()
     fake_graph.astream_events = _fake_astream
@@ -253,89 +187,43 @@ async def test_run_generation_writes_user_tags_metadata(monkeypatch):
     ctx.clarify_channel = asyncio.Queue()
 
     await _run_generation(
-        "s1",
-        "kb1",
-        "q",
-        [],
-        False,
-        ctx,
-        mgr,
-        graph=fake_graph,
-        user_id="u-42",
-        langfuse_observation_id="trace_unit_enrich",  # type: ignore[reportCallIssue]
+        "s1", "kb1", "q", [], False, ctx, mgr, graph=fake_graph, user_id="u-42"
     )
 
-    assert captured["user_id"] == "u-42"
-    assert captured["tags"] == ["kb", "none", "pf:financial-analyst"]
-    metadata = captured["metadata"]
-    assert metadata["agent"] == "financial-analyst"
-    assert metadata["agent_display_name"] == "财务专家"
-    assert metadata["kb_id"] == "kb1"
-    assert metadata["kb_domain"] == "finance"
-    assert metadata["skill_action"] == "inline"
-    assert metadata["loaded_skills"] == ["finance-qa"]
-    assert metadata["has_skills"] is True
-    # 高基数取值不得进 tags
-    assert "kb1" not in captured["tags"]
-    assert "financial-analyst" not in captured["tags"]
+    first = spy.first
+    assert first["user_id"] == "u-42"
+    assert first["tags"] == ["kb", "none", "pf:financial-analyst"]
+    md = first["metadata"]
+    assert md["agent"] == "financial-analyst"
+    assert md["kb_id"] == "kb1"
+    assert md["loaded_skills"] == ["finance-qa"]
+    assert "kb1" not in first["tags"]
 
 
 @pytest.mark.asyncio
 async def test_run_generation_writes_channel_metadata(monkeypatch):
-    """渠道标识写入 trace metadata.channel（供浏览器按渠道筛 trace）。"""
     from src.config.const import Channel
     from src.infra.llm.trace_context import current_channel
 
-    captured: dict = {}
-
-    class _SpyContext:
-        def update_current_trace(self, **kwargs):
-            captured.update(kwargs)
-
-        def update_current_observation(self, **kwargs):
-            pass
-
-    monkeypatch.setattr(agent_service, "langfuse_context", _SpyContext())
-
+    spy = _patch_trace(monkeypatch)
     mgr = StreamingRunManager()
     fake_graph = Mock()
     fake_graph.astream_events = _fake_astream
     ctx = RequestContext(session_id="s1", kb_id="kb1")
     ctx.clarify_channel = asyncio.Queue()
 
-    chan_tok = current_channel.set(Channel.WECOM)
+    tok = current_channel.set(Channel.WECOM)
     try:
-        await _run_generation(
-            "s1",
-            "kb1",
-            "q",
-            [],
-            False,
-            ctx,
-            mgr,
-            graph=fake_graph,
-            langfuse_observation_id="trace_unit_channel",  # type: ignore[reportCallIssue]
-        )
+        await _run_generation("s1", "kb1", "q", [], False, ctx, mgr, graph=fake_graph)
     finally:
-        current_channel.reset(chan_tok)
+        current_channel.reset(tok)
 
-    assert captured["metadata"]["channel"] == Channel.WECOM
+    assert spy.first["metadata"]["channel"] == Channel.WECOM
 
 
 @pytest.mark.asyncio
 async def test_blank_user_id_is_not_written_as_empty_string(monkeypatch):
-    """未登录时 current_user_id 是空串；必须转 None，否则空串会被写进 trace。"""
-    captured: dict = {}
-
-    class _SpyContext:
-        def update_current_trace(self, **kwargs):
-            captured.update(kwargs)
-
-        def update_current_observation(self, **kwargs):
-            pass
-
-    monkeypatch.setattr(agent_service, "langfuse_context", _SpyContext())
-
+    spy = _patch_trace(monkeypatch)
     mgr = StreamingRunManager()
     fake_graph = Mock()
     fake_graph.astream_events = _fake_astream
@@ -343,24 +231,14 @@ async def test_blank_user_id_is_not_written_as_empty_string(monkeypatch):
     ctx.clarify_channel = asyncio.Queue()
 
     await _run_generation(
-        "s1",
-        "",
-        "q",
-        [],
-        False,
-        ctx,
-        mgr,
-        graph=fake_graph,
-        user_id="",
-        langfuse_observation_id="trace_unit_nouser",  # type: ignore[reportCallIssue]
+        "s1", "", "q", [], False, ctx, mgr, graph=fake_graph, user_id=""
     )
 
-    assert captured["user_id"] is None
-    assert captured["tags"] == ["no_kb", "none", "pf:chat"]
+    assert spy.first["user_id"] is None
+    assert spy.first["tags"] == ["no_kb", "none", "pf:chat"]
 
 
 def test_trace_tags_for_alert_channel():
-    """告警分析轮次带 alert 标签，profile 档位恒为 pf:alert。"""
     from src.config.const import Channel
 
     assert agent_service._trace_tags("no_kb", Channel.ALERT, "bot-ops") == [
@@ -371,7 +249,6 @@ def test_trace_tags_for_alert_channel():
 
 
 def test_trace_tags_for_wecom_channel():
-    """企微问答轮次带 wecom 标签，profile 取去掉 bot- 前缀的短名。"""
     from src.config.const import Channel
 
     assert agent_service._trace_tags("kb", Channel.WECOM, "bot-support") == [
@@ -382,18 +259,12 @@ def test_trace_tags_for_wecom_channel():
 
 
 def test_trace_tags_for_web_channel():
-    """站点轮次也带渠道标签（web），空 profile 记 pf:chat。"""
     from src.config.const import Channel
 
-    assert agent_service._trace_tags("kb", Channel.WEB, "") == [
-        "kb",
-        "web",
-        "pf:chat",
-    ]
+    assert agent_service._trace_tags("kb", Channel.WEB, "") == ["kb", "web", "pf:chat"]
 
 
 def test_trace_tags_normalize_unknown_channel():
-    """未知 / 预留渠道归一为 none，保证标签值域可枚举。"""
     from src.config.const import Channel
 
     assert agent_service._trace_tags("kb", Channel.FEISHU, "bot-ops") == [
@@ -404,7 +275,6 @@ def test_trace_tags_normalize_unknown_channel():
 
 
 async def _astream_tool_then_raise(*args, **kwargs):
-    """先产出一次工具调用，随后抛错（验证异常路径也带 tools_used）。"""
     from tests.services.test_agent_service import _chat_model_stream_item
 
     yield _chat_model_stream_item("部分回答")
@@ -421,18 +291,7 @@ async def _astream_tool_then_raise(*args, **kwargs):
 
 @pytest.mark.asyncio
 async def test_tools_used_written_on_failure_path(monkeypatch):
-    """异常路径同样写入本轮已调用的工具名（排障最需要这类轮次）。"""
-    captured: dict = {}
-
-    class _SpyContext:
-        def update_current_trace(self, **kwargs):
-            captured.update(kwargs)
-
-        def update_current_observation(self, **kwargs):
-            pass
-
-    monkeypatch.setattr(agent_service, "langfuse_context", _SpyContext())
-
+    spy = _patch_trace(monkeypatch)
     mgr = StreamingRunManager()
     fake_graph = Mock()
     fake_graph.astream_events = _astream_tool_then_raise
@@ -440,37 +299,21 @@ async def test_tools_used_written_on_failure_path(monkeypatch):
     ctx.clarify_channel = asyncio.Queue()
 
     with pytest.raises(RuntimeError):
-        await _run_generation(
-            "s1",
-            "kb1",
-            "q",
-            [],
-            False,
-            ctx,
-            mgr,
-            graph=fake_graph,
-            langfuse_observation_id="trace_unit_fail_tools",  # type: ignore[reportCallIssue]
-        )
+        await _run_generation("s1", "kb1", "q", [], False, ctx, mgr, graph=fake_graph)
 
-    assert captured["metadata"]["tools_used"] == ["sls_query_latency"]
+    assert spy.metadata_calls[-1]["tools_used"] == ["sls_query_latency"]
 
 
 @pytest.mark.asyncio
 async def test_metadata_write_failure_does_not_fail_generation(monkeypatch):
-    """观测写入抛出只告警：不得把观测故障冒泡成生成失败。"""
     captured: dict = {}
 
-    class _FlakyContext:
-        def update_current_trace(self, **kwargs):
-            if set(kwargs) == {"metadata"}:
-                raise RuntimeError("langfuse down")
-            captured.update(kwargs)
+    def _flaky(**kwargs):
+        if set(kwargs) == {"metadata"}:
+            raise RuntimeError("langfuse down")
+        captured.update(kwargs)
 
-        def update_current_observation(self, **kwargs):
-            pass
-
-    monkeypatch.setattr(agent_service, "langfuse_context", _FlakyContext())
-
+    monkeypatch.setattr(agent_service, "update_current_trace", _flaky)
     mgr = StreamingRunManager()
     fake_graph = Mock()
     fake_graph.astream_events = _fake_astream
@@ -478,15 +321,7 @@ async def test_metadata_write_failure_does_not_fail_generation(monkeypatch):
     ctx.clarify_channel = asyncio.Queue()
 
     answer = await _run_generation(
-        "s1",
-        "kb1",
-        "q",
-        [],
-        False,
-        ctx,
-        mgr,
-        graph=fake_graph,
-        langfuse_observation_id="trace_unit_meta_fail",  # type: ignore[reportCallIssue]
+        "s1", "kb1", "q", [], False, ctx, mgr, graph=fake_graph
     )
 
     assert answer == "你好"

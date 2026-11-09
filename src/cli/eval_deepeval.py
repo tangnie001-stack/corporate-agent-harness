@@ -34,7 +34,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from langfuse.decorators import langfuse_context, observe
 from loguru import logger
 
 from src.cli.eval_scoring import (
@@ -75,7 +74,12 @@ from src.infra.llm.trace_context import (
     current_eval_trace,
     current_trace_id,
 )
-from src.infra.llm.tracing import configure_tracing, flush_tracing
+from src.infra.llm.tracing import (
+    configure_tracing,
+    flush_tracing,
+    observe_with_trace,
+    update_current_trace,
+)
 
 setup_logging(configure_trace_id=True)
 
@@ -208,7 +212,7 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-@observe(name="eval_question", capture_input=False)
+@observe_with_trace("eval_question")
 async def _answer_one_question(
     graph: Any,
     kb_id: str,
@@ -237,7 +241,7 @@ async def _answer_one_question(
     metadata = {"component": "sut"}
     if trace_ctx is not None:
         metadata["run_trace_id"] = trace_ctx.run_trace_id
-    langfuse_context.update_current_trace(
+    update_current_trace(
         input={"query": query},
         session_id=session_id,
         metadata=metadata,
@@ -324,9 +328,6 @@ async def _collect_one_question(
             session_id,
             query,
             trace_id,
-            # @observe 包装器在调用前取走 langfuse_observation_id（静态签名看不到），
-            # 类型检查无法感知该 kwarg
-            langfuse_observation_id=trace_id,  # type: ignore[reportCallIssue]
             callbacks=callbacks,
         )
         sample_class = classify_sample(req_ctx.tool_contexts)
@@ -411,7 +412,7 @@ async def generate_answers_and_contexts(
     for i, q in enumerate(questions):
         # 每个问题一个独立 trace_id，并写入 contextvar —— loguru patcher 会
         # 把它注入到该问题期间的所有日志行，Langfuse trace 也以它为 id
-        trace_id = f"eval_{uuid.uuid4().hex[:12]}"
+        trace_id = uuid.uuid4().hex
         trace_ids.append(trace_id)
         trace_token = current_trace_id.set(trace_id)
         try:
@@ -500,7 +501,7 @@ async def generate_answers_and_contexts_with_behaviour(
             ),
         )
     ):
-        trace_id = f"eval_{uuid.uuid4().hex[:12]}"
+        trace_id = uuid.uuid4().hex
         trace_ids.append(trace_id)
         handler = CallbackHandler()  # 每题独立实例
         handlers.append(handler)
@@ -1632,7 +1633,7 @@ def begin_eval_run(kb_id: str) -> tuple[str, str]:
         `eval_run_<run_id>_<8hex>`。
     """
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    run_trace_id = f"eval_run_{run_id}_{uuid.uuid4().hex[:8]}"
+    run_trace_id = uuid.uuid4().hex
     try:
         core_logging.log_event(
             Event.EVALUATION_RUN,

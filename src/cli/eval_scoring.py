@@ -272,10 +272,10 @@ def write_scores(
     """
     if not enabled:
         return
-    from langfuse.decorators import langfuse_context
+    from src.infra.llm.tracing import get_client
 
     try:
-        client = langfuse_context.client_instance
+        client = get_client()
     except Exception as exc:  # noqa: BLE001  # 观测旁路，失败不影响评测主流程
         logger.warning(
             "[cli] langfuse client unavailable, scores not written err={}", exc
@@ -291,7 +291,7 @@ def write_scores(
             if pd.isna(value):
                 continue
             try:
-                client.score(trace_id=trace_id, name=name, value=float(value))
+                client.create_score(trace_id=trace_id, name=name, value=float(value))
             except Exception as exc:  # noqa: BLE001  # 回写失败不影响评测主流程
                 logger.warning(
                     "[cli] langfuse score write failed trace_id={} metric={} err={}",

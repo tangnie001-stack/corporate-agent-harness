@@ -172,7 +172,7 @@ def test_langfuse_trace_metadata_carries_run_and_component(monkeypatch):
     def _update(**kwargs):
         captured.update(kwargs)
 
-    monkeypatch.setattr(eval_deepeval.langfuse_context, "update_current_trace", _update)
+    monkeypatch.setattr(eval_deepeval, "update_current_trace", _update)
     ctx = EvalTraceContext(
         run_id="20261019_000000",
         run_trace_id="eval_run_20261019_000000_abcd1234",

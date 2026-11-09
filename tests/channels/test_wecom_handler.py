@@ -1,5 +1,6 @@
 """桥接 handler 单测：标识推导、去重、事件分流、TurnBusy 翻译、投影接线。"""
 
+import re
 from typing import Any, cast
 
 import pytest
@@ -349,7 +350,7 @@ async def test_events_stream_sees_current_turn_trace_id():
         await handler(_msg(), sink)
 
         assert seen["trace_in_start"] is not None
-        assert seen["trace_in_start"].startswith("trace_")
+        assert re.fullmatch(r"[0-9a-f]{32}", seen["trace_in_start"])
         # 投影阶段与 start_turn 阶段须观测到同一本轮 trace
         assert seen["trace_in_events"] == seen["trace_in_start"]
         assert seen["trace_in_events"] != old_trace

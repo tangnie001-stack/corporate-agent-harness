@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from src.rca.diagnose.logs import LocalLogSource
 
-TID = "trace_12345678-1234-1234-1234-123456789abc"
+TID = "0123456789abcdef0123456789abcdef"
 LINE = f"2026-11-06 03:12:41.500 | ERROR   | {TID:36} | s1 | web | src.api.chat:h - [app] biz error code=E1\n"
 INFO = (
     "2026-11-06 03:12:40.000 | INFO    | "

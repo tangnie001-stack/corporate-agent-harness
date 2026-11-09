@@ -855,7 +855,7 @@ Grafana contact point **直连**本端点的告警接入入口，非前端消费
 
 ```json
 {"code": "SUCCESS", "message": "操作成功", "data": {
-  "diag_id": "uuid", "trace_id": "trace_<uuid>", "env": "prod", "trigger": "manual|alert",
+  "diag_id": "uuid", "trace_id": "<32 位小写 hex>", "env": "prod", "trigger": "manual|alert",
   "kind": "answer|5xx|4xx", "tier": "需要处理|建议观察|无需处理", "root_cause": "low_relevance|...",
   "owner": "ops|dev|kb",
   "evidence": [{"id": "E1", "kind": "trace|log", "locator": "retrieve_kb#1", "summary": "result=30 ctx=4"}],

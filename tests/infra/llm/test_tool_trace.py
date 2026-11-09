@@ -27,24 +27,30 @@ class _FakeSpan:
         self.metadata = metadata
         self.ended: dict | None = None
 
-    def end(self, **kwargs):
-        self.ended = kwargs
+    def update(self, **kwargs):
+        self.ended = {**(self.ended or {}), **kwargs}
+
+    def end(self):
+        pass
 
 
 class _FakeClient:
-    """替身客户端：只实现 span(trace_id=...) 这一条被用到的路径。"""
+    """替身客户端：只实现 start_observation 这一条被用到的路径。"""
 
     def __init__(self):
         self.spans: list[_FakeSpan] = []
 
-    def span(self, **kwargs):
+    def start_observation(
+        self, *, trace_context=None, name="", as_type="span", input=None, metadata=None
+    ):
+        ctx = trace_context or {}
         span = _FakeSpan(
             f"s{len(self.spans)}",
-            kwargs.get("name", ""),
-            kwargs.get("parent_observation_id"),
-            kwargs.get("trace_id"),
-            kwargs.get("input"),
-            kwargs.get("metadata"),
+            name,
+            ctx.get("parent_span_id"),
+            ctx.get("trace_id"),
+            input,
+            metadata,
         )
         self.spans.append(span)
         return span
@@ -282,10 +288,10 @@ def test_delegate_span_failure_does_not_break_conversation():
     """观测失败不影响对话：父 span 建不出来时返回 None，工具 span 仍可产出。"""
 
     class _BrokenClient(_FakeClient):
-        def span(self, **kwargs):
+        def start_observation(self, **kwargs):
             if kwargs.get("name") == "delegate":
                 raise RuntimeError("langfuse down")
-            return super().span(**kwargs)
+            return super().start_observation(**kwargs)
 
     collector = ToolTraceCollector(
         enabled=True, trace_id="t1", client=_BrokenClient(), scope="delegate"

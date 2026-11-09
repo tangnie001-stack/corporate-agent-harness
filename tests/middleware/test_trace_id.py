@@ -5,6 +5,8 @@
 重生成，两者会取到不同的值，四方对齐当场分叉。
 """
 
+import re
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -27,9 +29,11 @@ def _app() -> FastAPI:
 def test_valid_inbound_id_is_kept():
     """合法入站 id 原样使用，响应头与上下文一致。"""
     client = TestClient(_app())
-    resp = client.get("/ping", headers={"X-Trace-ID": "trace_my-custom_1"})
-    assert resp.headers["X-Trace-ID"] == "trace_my-custom_1"
-    assert resp.json()["trace_id"] == "trace_my-custom_1"
+    resp = client.get(
+        "/ping", headers={"X-Trace-ID": "0123456789abcdef0123456789abcdef"}
+    )
+    assert resp.headers["X-Trace-ID"] == "0123456789abcdef0123456789abcdef"
+    assert resp.json()["trace_id"] == "0123456789abcdef0123456789abcdef"
 
 
 def test_illegal_inbound_id_is_replaced_and_aligned():
@@ -38,7 +42,7 @@ def test_illegal_inbound_id_is_replaced_and_aligned():
     resp = client.get("/ping", headers={"X-Trace-ID": "has space/and slash"})
     replaced = resp.headers["X-Trace-ID"]
     assert replaced != "has space/and slash"
-    assert replaced.startswith("trace_")
+    assert re.fullmatch(r"[0-9a-f]{32}", replaced)
     assert resp.json()["trace_id"] == replaced
 
 
@@ -48,10 +52,10 @@ def test_illegal_header_falls_back_to_valid_query_param():
     resp = client.get(
         "/ping",
         headers={"X-Trace-ID": "!!!bad!!!"},
-        params={"trace_id": "trace_from-query_1"},
+        params={"trace_id": "fedcba9876543210fedcba9876543210"},
     )
-    assert resp.headers["X-Trace-ID"] == "trace_from-query_1"
-    assert resp.json()["trace_id"] == "trace_from-query_1"
+    assert resp.headers["X-Trace-ID"] == "fedcba9876543210fedcba9876543210"
+    assert resp.json()["trace_id"] == "fedcba9876543210fedcba9876543210"
 
 
 def test_missing_id_is_generated():

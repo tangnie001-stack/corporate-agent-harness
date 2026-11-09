@@ -84,7 +84,7 @@ docker compose build --no-cache app    # 改依赖后重建
 ```
 
 ## TraceID
-- trace_id 的格式 `trace_<uuid>`，生成优先级：请求头 `X-Trace-ID` → 查询参数 `trace_id` → 自动生成。所有响应头均返回 `X-Trace-ID`（含 401/500）。
+- trace_id 的格式为 **32 位小写十六进制**（W3C Trace Context / OTLP，Langfuse v4 的硬约束）；生成优先级：前端生成 → nginx `$request_id` 兜底 → 请求头 `X-Trace-ID` / 查询参数 `trace_id`（须过 `^[0-9a-f]{32}$` 校验）→ 服务端 `uuid4().hex` 兜底。所有响应头均返回 `X-Trace-ID`（含 401/500）。
 - 容器日志内 `/data/logs/`，按天轮转，trace_id 在日志行第三个 `|` 分隔段：
 
 ## 日志简则

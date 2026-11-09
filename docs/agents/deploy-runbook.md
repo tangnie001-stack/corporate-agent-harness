@@ -21,7 +21,9 @@
 | redis | `deploy_base:redis-7.4.9-alpine` | 公开 |
 | postgres（pgvector） | `deploy_base:pgvector-pg15.19-0.8.6` | 公开 |
 | minio | `deploy_base:minio-2026-09-21` | 公开 |
-| langfuse-web | `deploy_base:langfuse-2.95.11` | 公开 |
+| langfuse-web | `deploy_base:langfuse-4.76.0` | 公开 |
+| langfuse-worker | `deploy_base:langfuse-worker-4.76.0` | 公开 |
+| clickhouse | `deploy_base:clickhouse-26.3.62.3` | 公开 |
 | nginx | `deploy_base:nginx-1.31.6-alpine` | 公开 |
 | app | `deploy_store_local:<构建号>` | **私有** |
 
@@ -30,11 +32,13 @@
 
 ### 1.2 资源档位
 
-`docker-compose.image.yml` 的 `mem_limit` 合计 **≈3.84 GB**：redis 128m / postgres 1g / minio 256m / langfuse-web 256m / nginx 128m / **app 2g**。
+`docker-compose.image.yml` 的 `mem_limit` 合计 **≈6.56 GB**：redis 128m / postgres 1g / minio 256m / langfuse-web 1g / **langfuse-worker 512m** / **clickhouse 1536m** / nginx 128m / **app 2g**。
 
 > **app 为什么是 2g**：上传接口 `await file.read()` 把整份文件读进内存，解析器再展开（图片解码放大数倍）。2026-10-20 实测 512m 下解析年报类 PDF 连续被 cgroup OOM 杀掉（`dmesg` 有 `oom-kill ... task=python3.12`），症状是上传返回 202 之后，轮询状态的请求全部 502、几十秒后自动恢复。调大后宿主 8G 仍有富余（整栈实测约 700MB）。
 
-实测整栈占用 **≈715 MiB**（app 254 / langfuse-web 212 / minio 144 / postgres 83 / nginx 12 / redis 10）→ **2C8G 有富余**。
+v4 升级前实测整栈占用 **≈715 MiB**（app 254 / langfuse-web 212 / minio 144 / postgres 83 / nginx 12 / redis 10）；**升级后新增 ClickHouse 与 worker，预计 2.5~3.5 GiB，8G 目标机仍有余量**，验收时回填实测值。
+
+> **ClickHouse 与 MinIO 必须使用命名卷**：观测数据落这两处，重建容器用匿名卷等于清空 trace（验收含一次 `docker compose restart` 后数据仍在）。
 
 > ⚠️ `docker-compose.prod.yml` 的档位合计 **14.25 GB**，在 2C8G 上**必被 OOM**，不要用它。
 > 构建镜像已移到流水线构建机，目标机不再承担构建的三峰压力。
@@ -340,6 +344,7 @@ provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定�
   docker compose -f docker-compose.image.yml exec app alembic upgrade head
   ```
 - **顺序**：迁移**先于冒烟**（首版建 8 张表，第二版加 `knowledge_base.domain` 列）。
+- **可观测后端不迁移**：Langfuse v4 用全新 database（`langfuse_v4`），不迁历史 trace/score；旧库与 v2 容器在验收通过后删除（ADR-0028）。
 
 ---
 
@@ -354,6 +359,9 @@ provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定�
 5. 建/选一个知识库 → **上传一份文档**。
 6. 等该文档状态变为 **`ready`**。
 7. 提问 → **回答里带引用来源**。
+8. **Langfuse 能查到该次 trace**：`https://langfuse.tangnie.cn` 按响应头 `X-Trace-ID`（32 位 hex）检索，能看到 `chat_turn` 树、token 与成本（成本不得为空）。
+9. **能对一条 trace 手工打分**：Scores 中出现该条记录（证明数据中心链路可用）。
+10. **评测 CLI 可跑**：跑一次评测，日志中无 `Ignoring trace ID`。
 
 > 上传步骤专治"nginx 上传上限被挡"，`ready` 专治"迁移未跑/存储凭据不匹配"，引用专治"检索链路断"。这三类正是静态检查覆盖不到、只有真实交付才暴露的。
 
@@ -432,10 +440,13 @@ nginx 已双写访问日志：`/dev/stdout`（`docker logs` 习惯不变）+ `/v
 - 首选：重跑一次旧的构建（回到那个构建号对应的代码），产出对应镜像；
 - 应急：临时把 `docker-compose.image.yml` 的 `image:` 改指旧的 `deploy_store_local:<旧tag>`，`docker compose -f docker-compose.image.yml up -d app`。
 
+**可观测后端不随应用回滚**：Langfuse v4 的切换是停机式且**不提供数据回滚**（历史已确认可丢弃）。失败时以「窗口内修复」或「短时无观测运行」处置，不恢复 v2 数据（ADR-0028）。
+
 **数据备份**：
 
 - **MinIO 里的原始上传文件是唯一不可再生的源头** —— 丢了不可重建，必须备份；
 - PostgreSQL 卷（`postgres_data`）承载元数据与向量，建议与 MinIO 同批备份；
+- **ClickHouse 卷（`clickhouse_data`）承载观测数据**：按「可丢弃」处理，不纳入备份；如需保留需另行评估容量与合规。
 - 频率 / 保留期 / 存放位置：**待定**（见下）。
 
 ---

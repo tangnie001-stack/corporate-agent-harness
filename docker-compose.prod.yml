@@ -66,7 +66,7 @@ services:
     container_name: corporate-rag-minio
     restart: always
     entrypoint: sh
-    command: -c 'minio server --address ":9000" --console-address ":9001" /data'
+    command: -c 'mkdir -p /data/langfuse-events && minio server --address ":9000" --console-address ":9001" /data'
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
@@ -85,26 +85,84 @@ services:
     networks:
       - app-network
 
-  langfuse-web:
-    image: langfuse/langfuse:2.95.11
+  clickhouse:
+    image: ${ACR_REGISTRY}/deploy_base:clickhouse-${CLICKHOUSE_VERSION:-26.3.62.3}
+    user: "101:101"
     mem_limit: 2g
-    container_name: corporate-rag-langfuse-web
+    container_name: corporate-rag-clickhouse
+    restart: always
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?CLICKHOUSE_PASSWORD is required}
+      TZ: UTC
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - app-network
+
+  langfuse-worker:
+    image: ${ACR_REGISTRY}/deploy_base:langfuse-worker-${LANGFUSE_VERSION:-4.76.0}
+    mem_limit: 1g
+    container_name: corporate-rag-langfuse-worker
     restart: always
     depends_on:
       postgres: { condition: service_healthy }
-    # 仅回环：当前需经 SSH 隧道访问。若日后要供团队访问，需在 deploy/nginx/nginx.conf
-    # 加 langfuse 的 server block，并把此处改为对外绑定
-    ports:
-      - "127.0.0.1:3000:3000"
-    environment:
-      DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASS:?}@postgres:5432/langfuse
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+    environment: &langfuse_env
+      NODE_OPTIONS: --max-old-space-size=768
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASS:?}@postgres:5432/langfuse_v4
       NEXTAUTH_URL: ${NEXTAUTH_URL:?NEXTAUTH_URL is required}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?NEXTAUTH_SECRET is required}
       SALT: ${LANGFUSE_SALT:?LANGFUSE_SALT is required}
       ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?LANGFUSE_ENCRYPTION_KEY is required}
       TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-false}
-      # v2 的 Next.js standalone 默认绑回环，且 Docker 会把 HOSTNAME 设为容器 ID
-      # → 必须显式绑 0.0.0.0，否则 app 经 langfuse-web:3000 不可达（静默走本地兜底）
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?CLICKHOUSE_PASSWORD is required}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_CONNECTION_STRING: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_EVENT_UPLOAD_BUCKET:-langfuse-events}
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: ${LANGFUSE_S3_EVENT_UPLOAD_BUCKET:-langfuse-events}
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+    networks:
+      - app-network
+
+  langfuse-web:
+    image: ${ACR_REGISTRY}/deploy_base:langfuse-${LANGFUSE_VERSION:-4.76.0}
+    mem_limit: 2g
+    container_name: corporate-rag-langfuse-web
+    restart: always
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+    # 仅回环：控制台经 nginx 的 langfuse.<domain> 反代
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      <<: *langfuse_env
       HOSTNAME: "0.0.0.0"
       LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-}
       LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-}
@@ -172,6 +230,10 @@ volumes:
     name: corporate_rag_minio_data
   app_logs:
     name: corporate_rag_app_logs
+  clickhouse_data:
+    name: corporate_rag_clickhouse_data
+  clickhouse_logs:
+    name: corporate_rag_clickhouse_logs
 
 networks:
   app-network:

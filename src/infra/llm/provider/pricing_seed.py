@@ -20,7 +20,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from langfuse.api import CreateModelRequest
 from loguru import logger
 
 from src.cli.seed_langfuse_models import (
@@ -69,7 +68,7 @@ def ensure_model_pricing(registry: dict[str, ProviderSpec], *, client: Any) -> N
                 continue
             if decide(resolved.model, price[0], price[1], existing) == "created":
                 request = build_model_request(resolved.model, price[0], price[1])
-                models.create(request=CreateModelRequest(**request))
+                models.create(**request)
                 existing.add(resolved.model)
     except Exception as e:  # noqa: BLE001 - 启动期降级：任何失败都只记 warning，不阻断
         logger.warning("[provider] pricing seed degraded err={}", e)

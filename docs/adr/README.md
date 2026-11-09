@@ -219,3 +219,5 @@ R3 的精神是 `CLAUDE.md`「选型纪律」的延伸：**凡有意偏离基线
 - `improve-codebase-architecture`（mattpocock 技能集）：读 `docs/adr/` 作为"**不应重新争论的决定**"来源
 - `architecture-review`：ADR 是其合法输入类型之一
 - `grill-with-docs`：默认产出物之一（若启用，会把 ADR 落到本目录）
+| [0028](0028-langfuse-v4-fresh-deploy.md) | 自托管 Langfuse 升级到 v4：全新部署、不迁移历史、不设回滚；新增 ClickHouse/worker/S3；SDK 5.x；trace_id 改 32hex | Accepted | 完全取代 0011；不取代 0013（由 0029 承接）；ADR-0004 的「一个 PG 实例、两个 database」仍成立 |
+| [0029](0029-trace-purge-via-official-delete-api.md) | trace 保留期清理改用官方删除 API（Observations v2 列举 + trace.delete_multiple）；去掉直连 PG SQL 与空 session 清理 | Accepted | 完全取代 0013；ADR-0012 的 30 天保留期仍有效 |

@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from dataclasses import replace
 from typing import Any
@@ -26,6 +25,7 @@ from src.core import logging as core_logging
 from src.core.log_events import Event
 from src.infra.db.engine import session_factory
 from src.infra.db.repos.diag_repo import DiagRepo
+from src.infra.llm.tracing import is_valid_trace_id
 from src.rca.diagnose.access import AccessLogSource
 from src.rca.diagnose.history import HistorySource
 from src.rca.diagnose.logs import LocalLogSource
@@ -35,7 +35,7 @@ from src.rca.diagnose.probe import ProbeFacts
 from src.rca.diagnose.render import render_card
 from src.rca.diagnose.sources import TraceSource
 
-_TRACE_RE = re.compile(r"^trace_[0-9a-fA-F-]{36}$")
+# trace id 校验复用唯一来源（32 位小写 hex）；本地正则会在格式变更后静默拒绝全部输入
 _KINDS: dict[str, DiagnosisKind] = {
     "answer": DiagnosisKind.ANSWER,
     "5xx": DiagnosisKind.ERROR_5XX,
@@ -199,7 +199,7 @@ async def diagnose_trace(
     Returns:
         可转述给用户的 markdown 卡片；格式或取数失败时返回对应的提示文案
     """
-    if not _TRACE_RE.match(trace_id.strip()):
+    if not is_valid_trace_id(trace_id.strip()):
         return INVALID_TRACE_ID
     return await run_diagnosis(trace_id, kind=kind, question=question)
 

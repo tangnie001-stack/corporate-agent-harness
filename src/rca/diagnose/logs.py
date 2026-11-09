@@ -12,7 +12,9 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-_TRACE_RE = re.compile(r"^trace_[0-9a-f-]{36}$")
+# trace id 校验复用唯一来源（32 位小写 hex）
+from src.infra.llm.tracing import TRACE_ID_PATTERN as _TRACE_RE
+
 _EVENT_RE = re.compile(r"^\[[a-z]+\]\s+([a-z][a-z ]*?)(?:\s+[a-z_]+=|$)")
 _TIME_FMT = "%Y-%m-%d %H:%M:%S.%f"
 _ERROR_LEVELS = frozenset({"ERROR", "CRITICAL"})
@@ -58,7 +60,7 @@ class LocalLogSource:
                 LogRow(
                     ts=ts,
                     level=level,
-                    trace_id=raw_tid if _TRACE_RE.match(raw_tid) else "",
+                    trace_id=raw_tid if _TRACE_RE.fullmatch(raw_tid) else "",
                     event=_extract_event(message),
                     raw=raw,
                 )

@@ -10,7 +10,7 @@
 | `doc_id` | 文档唯一标识，UUID | ❌ 传数据库自增 ID（doc_id 是 UUID） |
 | `session_id` | 会话标识，用于关联对话历史 | ❌ 传空字符串 |
 | `chunk_id` | 分块 ID，`chunks` 表主键，格式 `"{doc_id}:{chunk_index}"` | ❌ 与 `doc_id` 混用（同一文档有多个 chunk） |
-| `trace_id` | 请求追踪 ID，格式 `trace_<uuid>`；**同时是 Langfuse 的 trace id**。由 `X-Trace-ID` 头或 `?trace_id` 决定，**属不可信入站输入**，须经白名单校验后才使用 | — |
+| `trace_id` | 请求追踪 ID，格式 **32 位小写十六进制**（W3C Trace Context）；**同时是 Langfuse 的 trace id**。生成链：前端 → nginx `$request_id` → 服务端；入站 `X-Trace-ID` / `?trace_id` **属不可信输入**，须经 `^[0-9a-f]{32}$` 校验后才使用 | — |
 | `channel` | 会话来源渠道，取值 `web` / `wecom` / `feishu`（见 `src/config/const.py` 的 `Channel`）。写入日志行第 5 段与 Langfuse trace 的 `metadata.channel`；未设置时日志以 `none` 占位 | ❌ 与 `trace_id`/`session_id` 混用 —— 它用于**分渠道筛选**，不标识单次请求 |
 
 ## 响应与追踪

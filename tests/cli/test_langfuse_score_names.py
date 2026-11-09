@@ -68,12 +68,10 @@ def test_nan_is_not_written_even_under_suffixed_name():
     from unittest.mock import patch
 
     # 客户端是只读 property，故 patch 其所属类的同名属性（同 test_eval_scoring.py）
-    with patch(
-        "langfuse.decorators.langfuse_decorator.LangfuseDecorator.client_instance"
-    ) as ci:
+    with patch("src.infra.llm.tracing.get_client") as ci:
         write_scores(
             ["t0"],
             {f"faithfulness{LANGFUSE_SCORE_SUFFIX}": [math.nan]},
             enabled=True,
         )
-    ci.score.assert_not_called()
+    ci.return_value.create_score.assert_not_called()

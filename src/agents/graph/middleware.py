@@ -6,13 +6,11 @@
 
 import logging
 import time
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, hook_config
 from langchain_core.messages import AIMessage, BaseMessage
-from langfuse.decorators import langfuse_context
-from langfuse.model import ModelUsage
+from langfuse.types import TraceContext
 
 from src.agents.graph.agent_factory import LoopState
 from src.agents.graph.message_payload import (
@@ -30,6 +28,8 @@ from src.infra.llm.provider.thinking import thinking_extra_body
 from src.infra.llm.request_context import current_request_ctx
 from src.infra.llm.token_count import count_messages_tokens
 from src.infra.llm.token_usage import estimate_usage
+from src.infra.llm.trace_context import current_trace_id
+from src.infra.llm.tracing import get_client, tracing_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +232,7 @@ class AgentSpanMiddleware(AgentMiddleware):
         )  # 最内层：request.messages 已含前插的其余 system
         core_logging.log_event(Event.ITERATION_DONE, iteration=iteration, msgs=msgs)
         self._measure_turn_input(request)
+        span = self._open_turn_span()
         turn_start = time.monotonic()
         settings_map = request.model_settings or {}
         if "temperature" in settings_map:
@@ -240,7 +241,11 @@ class AgentSpanMiddleware(AgentMiddleware):
         else:
             temperature = settings.LLM_TEMPERATURE
             temp_source = "default"
-        response = await handler(request)
+        try:
+            response = await handler(request)
+        except Exception:
+            self._close_turn_span(span, level="ERROR")
+            raise
         self._record_turn(
             request,
             response,
@@ -248,8 +253,41 @@ class AgentSpanMiddleware(AgentMiddleware):
             temperature,
             temp_source,
             int((time.monotonic() - turn_start) * 1000),
+            span,
         )
         return response
+
+    def _open_turn_span(self) -> Any:
+        """在模型调用**之前**开 generation span（start 时间由 SDK 取当前时刻）。"""
+        if not tracing_enabled():
+            return None
+        trace_id = current_trace_id.get() or ""
+        if not trace_id:
+            return None
+        try:
+            client = get_client()
+            parent = client.get_current_observation_id()
+            ctx = (
+                TraceContext(trace_id=trace_id, parent_span_id=parent)
+                if parent
+                else TraceContext(trace_id=trace_id)
+            )
+            return client.start_observation(
+                trace_context=ctx, name="agent_turn", as_type="generation"
+            )
+        except Exception as exc:  # noqa: BLE001  # 观测失败不得影响对话
+            logger.warning("[agent] open agent_turn span failed err=%s", exc)
+            return None
+
+    def _close_turn_span(self, span: Any, *, level: str = "DEFAULT") -> None:
+        """异常路径关 span，避免悬空。"""
+        if span is None:
+            return
+        try:
+            span.update(level=level)
+            span.end()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[agent] close agent_turn span failed err=%s", exc)
 
     def wrap_model_call(self, request: Any, handler: Any) -> Any:
         """同步钩子（脚本/测试路径）。"""
@@ -284,6 +322,7 @@ class AgentSpanMiddleware(AgentMiddleware):
         temperature: Any,
         temp_source: str,
         latency_ms: int,
+        span: Any = None,
     ) -> None:
         """出口观测：发 model turn 日志并写 agent_turn generation observation。
 
@@ -344,7 +383,7 @@ class AgentSpanMiddleware(AgentMiddleware):
             "kb_bound": kb_bound,
         }
         self._write_observation(
-            sent, result, model_name, usage_in, usage_out, metadata, latency_ms
+            sent, result, model_name, usage_in, usage_out, metadata, span
         )
 
     def _write_observation(
@@ -355,9 +394,9 @@ class AgentSpanMiddleware(AgentMiddleware):
         usage_in: int,
         usage_out: int,
         metadata: dict[str, Any],
-        latency_ms: int,
+        span: Any = None,
     ) -> None:
-        """写 agent_turn generation observation（命令式 span；失败吞异常降级）。
+        """写 agent_turn generation observation（span 由调用前预开；失败吞异常降级）。
 
         为什么不用 `langfuse_context.update_current_observation`：middleware 里
         `get_current_observation_id()` 指向外层 `chat_turn` span（实测），
@@ -371,30 +410,21 @@ class AgentSpanMiddleware(AgentMiddleware):
             sent: 本轮实收消息（含 system 段，见 `_sent_messages`）—— 作为观测
                 `input`，使 trace 能还原"模型到底收到了什么"
         """
-        if not settings.LANGFUSE_ENABLE:
+        if span is None:
             return
         try:
-            client = langfuse_context.client_instance
-            now = datetime.now(UTC)
-            start_time = now - timedelta(milliseconds=latency_ms)
-            generation = client.generation(
-                trace_id=langfuse_context.get_current_trace_id(),
-                parent_observation_id=langfuse_context.get_current_observation_id(),
-                name="agent_turn",
-                start_time=start_time,
+            span.update(
                 model=model_name,
                 input=_messages_payload(sent),
                 output=_observation_output(result),
-                # ModelUsage 是 TypedDict 且字段声明为 Optional（键仍算必填），
-                # pyright 误判部分键构造非法；运行时 TypedDict 调用即普通 dict，SDK 接受
-                usage=ModelUsage(  # type: ignore[reportCallIssue]
-                    input=usage_in,
-                    output=usage_out,
-                    total=usage_in + usage_out,
-                ),
+                usage_details={
+                    "input": usage_in,
+                    "output": usage_out,
+                    "total": usage_in + usage_out,
+                },
                 metadata=metadata,
             )
-            generation.end(end_time=now)
+            span.end()
         except Exception as exc:  # 观测失败不得影响对话
             # 本模块 logger 是 stdlib logging（非 loguru），故用 %s 占位符
             logger.warning(

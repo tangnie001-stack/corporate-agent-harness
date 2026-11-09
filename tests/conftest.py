@@ -15,6 +15,8 @@ import os
 # ⚠️ 必须位于所有 src.* 导入之前：src/config/settings.py 在**导入时**读取环境变量，
 # 此后再设等于无效。没有这一行，测试会构造真实 Langfuse 客户端并向外上报。
 os.environ["LANGFUSE_ENABLE"] = "false"
+# v5 的 SDK 侧开关：必须在首次 get_client() 之前写入；与上面的应用层开关双保险。
+os.environ["LANGFUSE_TRACING_ENABLED"] = "false"
 
 # 同理，把 provider 选择钉成 registry 默认（dashscope），使测试与开发者宿主
 # `.env` 的 `LLM_PROVIDER` 解耦 —— 否则开发者一旦把 `.env` 切到别的 provider
@@ -186,50 +188,17 @@ def corrupted_file_path(tmp_path) -> str:
 
 @pytest.fixture(scope="session", autouse=True)
 def _disable_langfuse_tracing() -> Generator[None, None, None]:
-    """兜底关停 tracing，并保证退出前把 SDK 缓冲清掉。
-
-    上面那行环境变量是主手段（须早于导入）；本 fixture 是第一道保险 ——
-    防止将来有人重构 conftest 的导入顺序时静默失效。真正需要会话级的是末尾的
-    `flush()`（把 SDK 缓冲清掉只能在整个会话结束时做）。
-    """
-    from langfuse.decorators import langfuse_context
-
+    """兜底关停 tracing（v5：env 已在模块顶部压上，这里只兜 settings 与 flush）。"""
     from src.config import settings
 
     settings.LANGFUSE_ENABLE = False
-    langfuse_context.configure(enabled=False)
     yield
-    langfuse_context.flush()
 
 
 @pytest.fixture(autouse=True)
 def _rearm_langfuse_kill_switch() -> Generator[None, None, None]:
-    """每个用例前重新压上关停开关（会话级那次会被中途重新武装掉）。
-
-    为什么必须每例重设 settings 属性，而不是只靠上面的会话级 fixture：
-    `tests/config/test_settings.py::test_langfuse_enable_default_true` 会
-    `reload(src.config.settings)`（并临时 `pop` 掉 `LANGFUSE_ENABLE`）；reload 会
-    重新执行模块里的 `os.getenv("LANGFUSE_ENABLE", "true")` 赋值，把
-    `settings.LANGFUSE_ENABLE` 变回 `True` 并一直保留到会话结束。若只在会话开头
-    关停一次，该用例之后的所有用例都会在 tracing 打开的状态下运行 —— 本任务要立
-    的「恒为关停」不再成立。
-
-    为什么 SDK 侧只在「已经是 enabled」时才重设：`configure()` 走
-    `LangfuseSingleton.reset()` → `shutdown()` → `flush()` + `join()`，会阻塞等待
-    SDK 消费线程从轮询超时（ingestion `flush_interval` 0.5s、media `queue.get` 1s）
-    中醒来 —— 实测重新配置一次约 **2.0 s**（reset 约 2.0 s，客户端构建仅约 0.08 s）。
-    若逐例无条件调用，1184 条用例会平白多出约 40 分钟。这一行不能删：Task 2 会故意
-    在用例内打开 tracing，这道逐例的条件重设是约零成本的安全网，用来挡住那种会污染
-    后续所有用例（真发网络）的泄漏。
-    """
-    from langfuse.decorators import langfuse_context
-
+    """每个用例前重新压上关停开关（settings 可能被 reload 改回 True）。"""
     from src.config import settings
 
     settings.LANGFUSE_ENABLE = False
-
-    client = langfuse_context.client_instance
-    if client.enabled:
-        # 客户端被重新打开（如 Task 2 故意开启）：付约 2.0 s 的 reset 代价按回去
-        langfuse_context.configure(enabled=False)
     yield

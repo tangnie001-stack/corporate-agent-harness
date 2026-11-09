@@ -103,13 +103,27 @@ def test_fetch_recent_does_not_filter_by_tags(monkeypatch):
 
     seen: dict = {}
 
-    class _FakeClient:
-        def fetch_traces(self, **kwargs):
+    class _Observations:
+        def get_many(self, **kwargs):
             seen.update(kwargs)
-            return SimpleNamespace(data=[SimpleNamespace(id="t1")])
+            row = SimpleNamespace(
+                trace_id="t1",
+                id="o1",
+                start_time=None,
+                input=None,
+                output=None,
+                metadata=None,
+                session_id=None,
+                user_id=None,
+                tags=None,
+                latency=None,
+                is_root_observation=True,
+            )
+            return SimpleNamespace(data=[row])
 
-        def shutdown(self):
-            pass
+    class _FakeClient:
+        def __init__(self):
+            self.api = SimpleNamespace(observations=_Observations())
 
     monkeypatch.setattr(eval_trace_io, "_client", lambda host: _FakeClient())
 
@@ -117,4 +131,5 @@ def test_fetch_recent_does_not_filter_by_tags(monkeypatch):
 
     assert [trace.id for trace in traces] == ["t1"]
     assert seen["name"] == "chat_turn"
+    assert seen["is_root_observation"] is True
     assert "tags" not in seen

@@ -21,7 +21,7 @@ from src.cli.eval_deepeval import (
 )
 from src.infra.llm.trace_context import EvalTraceContext, current_eval_trace
 
-_RUN_TRACE_ID = "eval_run_20261019_000000_abcd1234"
+_RUN_TRACE_ID = "0123456789abcdef0123456789abcdef"
 
 
 @contextmanager
@@ -68,7 +68,7 @@ def test_begin_eval_run_emits_event_and_returns_ids():
         run_id, run_trace_id = begin_eval_run("kb-1")
 
     assert re.fullmatch(r"\d{8}_\d{6}", run_id)
-    assert re.fullmatch(rf"eval_run_{run_id}_[0-9a-f]{{8}}", run_trace_id)
+    assert re.fullmatch(r"[0-9a-f]{32}", run_trace_id)
     lines = [m for m in messages if "evaluation run" in m]
     assert len(lines) == 1
     assert f"run_trace_id={run_trace_id}" in lines[0]
@@ -195,5 +195,5 @@ def test_main_logs_evaluation_run_when_testset_load_fails(monkeypatch):
 
     run_lines = [m for m in messages if "evaluation run" in m]
     assert len(run_lines) == 1
-    assert "run_trace_id=eval_run_" in run_lines[0]
+    assert "run_trace_id=" in run_lines[0]
     assert "kb_id=kb-x" in run_lines[0]

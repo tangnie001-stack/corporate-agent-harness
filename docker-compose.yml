@@ -62,7 +62,8 @@ services:
     container_name: corporate-rag-minio
     restart: unless-stopped
     entrypoint: sh
-    command: -c 'minio server --address ":9000" --console-address ":9001" /data'
+    # 预建事件桶：v4 的 web/worker 启动即需要可写的 S3 桶，空桶目录不会自动出现
+    command: -c 'mkdir -p /data/langfuse-events && minio server --address ":9000" --console-address ":9001" /data'
     environment:
       # 服务端凭据与**应用侧同源**（都取 .env 的 MINIO_ACCESS_KEY / MINIO_SECRET_KEY）
       # —— 结构上杜绝"只改一边 → 应用连不上存储"的静默故障
@@ -82,26 +83,94 @@ services:
     networks:
       - app-network
 
-  langfuse-web:
-    image: langfuse/langfuse:2.95.11
-    mem_limit: 256m
-    mem_reservation: 128m
-    container_name: corporate-rag-langfuse-web
+  clickhouse:
+    image: clickhouse/clickhouse-server:${CLICKHOUSE_VERSION:-26.3.62.3}
+    user: "101:101"
+    mem_limit: 1536m
+    mem_reservation: 512m
+    container_name: corporate-rag-clickhouse
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+      # 观测后端要求 UTC；不要沿用应用的 Asia/Shanghai
+      TZ: UTC
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    ports:
+      - "127.0.0.1:8123:8123"
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - app-network
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:${LANGFUSE_VERSION:-4.76.0}
+    mem_limit: 512m
+    mem_reservation: 256m
+    container_name: corporate-rag-langfuse-worker
     profiles: ["langfuse"]
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
-    ports:
-      - "127.0.0.1:3000:3000"
-    environment:
-      DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASS:-langfuse_pass}@postgres:5432/langfuse
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+    environment: &langfuse_env
+      NODE_OPTIONS: --max-old-space-size=384
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASS:-langfuse_pass}@postgres:5432/langfuse_v4
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-changeme}
       SALT: ${LANGFUSE_SALT:-changeme}
       ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
       TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-false}
-      # v2 的 Next.js standalone 默认绑回环，且 Docker 会把 HOSTNAME 设为容器 ID
-      # → 必须显式绑 0.0.0.0，否则 app 经 langfuse-web:3000 不可达（静默走本地兜底）
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_CONNECTION_STRING: redis://:${REDIS_PASSWORD:-corporate_rag_pass}@redis:6379/0
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_EVENT_UPLOAD_BUCKET:-langfuse-events}
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minio}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-miniosecret}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: ${LANGFUSE_S3_EVENT_UPLOAD_BUCKET:-langfuse-events}
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minio}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-miniosecret}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+    networks:
+      - app-network
+
+  langfuse-web:
+    image: langfuse/langfuse:${LANGFUSE_VERSION:-4.76.0}
+    mem_limit: 1g
+    mem_reservation: 512m
+    container_name: corporate-rag-langfuse-web
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      <<: *langfuse_env
+      NODE_OPTIONS: --max-old-space-size=768
+      # Next.js standalone 默认绑回环，且 Docker 会把 HOSTNAME 设为容器 ID
       HOSTNAME: "0.0.0.0"
       LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-}
       LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-}
@@ -195,6 +264,10 @@ volumes:
     name: corporate_rag_minio_data
   app_logs:
     name: corporate_rag_app_logs
+  clickhouse_data:
+    name: corporate_rag_clickhouse_data
+  clickhouse_logs:
+    name: corporate_rag_clickhouse_logs
 
 networks:
   app-network:

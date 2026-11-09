@@ -28,11 +28,9 @@ import re
 import sys
 from typing import Any
 
-from langfuse.api import CreateModelRequest
-from langfuse.decorators import langfuse_context
-
 from src.config import LANGFUSE_ENABLE
 from src.infra.llm.provider.spec import ProviderSpec, load_registry
+from src.infra.llm.tracing import get_client
 
 #: Langfuse 模型定义的计价单位（配合 input_price/output_price 即「按单 token 计价」；
 #: 这两个价格字段本身不含币种，本仓部署填的是人民币数值，口径见 `settings.py` 的定价注释）
@@ -141,7 +139,7 @@ async def seed(
     """幂等写入一条模型定价。
 
     Args:
-        client: Langfuse 客户端（生产传 `langfuse_context.client_instance`）
+        client: Langfuse 客户端（生产传 `tracing.get_client()`）
         model_name: 模型名
         input_price: 输入单价（按单 token；币种口径见 `src/config/settings.py` 的定价注释）
         output_price: 输出单价（按单 token；币种口径见 `src/config/settings.py` 的定价注释）
@@ -169,7 +167,7 @@ async def seed(
         return outcome
 
     request = build_model_request(model_name, input_price, output_price)
-    models.create(request=CreateModelRequest(**request))
+    models.create(**request)
     print(
         f"[created] {model_name} "
         f"pattern={request['match_pattern']} "
@@ -238,7 +236,7 @@ def run(argv: list[str] | None = None) -> int:
         print("[error] LANGFUSE_ENABLE=false，跳过")
         return 1
 
-    client = langfuse_context.client_instance
+    client = get_client()
 
     if args.dry_run:
         try:

@@ -3,8 +3,6 @@
 from typing import Any
 
 import pytest
-from langfuse.api import CreateModelRequest
-from langfuse.api.core.jsonable_encoder import jsonable_encoder
 
 from src.cli.seed_langfuse_models import build_model_request, seed
 
@@ -64,9 +62,9 @@ class _Models:
 
         return _Resp(self._existing)
 
-    def create(self, *, request):
-        self.created.append(request)
-        return request
+    def create(self, **kwargs):
+        self.created.append(kwargs)
+        return kwargs
 
 
 class _Client:
@@ -114,8 +112,8 @@ async def test_create_receives_createmodelrequest_with_camelcase_wire_keys():
     client = _Client([])
     assert await seed(client, "m", 0.000003, 0.000006) == "created"
     received = client.api.models.created[0]
-    assert isinstance(received, CreateModelRequest)
-    wire = jsonable_encoder(received)
-    assert set(wire) >= {"modelName", "matchPattern", "inputPrice", "outputPrice"}
-    assert wire["modelName"] == "m"
-    assert wire["matchPattern"] == "(?i)^m$"
+    assert isinstance(received, dict)
+    wire = received
+    assert set(wire) >= {"model_name", "match_pattern", "input_price", "output_price"}
+    assert wire["model_name"] == "m"
+    assert wire["match_pattern"] == "(?i)^m$"

@@ -15,19 +15,23 @@ class _FakeSpan:
         self.metadata = metadata or {}
         self.ended = None
 
-    def end(self, **kwargs):
-        self.ended = kwargs
+    def update(self, **kwargs):
+        self.ended = {**(self.ended or {}), **kwargs}
+
+    def end(self):
+        pass
 
 
 class _FakeClient:
     def __init__(self):
         self.spans: list[_FakeSpan] = []
 
-    def span(self, **kwargs):
+    def start_observation(self, **kwargs):
+        ctx = kwargs.get("trace_context") or {}
         span = _FakeSpan(
             f"s{len(self.spans)}",
             kwargs.get("name", ""),
-            kwargs.get("parent_observation_id"),
+            ctx.get("parent_span_id"),
             kwargs.get("metadata"),
         )
         self.spans.append(span)

@@ -43,8 +43,8 @@ class _FakeModels:
             return _Resp(list(self.existing))
         return _Resp([])
 
-    def create(self, *, request):
-        self.created.append(request)
+    def create(self, **kwargs):
+        self.created.append(kwargs)
 
 
 class _BoomModels:
@@ -122,7 +122,7 @@ def test_paid_model_created_once(monkeypatch):
 
     ensure_model_pricing(reg, client=_FakeClient(models))
 
-    assert [r.model_name for r in models.created] == ["paid-x"]
+    assert [r["model_name"] for r in models.created] == ["paid-x"]
 
 
 def test_no_price_warns_and_skips(monkeypatch):

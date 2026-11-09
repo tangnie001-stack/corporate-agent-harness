@@ -19,7 +19,6 @@ from typing import Any, TypeAlias
 
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables.schema import StreamEvent
-from langfuse.decorators import langfuse_context, observe
 from langgraph.graph.state import CompiledStateGraph
 
 from src.agents.graph.state import (
@@ -67,6 +66,7 @@ from src.infra.llm.prompt_manager import PromptManager
 from src.infra.llm.request_context import RequestContext
 from src.infra.llm.tool_trace import ToolTraceCollector
 from src.infra.llm.trace_context import current_channel, current_trace_id
+from src.infra.llm.tracing import observe_with_trace, update_current_trace
 from src.rca.diagnose.probe import RetrievalProbe, make_score_fn
 from src.services.capability_service import CapabilityService
 from src.utils.sse import (
@@ -720,7 +720,7 @@ def _write_retrieval_trace(ctx: RequestContext, trace_metadata: dict) -> None:
     if not ctx.retrieval_trace:
         return
     try:
-        langfuse_context.update_current_trace(
+        update_current_trace(
             metadata={
                 **trace_metadata,
                 "retrieval_contexts": ctx.retrieval_trace,
@@ -767,7 +767,7 @@ def _trace_tags(kb_tag: str, channel: str, profile: str) -> list[str]:
     return [kb_tag, channel_tag, _profile_tag(channel, profile)]
 
 
-@observe(name="chat_turn", capture_input=False)
+@observe_with_trace("chat_turn")
 async def _run_generation(
     session_id: str,
     kb_id: str,
@@ -855,7 +855,7 @@ async def _run_generation(
     }
     if direct_skill:
         trace_metadata["direct_skill"] = direct_skill
-    langfuse_context.update_current_trace(
+    update_current_trace(
         input={"query": query, "kb_id": kb_id, "deep_thinking": deep_thinking},
         session_id=session_id,
         # tags 只能加不能删（实测），故只放低基数稳定值；高基数一律进 metadata
@@ -975,7 +975,9 @@ async def _run_generation(
         # 路径也带上本轮已调用的工具名。观测失败只告警，不得冒泡成生成失败
         trace_metadata["tools_used"] = tool_trace.tools_used
         try:
-            langfuse_context.update_current_trace(metadata={**trace_metadata})
+            update_current_trace(metadata={**trace_metadata})
+            if capture.final_answer:
+                update_current_trace(output=capture.final_answer)
         except Exception as exc:  # noqa: BLE001  # 观测失败不得影响对话
             logger.warning("[agent] tools_used metadata failed err=%s", exc)
         _write_retrieval_trace(ctx, trace_metadata)

@@ -124,6 +124,14 @@ v5 的 span.update(metadata=...) 写入的是 **observation** 级元数据（lan
 - **验收**：判据与 tasks 1.3（spike ③）一致——用 5.1 的读接口回读轮末写入的 retrieval_contexts / tools_used；7.10 断言二者可读
 - **备选**：只写 trace 级并接受丢失（会让诊断恒为 no_retrieval_snapshot，不可接受）
 
+## Spike 结论（2026-11-09，SDK 5.2.0 实测）
+
+- **spike① 关闭观测**：`LANGFUSE_TRACING_ENABLED=false` 时 `get_client()._tracing_enabled=False`；`start_as_current_observation` 返回的 span 全零（`trace_id` 32 个 0、`id` 16 个 0）；`get_current_trace_id()` 为 None；指向本地监听端口时**零连接**。结论：SDK 侧兜底可靠；应用层守卫仍保留（省对象开销 + 支持运行时 `settings` 切换）。
+- **spike② 线程池上下文**：`asyncio.to_thread` 内 `get_current_trace_id()` 与新建 span 的 `trace_id` 均等于外层 trace；`span.id` 为 16hex、`span.trace_id` 为 32hex。结论：OTel 上下文可穿线程池，后台任务根绑定按 `trace_id` 断言。
+- **版本**：Python SDK **5.2.0**；Langfuse 服务端 **4.76.0**；ClickHouse **26.3.62.3**（官方 v4.76 compose 钉的版本）。
+- **顺带观察**：后端不可达时 SDK 在后台批量导出器里重试（日志 `Transient error ... retrying`），不阻塞调用方——与「后端不可达不影响对话」的既有要求一致。
+- **未完成**：spike③（读 API 字段对照）依赖 v4 实例，安排在 2.9 测试床起来后执行。
+
 ## Risks / Trade-offs
 
 - **[trace_id 契约破坏]** 外部系统传自定义 id（如 `order-123`）将被丢弃 → 业务单号改放 `metadata.biz_id`；前端以 SSE `done` 事件的 trace_id 为准，老页面会自愈

@@ -12,7 +12,7 @@ from src.rca.sources.base import SourceEmptyError, SourceFailedError
 
 pytestmark = pytest.mark.asyncio
 
-_VALID = "trace_abcdefab-1234-5678-9abc-def012345678"
+_VALID = "0123456789abcdef0123456789abcdef"
 
 
 class _TraceOk:
@@ -98,7 +98,7 @@ async def test_success_returns_card_and_persists(monkeypatch):
     _setup(_TraceOk([_call()]), repo=repo)
     monkeypatch.setattr(settings, "DIAG_DETAIL_BASE_URL", "http://diag.local")
     text = await diagnose_tools.diagnose_trace.ainvoke(
-        {"trace_id": "trace_abcdefab-1234-5678-9abc-def012345678"}
+        {"trace_id": "0123456789abcdef0123456789abcdef"}
     )
     assert "诊断 · 答错/答不准" in text
     assert "档位：需要处理" in text
