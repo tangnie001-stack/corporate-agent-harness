@@ -26,9 +26,11 @@ from src.core import logging as core_logging
 from src.core.log_events import Event
 from src.infra.db.engine import session_factory
 from src.infra.db.repos.diag_repo import DiagRepo
+from src.rca.diagnose.history import HistorySource
 from src.rca.diagnose.logs import LocalLogSource
-from src.rca.diagnose.models import DiagnosisKind, DiagnosisReport
+from src.rca.diagnose.models import DiagnosisKind, DiagnosisReport, TraceFacts
 from src.rca.diagnose.pipeline import diagnose
+from src.rca.diagnose.probe import ProbeFacts
 from src.rca.diagnose.render import render_card
 from src.rca.diagnose.sources import TraceSource
 
@@ -41,11 +43,16 @@ _KINDS: dict[str, DiagnosisKind] = {
 
 _trace_source: Any = None
 _log_source: Any = None
+_history_source: Any = None
 _repo: Any = None
+_probe: Any = None
 
 
 def configure(
-    trace_source: Any = None, log_source: Any = None, repo: Any = None
+    trace_source: Any = None,
+    log_source: Any = None,
+    repo: Any = None,
+    history_source: Any = None,
 ) -> None:
     """注入证据源与仓库（测试用）；传 None 表示恢复按配置默认构造。
 
@@ -53,14 +60,26 @@ def configure(
         trace_source: 具备 `fetch(trace_id)` 的证据源
         log_source: 具备 `errors_between(start, end)` 的证据源
         repo: 具备 `save(report, ...)` 的报告仓库
+        history_source: 具备 `rounds_before(trace_id, limit=...)` 的追溯源
     """
-    global _trace_source, _log_source, _repo
+    global _trace_source, _log_source, _repo, _history_source
     _trace_source = trace_source
     _log_source = log_source
     _repo = repo
+    _history_source = history_source
 
 
-def _sources() -> tuple[Any, Any]:
+def set_probe(probe: Any) -> None:
+    """注入检索引擎探针（装配期调用；None 表示不做换表述重检）。
+
+    Args:
+        probe: 具备 `await run(query, kb_id)` 的探针
+    """
+    global _probe
+    _probe = probe
+
+
+def _sources() -> tuple[Any, Any, Any]:
     """返回当前证据源；未注入时按配置构造（trace 走 Langfuse，日志走本地目录）。"""
     trace_source = _trace_source if _trace_source is not None else TraceSource()
     log_source = (
@@ -68,7 +87,8 @@ def _sources() -> tuple[Any, Any]:
         if _log_source is not None
         else LocalLogSource(settings.DIAG_LOG_DIR)
     )
-    return trace_source, log_source
+    history_source = _history_source if _history_source is not None else HistorySource()
+    return trace_source, log_source, history_source
 
 
 def _repo_or_default() -> Any:
@@ -76,6 +96,57 @@ def _repo_or_default() -> Any:
     if _repo is not None:
         return _repo
     return DiagRepo(session_factory)
+
+
+async def _prefetch(trace_source: Any, trace_id: str, kind: DiagnosisKind) -> Any:
+    """预取 trace 事实（答错类才需要，用于探针与避免重复拉取）。
+
+    Args:
+        trace_source: 证据源
+        trace_id: 目标 trace
+        kind: 问题分型
+
+    Returns:
+        TraceFacts；取不到或错误类返回 None（由流水线按原路径产出对应文案）
+    """
+    if kind is not DiagnosisKind.ANSWER or not hasattr(trace_source, "fetch"):
+        return None
+    try:
+        facts = await asyncio.to_thread(trace_source.fetch, trace_id)
+    except Exception:  # noqa: BLE001  失败交给流水线复现入口文案
+        return None
+    if not isinstance(facts, TraceFacts):
+        return None
+    return facts
+
+
+async def _run_probe(report: DiagnosisReport, facts: Any) -> ProbeFacts | None:
+    """低相关时才换表述重检；探针失败不影响主结论。
+
+    Args:
+        report: 首次诊断报告
+        facts: 已取到的 trace 事实
+
+    Returns:
+        ProbeFacts；不满足触发条件、未装配探针或失败时返回 None
+    """
+    if _probe is None or facts is None or not facts.calls:
+        return None
+    if report.root_cause.value != "low_relevance":
+        return None
+    query = facts.calls[-1].query
+    if not query or not facts.kb_id:
+        return None
+    try:
+        probed = await _probe.run(query, facts.kb_id)
+    except Exception as exc:  # noqa: BLE001  探针是附加能力，失败只记录
+        logger.warning(
+            "[diagnose] probe failed trace_id={} err={}", report.trace_id, exc
+        )
+        return None
+    if not isinstance(probed, ProbeFacts):
+        return None
+    return probed
 
 
 def _detail_url(diag_id: str) -> str:
@@ -103,7 +174,9 @@ def _failure_text(report: DiagnosisReport) -> str | None:
 
 
 @tool("diagnose_trace")
-async def diagnose_trace(trace_id: str, kind: str = "answer") -> str:
+async def diagnose_trace(
+    trace_id: str, kind: str = "answer", question: str = ""
+) -> str:
     """诊断一条 trace：给出档位、归属、根因与证据计数，并附详情链接。
 
     何时调用：用户给出 trace_id 并问"为什么报错/为什么答错/查一下这条"时。
@@ -112,6 +185,7 @@ async def diagnose_trace(trace_id: str, kind: str = "answer") -> str:
     Args:
         trace_id: 形如 trace_<uuid> 的请求标识
         kind: 问题分型，answer（答错，默认）/ 5xx（服务端错误）/ 4xx（客户端错误）
+        question: 本轮用户问题原文（只用于判断"追问"是否需要追溯上一轮，可省略）
 
     Returns:
         可转述给用户的 markdown 卡片；格式或取数失败时返回对应的提示文案
@@ -122,15 +196,32 @@ async def diagnose_trace(trace_id: str, kind: str = "answer") -> str:
     if parsed_kind is None:
         return INVALID_KIND.format(kind=kind)
 
-    trace_source, log_source = _sources()
+    trace_source, log_source, history_source = _sources()
     started = time.monotonic()
+    facts = await _prefetch(trace_source, trace_id.strip(), parsed_kind)
     report = await asyncio.to_thread(
         diagnose,
         trace_id.strip(),
         kind=parsed_kind,
+        question=question,
         trace_source=trace_source,
         log_source=log_source,
+        history_source=history_source,
+        facts=facts,
     )
+    probe_facts = await _run_probe(report, facts)
+    if probe_facts is not None:
+        report = await asyncio.to_thread(
+            diagnose,
+            trace_id.strip(),
+            kind=parsed_kind,
+            question=question,
+            trace_source=trace_source,
+            log_source=log_source,
+            history_source=history_source,
+            facts=facts,
+            probe=probe_facts,
+        )
     failure = _failure_text(report)
     if failure is not None:
         logger.info(
@@ -173,14 +264,18 @@ async def diagnose_trace(trace_id: str, kind: str = "answer") -> str:
     return render_card(report, detail_url=_detail_url(diag_id))
 
 
-def make_diagnose_tools() -> list[BaseTool]:
+def make_diagnose_tools(probe: Any = None) -> list[BaseTool]:
     """返回诊断工具（装配给日志能力档）。
+
+    Args:
+        probe: 检索引擎探针；None 表示不做换表述重检
 
     Returns:
         [diagnose_trace]；在注册表内以 readonly=True 登记
     """
     from src.agents.tools.registry import ToolRegistry
 
+    set_probe(probe)
     registry = ToolRegistry()
     registry.register("diagnose_trace", diagnose_trace, readonly=True)
     return registry.enabled_tools()

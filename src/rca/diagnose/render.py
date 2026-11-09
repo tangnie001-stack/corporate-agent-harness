@@ -30,6 +30,8 @@ def render_card(report: DiagnosisReport, *, detail_url: str = "") -> str:
         ),
         diag_texts.CARD_CAUSE.format(cause=_cause_text(report)),
     ]
+    if report.basis_rounds > 0:
+        lines.append(diag_texts.CARD_BASIS.format(rounds=report.basis_rounds))
 
     basis = [text for text, _refs in report.assertions]
     for text in basis[: diag_texts.CARD_EVIDENCE_LIMIT]:

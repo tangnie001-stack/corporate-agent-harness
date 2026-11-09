@@ -23,21 +23,21 @@
   - `docker-compose.image.yml` 的 nginx 服务加挂载 `/data/nginx-logs:/var/log/nginx`
   - 验证三点：正常请求三个新字段有值；app 不可达（502）时 `upstream_status` 与 trace 为空；脱敏格式不变（query 仍被掩）
   - **采集器安装、机器组、SLS 采集配置不在本变更内**（运维动作，见 runbook）
-- [ ] 2.3 `src/rca/sources/probe.py`：`RetrievalProbe`——对原问题做确定性变体（抽实体/去年份/同义）后重检；命中且相关度过线 → "表述问题"，全空 → "覆盖缺失"。**默认不用模型改写**（不可复现），模型改写作为可选第二档并标注
+- [x] 2.3 `src/rca/diagnose/probe.py`：`RetrievalProbe`——确定性变体（去年份 / 去口语前缀与问句尾）后重检；任一变体 top1 ≥ `DIAG_SCORE_FLOOR` → "表述问题"，否则 "覆盖缺失"。**不用模型改写**。只在 `low_relevance` 时由工具触发（省掉无意义重检），结果只作附加断言，不改根因
 - [ ] 2.4 三个 Source 实现**新窄协议** `ErrorEvidenceSource`（`trace_fetch` / `error_logs` / `retrieval_probe`），与 `LogSource` 并列、不扩展后者；三态沿用 `SourceEmptyError` / `SourceFailedError`；测试替身照 `FixtureLogSource` 的写法
 
 ## 3. 判定
 
-- [x] 3.1 `src/rca/diagnose/judge.py`：`root_cause` 枚举判定——`not_retrieved`（无 `retrieve_kb` 观测）、`low_relevance`（D5 三条件全满足）、`context_truncated`（`context_count < result_count` 且有 `context budget high`）、`not_cited`（有高分上下文但回答无引用）、`undetermined`
+- [x] 3.1 `src/rca/diagnose/judge.py`：`root_cause` 枚举判定——`not_retrieved`（无 `retrieve_kb` 观测）、`low_relevance`（D5 三条件全满足）、`context_truncated`（`context_count < result_count` 且有 `context budget high`）、`not_cited`（有高分上下文但回答无引用；引用与否取 trace 输出的 `[n]` 标记）、`undetermined`
 - [x] 3.2 量纲门控：`score_kind != "rerank"` 时禁止进入 `low_relevance` 分支
-- [ ] 3.3 D3 追溯：`history budget exceeded` / `context budget high` 或 `result_count == 0` 且问题含指代时，拉前 2 轮事实；禁止链式追溯
+- [x] 3.3 D3 追溯（`src/rca/diagnose/history.py`）：`history budget exceeded` / `context budget high` 或零召回且问题含指代时拉前 2 轮事实；只取事实（条数/是否被裁/模型名），不重新判定，不再触发追溯。本轮未检索且上一轮被截 → 归 `context_truncated`
 - [x] 3.4 `tier` 与 `root_cause` 分开计算、分开存储（`src/rca/diagnose/tier.py`，报文档位/归属/根因三个字段）；`tier` 沿用 `alert-triage` 的三档口径
 - [x] 3.5 证据不足（三态含 `empty` 或 `failed`）→ `undetermined`，并记录缺失的证据项清单
 - [x] 3.6 问题分型（D13）：`kind ∈ 5xx | 4xx | answer` 由入口判定，分派到 `judge_error` / `judge_answer`；4xx 只输出归属（ops）。**4xx 的细分（参数/鉴权/限流/不存在）依赖 access 日志状态码**，随 2.5 落 P3
 
 ## 4. 报告与校验
 
-- [x] 4.1 报告结构含 `kind`、`tier`、`owner`、`root_cause`、`evidence[]`、`assertions[]`、`next_actions[]`、`basis_rounds`、`diag_id`（`src/rca/diagnose/models.py`）；`basis_rounds` 恒 0，待 3.3 追溯落地
+- [x] 4.1 报告结构含 `kind`、`tier`、`owner`、`root_cause`、`evidence[]`、`assertions[]`、`next_actions[]`、`basis_rounds`、`diag_id`（`src/rca/diagnose/models.py`）；`basis_rounds` 由 3.3 追溯填充
 - [x] 4.2 `src/rca/diagnose/report.py` 的 `validate()`：校验每条断言至少引用一个存在的 `evidence_id`；失败 → 降级为"证据清单 + 未判定"
 - [x] 4.3 模板约束：本期报告文本全部由代码拼装（模型不产出任何断言与数字），未引用断言由 `validate()` 拦截
 - [x] 4.4 `src/rca/diagnose/render.py`（**不复用** `render_card`）：群卡片（档位 + 归属 + 根因 + 依据 + 详情链接）与详情页 `deploy/nginx/html/diagnose.html`；同类计数属告警级聚合，随 6.x 落 P3

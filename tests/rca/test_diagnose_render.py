@@ -57,3 +57,8 @@ def test_card_masks_node_address():
     text = render_card(_report(summary="上游 10.1.2.3:8080 超时"))
     assert "10.1.2.3" not in text
     assert "node-***" in text
+
+
+def test_card_shows_basis_rounds():
+    text = render_card(_report(basis_rounds=2))
+    assert "结论基于前 2 轮上下文" in text
