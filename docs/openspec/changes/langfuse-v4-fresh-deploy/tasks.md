@@ -72,9 +72,10 @@
 - [x] 7.3 `LANGFUSE_ENABLE=false` 并把 host 指向必然失败的端口，跑一轮对话与一次评测：**零出网请求**、功能正常
   - 实测：`LANGFUSE_HOST=http://127.0.0.1:9` 跑 `--limit 1`，退出码 0，报告正常产出；`events_core` 15→15、`scores` 0→0，日志无连接拒绝/异常
 - [x] 7.4 `docker compose restart` 后旧 trace 仍可查（验证命名卷）
-- [ ] 7.5 控制台可登录；能对一条 trace 手工打分并在 Scores 中看到
-  - 数据面已验：对 trace 0220f935… 写入 manual_check=1，CH scores 表可见；v4 的 events_only 模式下 GET /api/public/scores、/v2/scores 均 404（只能从控制台看）
-  - 待办：在 http://localhost:3000 登录后在 UI 里对一条 trace 打分并确认 Scores 列表出现
+- [x] 7.5 控制台可登录；能对一条 trace 手工打分并在 Scores 中看到
+  - 数据面：对 trace `0220f935…`（本地）与 `079e0140…`（生产）分别写入 `manual_check=1`；生产写入返回 score id `6c423381…`
+  - 可见性：用户在控制台确认 Scores 中出现该条（v4 `events_only` 模式下分数只能写、GET `/api/public/scores` 与 `/v2/scores` 均 404，读回只能靠 UI / ClickHouse）
+  - 注：v4 的标注队列（Annotation Queue）属 EE 功能，个人版无；trace 级 Scores 为 OSS 能力
 - [x] 7.6 跑一次评测 CLI：分数写入成功，日志中无 "Ignoring trace ID"
   - 实测（2026-11-09，22 题，deep-eval-native / judge=qwen3.8-flash）：退出码 0；CH scores 154 条（7 个指标名）；Ignoring trace ID 0 次；报告 deepeval_eval_20261109_091944
   - 主分：faithfulness 0.9096 / answer_relevancy 0.9511 / context_precision 0.7883（低于 0.80 门禁）/ context_recall 0.8182；NaN 1/88
