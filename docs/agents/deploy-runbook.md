@@ -52,7 +52,7 @@ v4 升级前实测整栈占用 **≈715 MiB**（app 254 / langfuse-web 212 / min
   - 控制台 `https://langfuse.tangnie.cn` —— 反代 `langfuse-web:3000`。
   - 80：**入口机全量 301 到 https**（健康探测不经过入口机，所以这里不需要例外）。
 - 应用机内：nginx 的 80 是唯一入口（`deploy/nginx/nginx.conf` 的 origin 模式，按 Host 分流、不做 TLS），其余端口一律绑回环或由安全组封闭：app `127.0.0.1:8000`、redis / postgres / minio 均不对外。
-- **langfuse-web 在生产不再发布端口**：`docker-compose.image.yml` 已删除 `"3000:3000"`，只经 nginx 的 `langfuse.tangnie.cn` 进来（**本地 dev 档 `docker-compose.yml` 仍对外开 3000**，方便直连调试）。nginx 对该 upstream 用**变量 + Docker 内置 DNS 延迟解析** —— 否则 langfuse 未启动时 nginx 会在启动期解析失败，连带整站起不来。
+- **langfuse-web 在生产发布 `3000:3000`**（诊断直连；安全组默认只放行 22+80，**外网访问需显式放行 3000**）。正式入口仍是 nginx 的 `langfuse.tangnie.cn`；本地 dev 档 `docker-compose.yml` 同样对外开 3000。nginx 对该 upstream 用**变量 + Docker 内置 DNS 延迟解析** —— 否则 langfuse 未启动时 nginx 会在启动期解析失败，连带整站起不来。
   - **对外门牌号 `NEXTAUTH_URL` 硬编码为 `https://langfuse.tangnie.cn`**（2026-10-20 由 `http://8.133.218.201:3000` 改来）—— NextAuth 用它拼绝对 URL（跳转/邮件链接/SSO 回调），填 `localhost` 会让这些链接指向用户自己的机器。**硬编码而非 `.env`**：该键是"生产独有"的值，走 `.env` 会被"从开发机拷 `.env` 上机"覆盖成 localhost（2026-10-10 实测踩中）；换域名/换机时改这一行并重新发布。
   - **自助注册已硬编码关闭**（`AUTH_DISABLE_SIGNUP: "true"`）。这两个键都**不写进 `.env`、也不进 `deploy.sh` 第 3 步的必填清单**（避免"拷 `.env` 带错误值/缺键 ⇒ 静默错或部署 fail"）。
 - 冒烟与健康检查走应用机本机的 `http://127.0.0.1/api/health`（nginx:80 → app:8000）。
@@ -389,7 +389,7 @@ provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定�
 1. 健康检查：`curl -fsS http://127.0.0.1/api/health` → 200（80 只放行该路径，其余 301）。
 2. 浏览器打开 `https://www.tangnie.cn/` → 用测试账号登录（证书需有效，不得点过警告）；`https://api.tangnie.cn/api/health` → 200。
 3. **备案号可见**：页面底部（桌面端在左下侧栏底部）显示 `沪ICP备2026054745号`，点击跳到 `https://beian.miit.gov.cn/`。四个页面都要看：`/chat.html`、`/Knowledgebase`、`/login.html`。
-4. `https://langfuse.tangnie.cn` 能打开并登录（生产 3000 已不再对外，只能走这个域名）。
+4. `https://langfuse.tangnie.cn` 能打开并登录（正式入口）；需要直连排障时用 `<ECS-IP>:3000`（安全组放行后可用）。
 5. 建/选一个知识库 → **上传一份文档**。
 6. 等该文档状态变为 **`ready`**。
 7. 提问 → **回答里带引用来源**。
@@ -490,7 +490,7 @@ nginx 已双写访问日志：`/dev/stdout`（`docker logs` 习惯不变）+ `/v
 | 项 | 当前口径 | 待定 |
 |---|---|---|
 | ~~HTTPS~~ | **已落地**：nginx 终止 TLS，`www` / `api` / `langfuse` 三个域名，证书人工放 `/opt/www/certs`（见 §1.4）；裸域 301 到 www | 证书续期是否改自动化（certbot / 阿里云托管） |
-| ~~Langfuse 端口~~ | **已落地**：`https://langfuse.tangnie.cn`，生产不再发布 3000（见 §1.3） | 长期去留；是否纳入统一登录 |
+| ~~Langfuse 端口~~ | **已落地**：正式入口 `https://langfuse.tangnie.cn`；生产另发布 `3000` 作诊断直连（见 §1.3） | 长期去留；是否纳入统一登录 |
 | `docker-compose.prod.yml` | 不参与本目标形态 | 废弃 / 删除 / 与目标形态对齐 |
 | 备份口径 | 见 §7（MinIO 必备） | 频率、保留期、是否上 OSS |
 | 托管化 | 单机自建（PG / Redis / MinIO 同机） | 是否迁 RDS / Redis / OSS / SLB |

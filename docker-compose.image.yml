@@ -32,7 +32,7 @@
 #   - mem_limit 复核（这里沿用 dev 档位；prod 档位合计 14.25G 在 2C8G 上会 OOM）
 # 已处理：本机只暴露 nginx 的 80（TLS 在入口机终结，本机 80 只对入口机内网 IP 放行），
 #         其余端口（redis 6379 / app 8000 / minio 9090+9091）一律绑 127.0.0.1；
-#         nginx 上传上限 12m；langfuse-web 不再发布 3000 端口（改走 nginx 的 langfuse.tangnie.cn）
+#         nginx 上传上限 12m；langfuse-web 发布 3000（诊断直连；正式入口仍是 nginx 的 langfuse.tangnie.cn）
 #
 # 【目标机必须存在的路径】—— 挂载来源（缺任一条对应功能失效）：
 #   .env                              app 的运行配置（含 MINIO_ROOT_USER/PASSWORD）
@@ -193,6 +193,9 @@ services:
     mem_limit: 1g
     mem_reservation: 512m
     container_name: corporate-rag-langfuse-web
+    ports:
+      # 诊断直连用；正式入口仍是 nginx 的 langfuse.tangnie.cn（对外需安全组放行 3000）
+      - "3000:3000"
     profiles: ["langfuse"]
     restart: unless-stopped
     depends_on:
@@ -200,8 +203,8 @@ services:
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
       clickhouse: { condition: service_healthy }
-    # 生产**不再发布 3000 端口**：控制台经 nginx 的 langfuse.tangnie.cn 反代进来，
-    # 3000 只留在 compose 网络内（本地 dev 档 docker-compose.yml 仍对外开 3000，便于直连调试）。
+    # 3000 对外发布仅作**诊断直连**（对外访问需安全组放行）；正式入口是 nginx 的
+    # langfuse.tangnie.cn，反代到容器内 langfuse-web:3000。
     environment:
       <<: *langfuse_env
       DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASS:-langfuse_pass}@postgres:5432/langfuse_v4
