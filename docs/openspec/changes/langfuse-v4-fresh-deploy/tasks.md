@@ -80,6 +80,9 @@
   - 主分：faithfulness 0.9096 / answer_relevancy 0.9511 / context_precision 0.7883（低于 0.80 门禁）/ context_recall 0.8182；NaN 1/88
   - 台账已追加第 9 行（docs/agents/eval-ledger.md）
 - [ ] 7.7 prod 停机窗口执行切换（关观测 → 停应用 → 换栈 → 起 → 冒烟 → 开观测），跑通 runbook 冒烟清单
+  - 已验（外网）：切换完成、站点与接口均 200；trace `3013ac24…` 可按 id 查到 `chat_turn → agent_turn`，usage=4021/355，**totalCost=0.0016323**（注意 Observations v2 默认投影里 cost 全为 null，须带 `fields=usage,model,metrics`）
+  - 该轮 `kb_id` 为空、`tools_used=[]` ⇒ 诊断输出"无检索快照"属正确行为；待用一个 KB 绑定轮次补 8.6 生产活体验证
+  - 待办：冒烟第 5~7 项（上传 → ready → 提问带引用）与第 10 项（评测 CLI）需在机执行
 - [x] 7.8 在 v4 上完成 `trace-diagnosis` 的 8.5（15~20 条样本 + 根因一致率）与 8.6（活体端到端），随后归档该 change
   - 8.5 改用故障注入 22 条，一致率 22/22=100%；8.6 真实 trace 1.3~2.8s；8.7 三项同批完成
   - change 已归档为 `openspec/changes/archive/2026-11-09-trace-diagnosis`，6 条需求并入 `docs/openspec/specs/trace-diagnosis/spec.md`
