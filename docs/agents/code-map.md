@@ -23,7 +23,7 @@
 | `scripts/` | 运维脚本（清库、重建 KB 数据、重写 `content_seg`）。两个发布期子目录按**执行机器**分工：`scripts/ci/pack-deploy-artifact.sh` = **构建机**（云效流水线构建阶段的执行命令；白名单打包出部署制品，并把本次 `BUILD_NUMBER` 注入 compose 的 app 镜像 tag，暂存目录 `pack-staging/`）；`scripts/deploy/deploy.sh` = **目标机**（环境判定 → 依赖安装 → 前置检查 → ACR 登录校验 → 拉镜像 → 起栈 → 迁移 → 健康检查；**不走 git**，假定当前目录已是制品解压后的发布目录）。标准发布路径 `/opt/www/corporate_rag`（脚本内置 `EXPECTED_ROOT`，跑在别处会提醒） |
 | `litellm/` | LiteLLM 代理配置（模型网关） |
 | `data/`、`logs/` | 运行期数据与日志挂载点 |
-| `docker-compose.yml` / `.override.yml` / `.prod.yml` | 编排（redis / postgres / minio / langfuse-web / nginx / litellm-proxy / app 共 7 个服务；prod 无 litellm-proxy）。`langfuse-web` 挂 `profiles: ["langfuse"]`，dev 经 `.env` 的 `COMPOSE_PROFILES=langfuse` 默认启用 |
+| `docker-compose.yml` / `.override.yml` / `.prod.yml` | 编排（redis / postgres / minio / clickhouse / langfuse-web / langfuse-worker / nginx / litellm-proxy / app 共 9 个服务；prod 无 litellm-proxy）。`langfuse-web` 挂 `profiles: ["langfuse"]`，dev 经 `.env` 的 `COMPOSE_PROFILES=langfuse` 默认启用 |
 | `docker-compose.image.yml` | **目标机部署档**：镜像全取阿里云 ACR、无 `build:`、对外只暴露 nginx:80（其余端口绑回环）；技能/预设/迁移/nginx 配置靠挂载。配套 `scripts/deploy/deploy.sh` |
 | `Dockerfile`、`pyproject.toml` | 应用镜像与依赖 |
 
@@ -72,7 +72,7 @@ core/              日志：logging / log_events / log_event_specs
 config/            settings(环境变量) / const(常量/文案/枚举) / response_codes / wecom_bots(多机器人配置解析/校验) / alert(告警配置解析/校验)
   └─ prompts/      prompt 模板包：__init__.py(7 条行为键常量 VERIFY_* / FORK_*) / loader.py(唯一读取点) / validation.py(启动期校验) / templates/*.yaml(22 条模板：段模板 `kind: section` 14 条 + 独立任务模板 `kind: task` 8 条)
                    —— 段模板(`kind: section`)与独立任务模板(`kind: task`)同处一包；改 prompt 文案改 YAML，改规则的挂载点改代码
-infra/             基础设施：db(engine/DSN + transaction 事务边界 + models + repos + vector_store + lexical_query) / llm(tracing 为 Langfuse 开关/flush/trace id 校验唯一入口；langfuse_purge 为保留期删除的 SQL 后端；token_count 为统一 token 计数入口——tiktoken 近似，encoder 缺失时降级 `len(text)//2` 并记一次 warning；**provider/ 为 provider 兼容层，见下**) / search(tokenizer 为唯一 jieba 分词入口) / auth / redis_client / grafana_client(Grafana HTTP 传输层：Bearer 鉴权 / 超时 / 错误归一，不做业务解析)
+infra/             基础设施：db(engine/DSN + transaction 事务边界 + models + repos + vector_store + lexical_query) / llm(tracing 为 Langfuse 开关/flush/trace id 校验唯一入口；langfuse_purge 为保留期删除（官方 delete API）；token_count 为统一 token 计数入口——tiktoken 近似，encoder 缺失时降级 `len(text)//2` 并记一次 warning；**provider/ 为 provider 兼容层，见下**) / search(tokenizer 为唯一 jieba 分词入口) / auth / redis_client / grafana_client(Grafana HTTP 传输层：Bearer 鉴权 / 超时 / 错误归一，不做业务解析)
 middleware/        auth / trace_id / response_processor（统一响应包装）
 cli/               DeepEval 评测、v6 出题、检索对比、trace 回放/清理、症状指标、种子与防腐闸门（check_docs / check_adr）等命令行工具
 models.py          模型门面（**薄委托** `src/infra/llm/provider/`）：get_llm / get_classify_llm / get_summary_llm / get_judge_llm / get_embeddings / get_rerank

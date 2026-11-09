@@ -73,7 +73,12 @@
   - 实测：`LANGFUSE_HOST=http://127.0.0.1:9` 跑 `--limit 1`，退出码 0，报告正常产出；`events_core` 15→15、`scores` 0→0，日志无连接拒绝/异常
 - [x] 7.4 `docker compose restart` 后旧 trace 仍可查（验证命名卷）
 - [ ] 7.5 控制台可登录；能对一条 trace 手工打分并在 Scores 中看到
-- [ ] 7.6 跑一次评测 CLI：分数写入成功，日志中无 "Ignoring trace ID"
+  - 数据面已验：对 trace 0220f935… 写入 manual_check=1，CH scores 表可见；v4 的 events_only 模式下 GET /api/public/scores、/v2/scores 均 404（只能从控制台看）
+  - 待办：在 http://localhost:3000 登录后在 UI 里对一条 trace 打分并确认 Scores 列表出现
+- [x] 7.6 跑一次评测 CLI：分数写入成功，日志中无 "Ignoring trace ID"
+  - 实测（2026-11-09，22 题，deep-eval-native / judge=qwen3.8-flash）：退出码 0；CH scores 154 条（7 个指标名）；Ignoring trace ID 0 次；报告 deepeval_eval_20261109_091944
+  - 主分：faithfulness 0.9096 / answer_relevancy 0.9511 / context_precision 0.7883（低于 0.80 门禁）/ context_recall 0.8182；NaN 1/88
+  - 台账已追加第 9 行（docs/agents/eval-ledger.md）
 - [ ] 7.7 prod 停机窗口执行切换（关观测 → 停应用 → 换栈 → 起 → 冒烟 → 开观测），跑通 runbook 冒烟清单
 - [ ] 7.8 在 v4 上完成 `trace-diagnosis` 的 8.5（15~20 条样本 + 根因一致率）与 8.6（活体端到端），随后归档该 change
 - [ ] 7.9 删除 v2 容器、旧 `langfuse` database 与 `langfuse:2.95.11` 镜像引用；确认在用卷与桶完好
