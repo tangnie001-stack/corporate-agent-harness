@@ -74,8 +74,14 @@
 - [x] 8.3 `tests/rca/test_diagnose_report.py`：引用缺失/伪造 → 降级
 - [x] 8.4 `tests/rca/test_trace_source.py` / `test_local_log_source.py`：注入式替身覆盖 `ok/empty/failed` 三态
 - **验收前置（2026-11-09）**：8.5 / 8.6 / 8.7 与归档暂缓，等 `langfuse-v4-fresh-deploy` 部署后执行——v4 把 trace_id 改为 32 位 hex 并把读路径改为 Observations API v2，届时 `diagnose_tools._TRACE_RE`、`diagnose/logs.py` 的日志正则与 `cli/eval_trace_io.py` 的读取函数需同批适配；另 8.6 的"报告可点开原文"与 7.3（本期只存摘要、无原文）矛盾，验收前先改判据
-- [ ] 8.5 回归集：`feedback` 点踩 + `prod-incident-log` 取 15~20 条，人工标注根因；根因一致率 ≥ 80%
-- [ ] 8.6 活体：真实 `trace_id` 端到端跑通，验证报告可点开原文、P50 < 30s
+- [x] 8.5 回归集：`feedback` 点踩 + `prod-incident-log` 取 15~20 条，人工标注根因；根因一致率 ≥ 80%
+  - 取样口径变更（用户 2026-11-09 确认）：本地 `feedback` 仅 1 条且为 positive、`prod-incident-log` 仅 2 条，凑不出真实样本 ⇒ 改用**故障注入**构造 22 条（`not_retrieved` 4 / `low_relevance` 4 / `context_truncated` 4 / `not_cited` 4 / `undetermined`(fallback) 4 / healthy 2）
+  - 工具：`python -m src.cli.diagnose_regression`（生成 trace → 跑同一条 `diagnose` pipeline → 比对）；产物 `data/diagnosis/regression_set_v1.json` 与 `regression_run_<ts>.json`
+  - 实测一致率 **22/22 = 100%**（门槛 80%）；`not_retrieved` 走 facts 入口（trace 无快照按设计判未判定，与告警链路一致）
+- [x] 8.6 活体：真实 `trace_id` 端到端跑通，报告可点开原文、P50 < 30s
+  - 判据修订（本期 7.3 只存摘要与 locator，无原文）：改为「端到端跑通 + locator 可解析 + 延迟达标」
+  - 实测：带 KB 的真实 trace `07435406…` 1.3s、无 KB 的 `0220f935…` 2.8s（均远低于 P50 30s）；报告含 `E1 [trace] retrieve_kb#1 — result=39 ctx=5 kind=rerank`
+  - 未覆盖：`python -m src.cli.diagnose` 只打印不落库；落库（`diagnosis_reports`）与详情页 `GET /api/rca/diag/{id}` 走告警链路，需 `DIAG_ALERT_NAMES` 白名单，留待告警联调
 - [ ] 8.7 待验证三项：`score_kind=timeout` 真实落库形态、多轮 trace 的 metadata 体积上限、告警 `details` 可提取字段
 
 ## 9. 文档

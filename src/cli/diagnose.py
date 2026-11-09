@@ -47,7 +47,7 @@ def _print(rep: DiagnosisReport) -> None:
 def main(argv: list[str] | None = None) -> int:
     """入口：解析参数并打印报告。"""
     parser = argparse.ArgumentParser(description="trace 诊断")
-    parser.add_argument("trace_id", help="形如 trace_<uuid>")
+    parser.add_argument("trace_id", help="32 位小写 hex（Langfuse v4 trace id）")
     parser.add_argument("--langfuse-host", default=settings.LANGFUSE_HOST)
     parser.add_argument("--log-dir", default="/data/logs")
     parser.add_argument("--no-logs", action="store_true", help="跳过日志证据")
