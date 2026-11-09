@@ -356,6 +356,8 @@ DIAG_ENV: str = os.getenv("DIAG_ENV", "local")
 DIAG_LOG_DIR: str = os.getenv("LOG_DIR", "logs")
 # 诊断：详情页基地址（卡片链接用；未配置时卡片不带链接）
 DIAG_DETAIL_BASE_URL: str = os.getenv("DIAG_DETAIL_BASE_URL", "")
+# 诊断：nginx 访问日志目录（生产由 compose 注入 /data/nginx-logs）；空串 = 不启用 4xx 分类
+DIAG_ACCESS_LOG_DIR: str = os.getenv("DIAG_ACCESS_LOG_DIR", "")
 # 页眉页脚边距过滤（fitz 通道按 y 坐标剔除重复页眉/页脚）
 # 顶部 45：保留页首内容标题（如 tencent 的"简明综合财务状况表"，y≈52-66）
 # 底部 80：剔除页码页脚（如 neusoft 的 "1 / 10 东软集团..."，y≈768-791）
