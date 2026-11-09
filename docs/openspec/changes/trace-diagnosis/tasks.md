@@ -17,12 +17,13 @@
 
 - [x] 2.1 `src/rca/diagnose/sources.py`：`TraceSource`——按 `trace_id` 取观测与 `metadata.retrieval_contexts`，复用 `src/cli/eval_trace_io.py` 的 `fetch_trace`；取不到抛 `SourceFailedError`，trace 存在但无检索快照抛 `SourceEmptyError`
 - [x] 2.2 `LocalLogSource`（`src/rca/diagnose/logs.py`，**本地日志**，方案 A）：读容器 volume `/data/logs` 的 `app_*.log` / `error_*.log`，按窗口取 `ERROR` 行、第 3 段即 `trace_id`；解析复用 `src/cli/replay_trace.py` 的 `parse_trace_logs`；**不复用** `sls_query_latency` / `sls_query_requests`（`uri` 必填 + 白名单 + 明细无 trace_id）。`TraceLocator` 抽象保留，MCP 实现为后续替换点
-- [ ] 2.5 **日志可采集化（只改应用机 nginx，入口机不动）**：
+- [x] 2.5 **日志可采集化（只改应用机 nginx，入口机不动）**：
   - `deploy/nginx/nginx.conf` 的 `masked` 增加 `$upstream_addr` / `$upstream_status` / `$upstream_http_x_trace_id` / `$request_time`
   - `access_log` 双写：保留 `/dev/stdout`（`docker logs` 习惯不变）+ 新增 `/var/log/nginx/access.log`
   - `docker-compose.image.yml` 的 nginx 服务加挂载 `/data/nginx-logs:/var/log/nginx`
   - 验证三点：正常请求三个新字段有值；app 不可达（502）时 `upstream_status` 与 trace 为空；脱敏格式不变（query 仍被掩）
   - **采集器安装、机器组、SLS 采集配置不在本变更内**（运维动作，见 runbook）
+  - 补充：app 容器只读挂载 `/data/nginx-logs:/data/nginx-logs:ro` + `DIAG_ACCESS_LOG_DIR`（诊断要读同一份日志）；nginx 把空变量写成 `-`（502 时 `upstream=- upstream_status=- trace=-`）；日志轮转属运维，见 runbook §6.2
 - [x] 2.3 `src/rca/diagnose/probe.py`：`RetrievalProbe`——确定性变体（去年份 / 去口语前缀与问句尾）后重检；任一变体 top1 ≥ `DIAG_SCORE_FLOOR` → "表述问题"，否则 "覆盖缺失"。**不用模型改写**。只在 `low_relevance` 时由工具触发（省掉无意义重检），结果只作附加断言，不改根因
 - [ ] 2.4 三个 Source 实现**新窄协议** `ErrorEvidenceSource`（`trace_fetch` / `error_logs` / `retrieval_probe`），与 `LogSource` 并列、不扩展后者；三态沿用 `SourceEmptyError` / `SourceFailedError`；测试替身照 `FixtureLogSource` 的写法
 
@@ -33,7 +34,7 @@
 - [x] 3.3 D3 追溯（`src/rca/diagnose/history.py`）：`history budget exceeded` / `context budget high` 或零召回且问题含指代时拉前 2 轮事实；只取事实（条数/是否被裁/模型名），不重新判定，不再触发追溯。本轮未检索且上一轮被截 → 归 `context_truncated`
 - [x] 3.4 `tier` 与 `root_cause` 分开计算、分开存储（`src/rca/diagnose/tier.py`，报文档位/归属/根因三个字段）；`tier` 沿用 `alert-triage` 的三档口径
 - [x] 3.5 证据不足（三态含 `empty` 或 `failed`）→ `undetermined`，并记录缺失的证据项清单
-- [x] 3.6 问题分型（D13）：`kind ∈ 5xx | 4xx | answer` 由入口判定，分派到 `judge_error` / `judge_answer`；4xx 只输出归属（ops）。**4xx 的细分（参数/鉴权/限流/不存在）依赖 access 日志状态码**，随 2.5 落 P3
+- [x] 3.6 问题分型（D13）：`kind ∈ 5xx | 4xx | answer` 由入口判定，分派到 `judge_error` / `judge_answer`；4xx 只输出归属（ops）。**4xx 的细分（参数/鉴权/限流/资源不存在/请求体超限）已随 2.5 落地**：`judge_error` 读 `AccessRow.status` 给分类，读不到时输出"分类待 access 日志"
 
 ## 4. 报告与校验
 
@@ -52,13 +53,13 @@
 
 ## 6. 告警定位器
 
-- [ ] 6.1 `src/rca/locator.py`：时间窗（`T0-15min`~当前）内 ERROR 行 → `trace_id` 去重 → 按 `(错误类型, 接口, 错误码)` 聚类 → 每类取最早代表；取 trace 按 **`chat_turn`**（不存在 `alert_turn`），告警轮用 tag `pf:alert` 区分；**不读** `rca_*`（已被移出归档变更）
-- [ ] 6.2 三态显式分支（**不得合并**）：
+- [x] 6.1 `src/rca/locator.py`：时间窗（`T0-15min`~当前）内 ERROR 行 → `trace_id` 去重 → 按 `(错误类型, 接口, 错误码)` 聚类 → 每类取最早代表；取 trace 按 **`chat_turn`**（不存在 `alert_turn`），告警轮用 tag `pf:alert` 区分；**不读** trace tag 与 `rca_*`（按 `trace_id` 直接取，名称不影响）。实现偏差：应用日志没有 URL，接口维度优先取 access 日志的 `uri`（按 trace 对齐），取不到退回模块名
+- [x] 6.2 三态显式分支（**不得合并**）：
   - 查询成功且 0 行 / 有行但无 `trace_id` → "未落到应用层"（D9，这是结论）；
   - 日志源不可达 / 超时 / 参数错误 → "日志源不可用，未判定"（failed 态，**不得**落进 D9）；
   - 有行且有 `trace_id` → 正常进入诊断
-- [ ] 6.3 上限：最多诊断 3 个代表；超出只输出类别计数
-- [ ] 6.4 接入报警轮：error 类告警走"定位 + 诊断"，延迟类仍走 `rca-latency`；按告警名白名单灰度、默认关闭
+- [x] 6.3 上限：最多诊断 3 个代表；超出只输出类别计数
+- [x] 6.4 接入报警轮：error 类告警走"定位 + 诊断"，延迟类仍走 `rca-latency`；按告警名白名单灰度、默认关闭（`DIAG_ALERT_NAMES`，空 = 关闭）
 
 ## 7. 落库与投递
 
@@ -69,7 +70,7 @@
 ## 8. 测试与验证
 
 - [x] 8.1 `tests/rca/test_diagnose_judge.py`：五类 `root_cause` 各一例，含 `score_kind=fallback` 不得判 `low_relevance`
-- [ ] 8.2 `tests/rca/test_locator.py`：聚类取代表、上限 3、空窗口 → "未落到应用层"
+- [x] 8.2 `tests/rca/test_locator.py`：聚类取代表、上限 3、空窗口 → "未落到应用层"
 - [x] 8.3 `tests/rca/test_diagnose_report.py`：引用缺失/伪造 → 降级
 - [x] 8.4 `tests/rca/test_trace_source.py` / `test_local_log_source.py`：注入式替身覆盖 `ok/empty/failed` 三态
 - [ ] 8.5 回归集：`feedback` 点踩 + `prod-incident-log` 取 15~20 条，人工标注根因；根因一致率 ≥ 80%

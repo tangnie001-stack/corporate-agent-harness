@@ -183,6 +183,7 @@ docker exec corporate-rag-app grep "<trace_id>" /data/logs/app_YYYY-MM-DD.log
 | 企微不回 / 被顶号 | 渠道侧日志 + SDK 实测事实 | `docs/agents/wecom-sdk-facts.md` |
 | 部署/端口/发布异常 | 部署槽位日志与运行形态 | `docs/agents/deploy-runbook.md` |
 | 值班助手给了 trace_id 但结论为"未判定" | 该 trace 的 `diagnose done`（档位/归属/根因）与 `diagnose undetermined`（缺哪类证据），再按本文件 §2/§3 补查 | 本文件 §8 + `docs/agents/logging-rules.md`（`[diagnose]` 前缀） |
+| 告警只回"未落到应用层" / 白名单告警没出诊断卡片 | 该次告警的 `trace locate done`（`status` 与 `traces`）：`empty` 查窗口内应用 ERROR 行与 nginx 5xx；`failed` 查日志目录可达性；没有该事件说明告警名不在 `DIAG_ALERT_NAMES` | `docs/agents/deploy-runbook.md` §6.2 + `src/rca/locator.py` |
 | 评测指标出现 `error` / 评测总耗时异常 | 该题 trace_id 下的 `judge call`（measure 汇总；`error` 为异常链摘要，NaN 无异常时为空）与 `judge http`（每次 HTTP 明细，含传输失败） | 本文件 §10 + **ADR-0026** |
 
 ### 评测 trace 链

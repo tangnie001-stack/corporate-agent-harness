@@ -288,6 +288,7 @@ Nginx 容器把本目录挂到 `/usr/share/nginx/html` 直接托管，**无 npm 
 | 加/改 skill 机制 | `src/agents/skills/`（loader/registry/executor/delegate_task）；内容放 `skills/<name>/SKILL.md` |
 | 加/改智能体预设 | 内容放 `agents/<name>.md`；机制在 `src/agents/presets/`（loader/registry/capability 档映射） |
 | 加/改告警三档判定（判定规则 / 取数源 / 卡片） | `src/rca/`（`judge.py` 档位、`collector.py` 采集、`sources/` 取数源、`render.py` 卡片）；skill 内容 `skills/rca-latency/SKILL.md`；配置 `src/config/rca.py`；接入点 `src/services/alert_service.py` |
+| 加/改 trace 诊断 / 告警定位（分型、4xx 分类、定位器） | 判定 `src/rca/diagnose/`（`judge.py`、`pipeline.py`、`access.py` 访问日志）；定位 `src/rca/locator.py`；告警接入 `src/services/alert_diagnosis.py` + `src/services/alert_service.py`；入口工具 `src/agents/tools/diagnose_tools.py`；配置 `src/config/diag.py` / `settings.py`（`DIAG_*`）/ `alert.py`（`DIAG_ALERT_NAMES`） |
 | 改前端对话页 | `deploy/nginx/html/chat.html`（自包含）；**勿改 `js/chat.js`** |
 | 改知识库管理页 | `deploy/nginx/html/index.html`（+ `js/api.js`） |
 | 改 Nginx 路由 / 静态托管 | `deploy/nginx/nginx.conf`、`deploy/nginx/Dockerfile` |
