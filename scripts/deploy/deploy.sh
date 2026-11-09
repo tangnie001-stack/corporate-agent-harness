@@ -386,6 +386,22 @@ step "5/8 拉取镜像（ACR 个人版不支持平台代拉）"
 compose pull
 
 step "6/8 启动服务"
+# Langfuse v4 的事务库必须在起栈前存在：langfuse-web / worker 启动即连它，缺库会反复重启。
+# 既有数据卷不会重跑 deploy/postgres/init（那段只在空卷首启执行），故在此幂等补建。
+compose up -d postgres
+for i in $(seq 1 20); do
+  compose exec -T postgres pg_isready -U langfuse >/dev/null 2>&1 && break
+  sleep 1
+done
+if compose exec -T postgres psql -U langfuse -d postgres -tAc \
+     "SELECT 1 FROM pg_database WHERE datname='langfuse_v4'" | grep -q 1; then
+  info "✓ langfuse_v4 已存在"
+else
+  compose exec -T postgres psql -U langfuse -d postgres \
+    -c "CREATE DATABASE langfuse_v4 OWNER langfuse;" >/dev/null
+  info "✓ 已创建 langfuse_v4"
+fi
+
 compose up -d
 
 # up -d 不会重建未变更的服务，bind mount 的 nginx.conf 改了容器也不会重读 —— 故每次都显式重载。
