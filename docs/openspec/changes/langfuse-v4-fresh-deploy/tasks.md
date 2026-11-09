@@ -60,8 +60,8 @@
 - [x] 6.1 `src/infra/llm/langfuse_purge.py`：**列举**改 `GET /api/public/traces` 分页 + 时间过滤（当前 SQL 读 PG `traces`，v4 下恒为 0 条）；**删除**改 `DELETE /api/public/traces/{id}`；审计行打印 host 而非 PG 库名
 - [x] 6.2 `src/cli/purge_langfuse_traces.py`：dry-run 必须**命中 > 0 条**（用一条人为超期的 trace 验证），真删后 UI 查不到该 trace
 - [x] 6.3 新增 ADR 0028（v4 全新部署，取代 ADR-0011 的 v2 决策）与 ADR 0029（清理改官方删除 API，取代 ADR-0013）；旧 ADR 的 Status 加反向指针
-- [ ] 6.4 更新 `docs/agents/deploy-runbook.md`（新组件、新变量、停机切换、无回滚、新增冒烟项）与 `infra-inventory.md`、`code-map.md`、`eval-ledger.md`
-- [ ] 6.5 需求池 H-07（Langfuse 去留）与 H-12（无指标出口）登记进展或结项
+- [x] 6.4 更新 `docs/agents/deploy-runbook.md`（新组件、新变量、停机切换、无回滚、新增冒烟项）与 `infra-inventory.md`、`code-map.md`、`eval-ledger.md`
+- [x] 6.5 需求池 H-07（Langfuse 去留）与 H-12（无指标出口）登记进展或结项（2026-11-09 各追加 v4 进展：H-07 正式入口换成域名、:3000 转诊断直连；H-12 复测 `/metrics` 与 `metrics/daily` 均 404）
 
 ## 7. 验收
 
@@ -80,7 +80,9 @@
   - 主分：faithfulness 0.9096 / answer_relevancy 0.9511 / context_precision 0.7883（低于 0.80 门禁）/ context_recall 0.8182；NaN 1/88
   - 台账已追加第 9 行（docs/agents/eval-ledger.md）
 - [ ] 7.7 prod 停机窗口执行切换（关观测 → 停应用 → 换栈 → 起 → 冒烟 → 开观测），跑通 runbook 冒烟清单
-- [ ] 7.8 在 v4 上完成 `trace-diagnosis` 的 8.5（15~20 条样本 + 根因一致率）与 8.6（活体端到端），随后归档该 change
+- [x] 7.8 在 v4 上完成 `trace-diagnosis` 的 8.5（15~20 条样本 + 根因一致率）与 8.6（活体端到端），随后归档该 change
+  - 8.5 改用故障注入 22 条，一致率 22/22=100%；8.6 真实 trace 1.3~2.8s；8.7 三项同批完成
+  - change 已归档为 `openspec/changes/archive/2026-11-09-trace-diagnosis`，6 条需求并入 `docs/openspec/specs/trace-diagnosis/spec.md`
 - [ ] 7.9 删除 v2 容器、旧 `langfuse` database 与 `langfuse:2.95.11` 镜像引用；确认在用卷与桶完好
 - [x] 7.10 用一条真实对话 trace 跑诊断：经读接口得到的轮末 `retrieval_contexts` 与 `tools_used` 均非空，`retrieval_contexts` 条数 > 0（证明读路径与迟到字段承载都没有静默退化）
 - [x] 7.11 用 OTLP 反填 `startTimeUnixNano` 制造一条超期 trace，跑 purge：dry-run **命中 > 0**（命中 0 即判失败），真删后按 id 查不到
