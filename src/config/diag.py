@@ -32,3 +32,10 @@ INVALID_KIND = "问题分型只能是 answer / 5xx / 4xx，收到：{kind}"
 INVALID_TRACE_ID = "trace_id 格式应为 trace_<uuid>，请检查后重试"
 TRACE_NOT_FOUND = "未找到该 trace：可能超过 30 天保留期，或 trace_id 不存在"
 TRACE_UNAVAILABLE = "trace 不可用：可能属于另一环境或检索服务异常"
+ALERT_HEADER = (
+    "**告警诊断 · 窗口内 {traces} 个错误 trace，{groups} 类**"  # 告警卡片首行
+)
+ALERT_SAME = "> 同类 {count} 次"  # 代表 trace 的同类计数（预留）
+ALERT_EXTRA = "> 另 {n} 类未诊断：{labels}"  # 超出上限的类别与计数
+ALERT_EMPTY = "窗口内没有 ERROR 记录：错误未落到应用层（可能来自网关 / 容器被杀 / 与本应用无关）"  # D9
+ALERT_FAILED = "日志源不可用，未判定：{reason}"  # failed 态，不得并入空窗口结论

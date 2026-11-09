@@ -201,6 +201,22 @@ async def diagnose_trace(
     """
     if not _TRACE_RE.match(trace_id.strip()):
         return INVALID_TRACE_ID
+    return await run_diagnosis(trace_id, kind=kind, question=question)
+
+
+async def run_diagnosis(trace_id: str, kind: str = "answer", question: str = "") -> str:
+    """执行一次诊断并落库，返回卡片文本或入口文案。
+
+    告警链路与工具共用同一条路径：判定、落库、事件与卡片完全一致。
+
+    Args:
+        trace_id: 目标 trace（调用方已做格式校验）
+        kind: 问题分型 answer / 5xx / 4xx
+        question: 本轮用户问题原文（只用于判断是否追溯）
+
+    Returns:
+        卡片文本；分型非法或取数失败时返回对应提示文案
+    """
     parsed_kind = _KINDS.get(kind.strip().lower())
     if parsed_kind is None:
         return INVALID_KIND.format(kind=kind)

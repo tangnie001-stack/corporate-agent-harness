@@ -50,6 +50,36 @@ def render_card(report: DiagnosisReport, *, detail_url: str = "") -> str:
     return mask_nodes("\n".join(lines))
 
 
+def render_alert_card(
+    *,
+    traces_total: int,
+    cards: list[str],
+    extra: list[tuple[str, int]],
+) -> str:
+    """告警级卡片：代表 trace 的结论 + 超限类别计数（代码拼装）。
+
+    Args:
+        traces_total: 窗口内去重后的错误 trace 数
+        cards: 每个代表 trace 的诊断卡片（已渲染，顺序与代表一致）
+        extra: 未诊断类别 (摘要, 同类次数)
+
+    Returns:
+        企微 markdown；节点地址已脱敏
+    """
+    lines = [
+        diag_texts.ALERT_HEADER.format(
+            traces=traces_total, groups=len(cards) + len(extra)
+        )
+    ]
+    for card in cards:
+        lines.append("---")
+        lines.append(card)
+    if extra:
+        labels = "、".join(f"{label}×{count}" for label, count in extra)
+        lines.append(diag_texts.ALERT_EXTRA.format(n=len(extra), labels=labels))
+    return mask_nodes("\n".join(lines))
+
+
 def _cause_text(report: DiagnosisReport) -> str:
     """优先用报告自带的说明（含未判定原因），否则退回根因的中文名。"""
     if report.summary:
