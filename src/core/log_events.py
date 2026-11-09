@@ -90,6 +90,7 @@ class Event(str, Enum):
     # [diagnose] trace 诊断（值班助手）
     DIAGNOSE_DONE = "diagnose done"
     DIAGNOSE_UNDETERMINED = "diagnose undetermined"
+    TRACE_LOCATE_DONE = "trace locate done"
 
     # [verify] 验证管道事件（3.2 批迁移登记：态A 引用引导 / 态B 完整性+护栏）
     SKIP = "skip"

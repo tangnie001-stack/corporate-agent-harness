@@ -24,7 +24,7 @@
 | `[rca]` | 告警三档判定（rca/：上下文未解析 / 无匹配 skill / 单源采集失败 / 判定失败，均直调 logger，非 Event） |
 | `[degradation]` | 外部依赖降级留痕（事件：`degraded`；`reason` 取值集合见 spec 取值集合表，值域登记见下） |
 | `[synth]` | v6 出题（cli/testset_synth + synth_*；事件：testset synth start / gate / done / context failed） |
-| `[diagnose]` | trace 诊断（agents/tools/diagnose_tools；事件：`diagnose done` / `diagnose undetermined`） |
+| `[diagnose]` | trace 诊断（agents/tools/diagnose_tools；事件：`diagnose done` / `diagnose undetermined`）与告警定位（rca/locator 经 services/alert_diagnosis；事件：`trace locate done`，字段 `traces` 去重 trace 数 / `groups` 类别数 / `status` ok·empty·failed） |
 
 新语义面前缀：先登记 `src/core/log_events.py` 的 `LOG_PREFIXES` + 本表加一行后启用，不预建。
 
