@@ -110,3 +110,35 @@ def test_followup_with_truncated_prior_is_context_truncated():
     cause, reason = judge([], cited=None, has_context_budget_high=False, prior=prior)
     assert cause is RootCause.CONTEXT_TRUNCATED
     assert "上一轮" in reason
+
+
+def test_4xx_with_access_status_gives_category():
+    from datetime import UTC, datetime
+
+    from src.rca.diagnose.access import AccessRow
+    from src.rca.diagnose.judge import judge_error
+    from src.rca.diagnose.models import DiagnosisKind
+
+    row = AccessRow(
+        ts=datetime.now(UTC),
+        method="GET",
+        uri="/api/kbs",
+        status=401,
+        upstream_status="401",
+        request_time=0.01,
+        trace_id="trace_x",
+    )
+    cause, reason = judge_error(DiagnosisKind.ERROR_4XX, access=row)
+    assert cause is RootCause.UNDETERMINED
+    assert "401" in reason
+    assert "鉴权失败" in reason
+    assert "ops" in reason
+
+
+def test_4xx_without_access_keeps_placeholder():
+    from src.rca.diagnose.judge import judge_error
+    from src.rca.diagnose.models import DiagnosisKind
+
+    cause, reason = judge_error(DiagnosisKind.ERROR_4XX)
+    assert cause is RootCause.UNDETERMINED
+    assert "access" in reason

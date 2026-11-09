@@ -38,6 +38,7 @@ def diagnose(
     trace_source: object | None = None,
     log_source: object | None = None,
     history_source: object | None = None,
+    access_source: object | None = None,
     facts: TraceFacts | None = None,
     probe: ProbeFacts | None = None,
     now: datetime | None = None,
@@ -54,6 +55,7 @@ def diagnose(
         trace_source: 具备 `fetch(trace_id)` 的证据源；None 表示无 trace 证据。
         log_source: 具备 `errors_between(start, end)` 的证据源；None 表示不查日志。
         history_source: 具备 `rounds_before(trace_id, limit=...)` 的追溯源；None 不追溯。
+        access_source: 具备 `row_for_trace(trace_id, at)` 的访问日志源；None 不读（4xx 不给分类）。
         facts: 已取到的 trace 事实（避免重复拉取）；None 表示由 trace_source 现场取。
         probe: 换表述重检的事实（由调用方异步取好后传入）；只作附加断言，不改根因。
         now: 当前时间（测试注入），默认取 UTC 当前时刻。
@@ -96,8 +98,21 @@ def diagnose(
         except SourceEmptyError:
             rows = []
 
+    access_row = None
+    if kind is not DiagnosisKind.ANSWER and access_source is not None:
+        try:
+            access_row = access_source.row_for_trace(  # type: ignore[attr-defined]
+                trace_id, now or datetime.now(UTC)
+            )
+        except SourceFailedError as exc:
+            logger.warning(
+                "[diagnose] access source failed trace_id={} err={}", trace_id, exc
+            )
+            access_row = None
     if kind is not DiagnosisKind.ANSWER:
         evidence = evidence + _log_evidence(rows)
+    if access_row is not None:
+        evidence = evidence + [_access_evidence(access_row)]
 
     rounds: tuple[HistoryRound, ...] = ()
     if history_source is not None and should_lookback(
@@ -134,10 +149,11 @@ def diagnose(
         cited=cited,
         has_context_budget_high=has_context_budget_high,
         prior=prior,
+        access=access_row,
     )
     assertions = _assertions(kind, cause, reason, evidence, rows, rounds, probe)
     summary = reason
-    if kind is not DiagnosisKind.ANSWER and not rows:
+    if kind is not DiagnosisKind.ANSWER and not rows and access_row is None:
         summary = "窗口内无 ERROR 记录：可能未落到应用层"
     tier, owner = assess(kind, cause)
     report = DiagnosisReport(
@@ -166,6 +182,25 @@ def _log_evidence(rows: list[object]) -> list[Evidence]:
             locator = f"log:{ts.strftime('%Y-%m-%d %H:%M:%S')}"
         out.append(Evidence(id=f"L{index}", kind="log", locator=locator, summary=event))
     return out
+
+
+def _access_evidence(row: object) -> Evidence:
+    """把访问日志事实转成证据（不含 query 原文）。"""
+    status = getattr(row, "status", 0)
+    upstream = getattr(row, "upstream_status", "") or "N/A"
+    method = getattr(row, "method", "")
+    uri = getattr(row, "uri", "")
+    rt = getattr(row, "request_time", 0.0)
+    ts = getattr(row, "ts", None)
+    locator = ""
+    if isinstance(ts, datetime):
+        locator = f"access:{ts.strftime('%Y-%m-%d %H:%M:%S')}"
+    return Evidence(
+        id="A1",
+        kind="access",
+        locator=locator,
+        summary=f"{method} {uri} status={status} upstream={upstream} rt={rt:.3f}s",
+    )
 
 
 def _history_evidence(rounds: tuple[HistoryRound, ...]) -> list[Evidence]:
@@ -252,11 +287,14 @@ def _assertions(
     first_event = "unknown"
     if rows:
         first_event = getattr(rows[0], "event", "") or "unknown"
-    text = f"窗口内 ERROR {len(rows)} 条，首条事件 {first_event}"
+    access_ids = tuple(e.id for e in evidence if e.kind == "access")
     log_ids = tuple(e.id for e in evidence if e.kind == "log")
-    if not log_ids:
-        return ()
-    return ((text, log_ids),)
+    out: list[tuple[str, tuple[str, ...]]] = []
+    if access_ids:
+        out.append((reason, access_ids))
+    if log_ids:
+        out.append((f"窗口内 ERROR {len(rows)} 条，首条事件 {first_event}", log_ids))
+    return tuple(out)
 
 
 def _undetermined(

@@ -258,3 +258,33 @@ def test_probe_missing_coverage_assertion():
         probe=probe,
     )
     assert any("覆盖缺失" in text for text, _refs in rep.assertions)
+
+
+def test_4xx_pipeline_adds_access_evidence():
+    from datetime import UTC, datetime
+
+    from src.rca.diagnose.access import AccessRow
+    from src.rca.diagnose.models import DiagnosisKind
+
+    class _Access:
+        def row_for_trace(self, trace_id, at):
+            return AccessRow(
+                ts=datetime.now(UTC),
+                method="GET",
+                uri="/api/kbs",
+                status=429,
+                upstream_status="429",
+                request_time=0.02,
+                trace_id=trace_id,
+            )
+
+    report = diagnose(
+        "trace_11111111-1111-1111-1111-111111111111",
+        kind=DiagnosisKind.ERROR_4XX,
+        access_source=_Access(),
+        now=datetime.now(UTC),
+    )
+    assert report.root_cause is RootCause.UNDETERMINED
+    assert any(e.id == "A1" for e in report.evidence)
+    assert "限流" in report.summary
+    assert report.assertions

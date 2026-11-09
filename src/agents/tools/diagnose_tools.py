@@ -26,6 +26,7 @@ from src.core import logging as core_logging
 from src.core.log_events import Event
 from src.infra.db.engine import session_factory
 from src.infra.db.repos.diag_repo import DiagRepo
+from src.rca.diagnose.access import AccessLogSource
 from src.rca.diagnose.history import HistorySource
 from src.rca.diagnose.logs import LocalLogSource
 from src.rca.diagnose.models import DiagnosisKind, DiagnosisReport, TraceFacts
@@ -89,6 +90,14 @@ def _sources() -> tuple[Any, Any, Any]:
     )
     history_source = _history_source if _history_source is not None else HistorySource()
     return trace_source, log_source, history_source
+
+
+def _access_source() -> Any:
+    """按配置构造访问日志源；目录为空时返回 None（不读，也不猜分类）。"""
+    directory = settings.DIAG_ACCESS_LOG_DIR.strip()
+    if not directory:
+        return None
+    return AccessLogSource(directory)
 
 
 def _repo_or_default() -> Any:
@@ -207,6 +216,7 @@ async def diagnose_trace(
         trace_source=trace_source,
         log_source=log_source,
         history_source=history_source,
+        access_source=_access_source(),
         facts=facts,
     )
     probe_facts = await _run_probe(report, facts)
@@ -219,6 +229,7 @@ async def diagnose_trace(
             trace_source=trace_source,
             log_source=log_source,
             history_source=history_source,
+            access_source=_access_source(),
             facts=facts,
             probe=probe_facts,
         )

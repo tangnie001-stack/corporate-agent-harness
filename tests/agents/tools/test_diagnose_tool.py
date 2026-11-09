@@ -170,3 +170,14 @@ async def test_low_relevance_triggers_probe():
         diagnose_tools.set_probe(None)
     assert probe.calls == 1
     assert "表述问题" in text
+
+
+async def test_access_source_disabled_when_dir_empty(monkeypatch):
+    monkeypatch.setattr(settings, "DIAG_ACCESS_LOG_DIR", "")
+    assert diagnose_tools._access_source() is None
+
+
+async def test_access_source_built_from_settings(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "DIAG_ACCESS_LOG_DIR", str(tmp_path))
+    source = diagnose_tools._access_source()
+    assert source is not None

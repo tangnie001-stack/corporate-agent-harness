@@ -9,6 +9,7 @@ from __future__ import annotations
 import statistics
 
 from src.config import settings
+from src.rca.diagnose.access import AccessRow, classify_4xx
 from src.rca.diagnose.history import HistoryRound
 from src.rca.diagnose.models import DiagnosisKind, RetrievalCall, RootCause
 
@@ -20,6 +21,7 @@ def judge(
     cited: bool | None,
     has_context_budget_high: bool,
     prior: HistoryRound | None = None,
+    access: AccessRow | None = None,
 ) -> tuple[RootCause, str]:
     """按分型分派判定，返回 (根因, 人可读依据)。
 
@@ -29,9 +31,10 @@ def judge(
         cited: 回答是否引用了上下文；None = 未知（无法判定"未引用"）。
         has_context_budget_high: 本轮是否出现上下文预算告警。
         prior: 最近一轮追溯事实；仅在本轮未检索时参与"被裁"判定。
+        access: 访问日志事实；错误类用来给状态码分类，None = 读不到
     """
     if kind is not DiagnosisKind.ANSWER:
-        return judge_error(kind)
+        return judge_error(kind, access=access)
     return judge_answer(
         calls,
         cited=cited,
@@ -40,19 +43,33 @@ def judge(
     )
 
 
-def judge_error(kind: DiagnosisKind) -> tuple[RootCause, str]:
-    """错误类判定：检索事实与错误条目无因果关系，只给归属判断。
+def judge_error(
+    kind: DiagnosisKind, *, access: AccessRow | None = None
+) -> tuple[RootCause, str]:
+    """错误类判定：检索事实与错误条目无因果关系，只给归属与分类。
 
     Args:
         kind: 5xx / 4xx
+        access: 访问日志事实；None 表示读不到（不猜分类）
 
     Returns:
-        恒为未判定；原因文案说明归属与缺失的证据项
+        恒为未判定；原因文案说明分类、归属与缺失的证据项
     """
     if kind is DiagnosisKind.ERROR_4XX:
+        if access is not None:
+            label = classify_4xx(access.status)
+            return (
+                RootCause.UNDETERMINED,
+                f"客户端侧 {access.status}（{label}），归属 ops；未读请求体，不推断业务原因",
+            )
         return (
             RootCause.UNDETERMINED,
-            "4xx 属客户端侧，归属 ops 受理；原因分类待 access 日志状态码",
+            "4xx 属客户端侧，归属 ops 受理；分类待 access 日志状态码",
+        )
+    if access is not None:
+        return (
+            RootCause.UNDETERMINED,
+            f"服务端 {access.status}（上游 {access.upstream_status}），归属 dev 排查",
         )
     return (
         RootCause.UNDETERMINED,
