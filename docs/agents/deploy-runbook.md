@@ -60,11 +60,13 @@ v4 升级前实测整栈占用 **≈715 MiB**（app 254 / langfuse-web 212 / min
 ### 1.4 密钥与挂载路径
 
 - 密钥**只放** `/opt/www/corporate_rag/.env`；**制品与流水线都不携带 `.env`**（镜像、制品、云效变量都不会把它送上机）。
-- **`.env` 当前由人工从开发机拷到目标机**（尚无自动下发），拷完收紧权限：
+- **本地与生产各一份，文件名分开**：开发机仓库根的 `.env` 是**本地/开发用**（`REDIS_HOST=localhost`、`NEXTAUTH_URL=http://localhost:3000`、`WECOM_BOT_ENABLED=false`）；生产配置是同结构的另一个文件 **`.env.prod`**。**上传时传 `.env.prod`，落到目标机的文件名仍是 `.env`**（尚无自动下发，拷完收紧权限）：
   ```bash
-  scp .env root@<ECS-IP>:/opt/www/corporate_rag/.env
+  scp .env.prod root@<ECS-IP>:/opt/www/corporate_rag/.env
   ssh root@<ECS-IP> 'chmod 600 /opt/www/corporate_rag/.env'
   ```
+  ⚠️ **别把本地 `.env` 整份传上去** —— `REDIS_HOST=localhost` / `NEXTAUTH_URL=http://localhost:3000` 会让 app 容器连不上 Redis、Langfuse 登录回调失效（2026-11-09 踩过：生产 `.env` 曾是本地文件的副本）。
+  `.env.prod` 含生产密钥，**只放开发机仓库根、已被 `.gitignore` 忽略，不入库**。
   ⇒ **本地新增/修改的键不会自动上机**：凡涉及 `.env` 的改动（如新增 `WECOM_BOTS`），都要先手工同步到目标机、再重跑部署（或 `deploy.sh start`），否则容器读不到新键、对应功能静默不生效。
   - **超时/降级那一组键全部可选、有内置默认** —— `HTTP_TIMEOUT_{CONNECT,WRITE,POOL}`、`MAIN_TIMEOUT_READ`、`CLASSIFY_TIMEOUT_READ`、`SUMMARY_TIMEOUT_READ`、`EMBEDDING_TIMEOUT_READ_{QUERY,INGEST}`、`RERANK_TIMEOUT_{READ,OUTER}`、`RERANK_MAX_ATTEMPTS`、`MAIN_IDLE_{FIRST,FIRST_THINKING,GAP,GAP_THINKING}_S`、`MAIN_IDLE_POLL_INTERVAL_S`（change `timeout-and-degradation-hardening`；取值依据见其 design D11）。**不设即用默认**，故首次上机**不需要**动 `.env`；只有要按目标机环境调值时，才按上面那条规则手工同步并重跑部署。⚠ `RERANK_*` 三个键之间有**嵌套约束**（内层 × attempts 必须 < 外层），配错会在**启动期** fail-fast 报错。
 - 企微长连接的多机器人配置写在 `WECOM_BOTS`，值是**一行 JSON**（`[{"key":"dev","bot_id":"<BotID>","secret":"<Secret>"}, {"key":"support","bot_id":"<BotID>","secret":"<Secret>"}]`）：**必须单行** —— 多行会导致 JSON 解析失败、通道启动报错（`WECOM_BOT_MODE=long_connection` 且 `WECOM_BOTS` 为空同样启动报错）。
@@ -98,7 +100,7 @@ v4 升级前实测整栈占用 **≈715 MiB**（app 254 / langfuse-web 212 / min
 
 | # | 步骤 | 在哪 | 入口 / 命令 |
 |---|---|---|---|
-| 1 | **同步 `.env`**（**仅本次有 `.env` 变更时**） | 开发机 → 目标机 | `scp .env root@<ECS-IP>:/opt/www/corporate_rag/.env` + `chmod 600`（见 §1.4）。**必须排在发布之前**（新制品不含 `.env`；缺键会让部署 `fail`）。**无变更 ⇒ 跳过** |
+| 1 | **同步 `.env`**（**仅本次有 `.env` 变更时**） | 开发机 → 目标机 | `scp .env.prod root@<ECS-IP>:/opt/www/corporate_rag/.env` + `chmod 600`（**传的是 `.env.prod`，落盘名 `.env`**，见 §1.4）。**必须排在发布之前**（新制品不含 `.env`；缺键会让部署 `fail`）。**无变更 ⇒ 跳过** |
 | 2 | **登录 ACR 镜像凭证**（**仅首次上机**，之后一律跳过） | 目标机 | `docker login --username=hi31383397@aliyun.com crpi-u3ezxc1o5hirfddw.cn-shanghai.personal.cr.aliyuncs.com`（密码从**团队渠道**取，**不入库**）。登录成功后凭据落 `/root/.docker/config.json`，**后续发布不再需要密码**（`deploy.sh` 先 `docker manifest inspect`，过了就跳过登录）。仅当需要在**无 TTY** 环境自动登录时，才以**环境变量** `ACR_USER`/`ACR_PASSWORD` 提供（`deploy.sh` **不读 `.env`**，须由部署槽位注入） |
 | 3 | **前置检查**：工作区干净 + 本地 `dev-wsl` 已推送、未落后 | 开发机 | `git fetch && git status -sb`（**说"开始部署"时由助手代查**）|
 | 4 | **推代码** | 开发机 | `git push origin dev-wsl` |
@@ -265,7 +267,7 @@ provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定�
 3. **角色级覆盖（可选）**：`<ROLE>_PROVIDER`（`main` / `classify` / `summary` / `judge` / `embedding` / `rerank`）。缺省分两族 —— `main` / `classify` / `summary` **跟随 `LLM_PROVIDER`**；`embedding` / `rerank` / `judge` **独立缺省 `dashscope`**（如 DeepSeek 无 embedding / rerank 端点 ⇒ 向量化与精排**必须留在百炼**，否则启动期校验拒绝）。
 4. **模型名**：缺省取 `registry.yaml` 的 `models.<role>`，可用 `<ROLE>_MODEL` 覆盖。**`.env` 里不必再写任何模型名**（这正是"切 provider 只改指针"的由来）。
 5. **定价 / 窗口 / tokenizer 系数**：同来自 `registry.yaml` 的 `catalog`。**无需手动 seed 定价** —— 应用启动期会按 `catalog.pricing` **幂等 ensure** Langfuse 模型定义（无价模型记 WARNING）。
-6. **同步 + 重跑**：`scp .env root@<ECS-IP>:/opt/www/corporate_rag/.env`（§1.4），再按 §2.0 走一次发布（或目标机 `bash scripts/deploy/deploy.sh start`）。⚠️ `docker compose restart` **不吃 `.env`**，须 `up -d --force-recreate app`（§2.5 第 4 条）。
+6. **同步 + 重跑**：改 `.env.prod` 后 `scp .env.prod root@<ECS-IP>:/opt/www/corporate_rag/.env`（§1.4），再按 §2.0 走一次发布（或目标机 `bash scripts/deploy/deploy.sh start`）。⚠️ `docker compose restart` **不吃 `.env`**，须 `up -d --force-recreate app`（§2.5 第 4 条）。
 7. **验证判据**：目标机日志出现 `[provider] validate state=on`，且真实对话出现 `[agent] model turn model=<新 provider 的模型>`。
 8. **回退**：把 `LLM_PROVIDER` 改回旧值即可（`.env` 改动可逆）；**跨版本回滚必须镜像与 `.env` 一起回**（见 §7 —— 新旧版对 `.env` 键的期待不同）。
 
@@ -323,7 +325,7 @@ provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定�
    登录一次即固化到 `/root/.docker/config.json`，**之后发布不再需要密码**；
    仅无 TTY 自动化时用 `ACR_USER`/`ACR_PASSWORD` **环境变量**（`echo "$ACR_PASSWORD" | docker login -u "$ACR_USER" --password-stdin <registry>`）——
    注意 `deploy.sh` **不读 `.env`**，这两个键放 `.env` 无效。
-3. **放 `.env`**：从团队渠道取键清单，填真实值，`chmod 600 /opt/www/corporate_rag/.env`（**当前为人工拷上机，方式与影响见 §1.4**）。
+3. **放 `.env`**：把开发机仓库根的 **`.env.prod`** 拷到目标机并改名 `.env`（`scp .env.prod root@<ECS-IP>:/opt/www/corporate_rag/.env`），再 `chmod 600`（**当前为人工拷上机，方式与影响见 §1.4**）。
 4. **安全组**：只放行 22 + 80。
 5. **系统**：swap ≥2 GB、系统盘 ≥60 GB（本地演练构建时 build cache 可达数 GB）。
 6. **拉起服务**（等价于流水线的启动槽位）：

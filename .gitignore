@@ -10,6 +10,8 @@ venv/
 # Environment
 .env
 .env.local
+# 生产配置副本（含生产密钥，只作上传源，绝不入库）
+.env.prod*
 
 # TLS 证书与私钥（只放目标机 /opt/www/certs，绝不入库）
 certs/
