@@ -39,6 +39,12 @@ EVENT_SPECS: dict[str, EventSpec] = {
         "warning",
         ("trace_id", "kind", "reason"),
     ),
+    "trace locate done": EventSpec(
+        "trace locate done",
+        "diagnose",
+        "info",
+        ("traces", "groups", "status"),
+    ),
     "search done": EventSpec(
         "search done", "retrieval", "info", ("kb_id", "query_len", "result_count")
     ),

@@ -23,8 +23,10 @@ from loguru import logger
 from src.channels.wecom.bounded_map import BoundedTtlMap
 from src.chat.process_log import serialize_process
 from src.chat.streaming import streaming_manager  # 共享单例：必须与 turn_runner 同一个
+from src.config import settings
 from src.config.alert import AlertConfig, AlertTarget, load_alert_config
 from src.config.const import ALERT_USER_ID, WECOM_NS, AlertTexts, Channel
+from src.config.diag import ALERT_FAILED
 from src.config.rca import load_rca_config
 from src.core.logging import encode_value
 from src.infra.llm.trace_context import current_channel, current_trace_id
@@ -32,6 +34,7 @@ from src.infra.llm.tracing import new_trace_id
 from src.rca.models import TriageVerdict
 from src.rca.pipeline import TriageOutcome, run_triage
 from src.services import turn_runner, wecom_service
+from src.services.alert_diagnosis import build_alert_card, should_diagnose_alert
 from src.utils.sse import SSEDoneEvent, SSEErrorEvent
 
 # 告警状态取值（Grafana/Alertmanager 风格载荷的顶层 `status`）
@@ -509,6 +512,9 @@ async def _analyze_turn(
         session_id: 报警会话标识（调用方已派生）
     """
     query = build_query(event)
+    if should_diagnose_alert(event.alertname, cfg):
+        await _send_alert_diagnosis(cfg, event, target=target)
+        return
     outcome = await _run_triage_guarded(event, query)
     # 判定成立时，落库正文直接取卡片（与下方推送同源）；未判定保持原形态
     persist_text: str | None = None
@@ -589,6 +595,29 @@ async def _analyze_turn(
         await _safe_send(target, render_fallback(event, cfg.fallback_max_chars))
         return
     await _safe_send(target, final_text)
+
+
+async def _send_alert_diagnosis(
+    cfg: AlertConfig, event: AlertEvent, *, target: AlertTarget
+) -> None:
+    """error 类告警：定位 + 诊断，推送告警级卡片（不走 Agent 轮）。
+
+    Args:
+        cfg: 告警配置（窗口与白名单）
+        event: 解析后的事件
+        target: 目标群
+    """
+    try:
+        card = await build_alert_card(
+            window_minutes=cfg.diagnose_window_minutes,
+            limit=settings.DIAG_MAX_REPRESENTATIVE_TRACES,
+        )
+    except Exception:  # noqa: BLE001  诊断失败不得吃掉告警结论
+        logger.exception(
+            "[alert] diagnosis failed alarm_id={}", encode_value(event.alarm_id)
+        )
+        card = ALERT_FAILED.format(reason="内部错误")
+    await _safe_send(target, card)
 
 
 async def _safe_send(target: AlertTarget, content: str) -> None:

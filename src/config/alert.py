@@ -37,6 +37,10 @@ class AlertConfig:
     dedup_capacity: int  # 去重结构容量上限
     turn_timeout_seconds: float  # 整轮分析超时
     fallback_max_chars: int  # 兜底消息长度上限
+    diagnose_alert_names: frozenset[str] = (
+        frozenset()
+    )  # 走"定位+诊断"的告警名白名单；空集 = 关闭
+    diagnose_window_minutes: int = 15  # 告警窗口回看的分钟数（首版未标定）
 
 
 def _positive_float(name: str, default: float) -> float:
@@ -93,6 +97,11 @@ def load_alert_config() -> AlertConfig:
     未配置 token 是**合法**状态（本地/开发环境）：token 为空、目标可为 None。
     """
     token = os.getenv("ALERT_WEBHOOK_TOKEN", "")
+    names = frozenset(
+        item.strip()
+        for item in os.getenv("DIAG_ALERT_NAMES", "").split(",")
+        if item.strip()
+    )
     return AlertConfig(
         token=token,
         target=_load_target(),
@@ -106,4 +115,6 @@ def load_alert_config() -> AlertConfig:
         fallback_max_chars=_positive_int(
             "ALERT_FALLBACK_MAX_CHARS", _DEFAULT_FALLBACK_MAX_CHARS
         ),
+        diagnose_alert_names=names,
+        diagnose_window_minutes=_positive_int("DIAG_ALERT_WINDOW_MINUTES", 15),
     )

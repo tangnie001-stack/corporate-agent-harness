@@ -69,6 +69,7 @@
 - 不得依赖 compose 的 `${X:-默认值}` 兜底 —— `deploy.sh` 会按 compose 插值变量清单校验非空，缺键即失败。
 - MinIO 两对键**已同源**：`docker-compose.image.yml` 直接用 `.env` 的 `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` 供 `MINIO_ROOT_USER/PASSWORD`。**不要**改回需要人工保持相等的两对。
 - 目标机必须存在的路径（缺任一条对应功能失效）：`.env`、`deploy/nginx/nginx.conf`、`deploy/nginx/html/`、`deploy/postgres/init/`、`data/deepeval/`。
+- **`/data/nginx-logs/`**：nginx 访问日志目录（宿主机绝对路径，docker 首次挂载会自动建）。诊断按 trace 读它做 4xx 分类（change `trace-diagnosis` 2.5）；**必须与 app 容器只读共享**（compose 已挂 `/data/nginx-logs:/data/nginx-logs:ro` + `DIAG_ACCESS_LOG_DIR`）。
 - **TLS 证书只放入口机**（`8.133.224.173`）的 `/etc/nginx/certs/<域名>/`（`fullchain.pem` + `privkey.pem`）。**应用机不需要证书** —— TLS 已在入口终结（配置见 `deploy/nginx/edge.conf`）；证书**不进 git、不进制品**。
   - 目录名必须与 `deploy/nginx/edge.conf` 的 `ssl_certificate` 一致，**三个都要有**：`www.tangnie.cn/`、`api.tangnie.cn/`、`langfuse.tangnie.cn/`。**通配符证书**把同一份两文件分别拷进这三个目录即可（通配符 `*.tangnie.cn` **不覆盖裸域** `tangnie.cn`，裸域只做 80→www 跳转，不需要证书）。
   - **文件名固定为 `fullchain.pem` + `privkey.pem`**（nginx.conf 里写死）。阿里云下载的 nginx 版是 `<域名>.pem` + `<域名>.key`，**上传后必须改名**，否则 nginx 起不来。
@@ -391,6 +392,30 @@ provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定�
 启动期检测到任何 `RAGAS_*` 会 fail-fast；先改共享 `.env` 再部署。
 旧 `data/ragas/` **不自动删除**，确认无引用后人工清理；历史 `report_path` **不迁移**（旧报告的 CSV 路径继续指向旧目录，仅作留档，不再被新运行覆盖）。
 `_obsolete_ragas_cache/`（旧 `kg_*.json` 与 `llm_cache/` 的归档）**不自动删除**，确认无需复用后人工清理该目录。
+
+### 6.2 访问日志采集与轮转（2026-11-09 起）
+
+nginx 已双写访问日志：`/dev/stdout`（`docker logs` 习惯不变）+ `/var/log/nginx/access.log`；容器把它挂在宿主 `/data/nginx-logs`。
+
+**代码仓只负责“可采集”，以下属运维动作（不随发布自动完成）：**
+
+- 采集器（Logtail / LoongCollector）安装、机器组与采集配置：路径 `/data/nginx-logs/access.log`，保留期按运维策略；
+- **轮转必须配**：nginx 官方镜像不含 logrotate，不配则该文件无限增长。宿主机 cron 按天切分并保留 7 天（与 app 日志一致），示例：
+  ```bash
+  cat >/etc/logrotate.d/corporate-rag-nginx <<'EOF'
+  /data/nginx-logs/access.log {
+      daily
+      rotate 7
+      missingok
+      notifempty
+      compress
+      delaycompress
+      copytruncate
+  }
+  EOF
+  ```
+  （`copytruncate`：nginx 不重开文件句柄，切分后靠截断续写；代价是切分瞬间可能丢几行，可接受。）
+- 换机 / 扩容：`/data/nginx-logs` 由 docker 自动创建；若权限异常，确认目录对 nginx worker（镜像内 uid 101）可写。
 
 ---
 

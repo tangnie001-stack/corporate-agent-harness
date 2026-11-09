@@ -26,6 +26,7 @@ from src.core import logging as core_logging
 from src.core.log_events import Event
 from src.infra.db.engine import session_factory
 from src.infra.db.repos.diag_repo import DiagRepo
+from src.rca.diagnose.access import AccessLogSource
 from src.rca.diagnose.history import HistorySource
 from src.rca.diagnose.logs import LocalLogSource
 from src.rca.diagnose.models import DiagnosisKind, DiagnosisReport, TraceFacts
@@ -89,6 +90,14 @@ def _sources() -> tuple[Any, Any, Any]:
     )
     history_source = _history_source if _history_source is not None else HistorySource()
     return trace_source, log_source, history_source
+
+
+def _access_source() -> Any:
+    """按配置构造访问日志源；目录为空时返回 None（不读，也不猜分类）。"""
+    directory = settings.DIAG_ACCESS_LOG_DIR.strip()
+    if not directory:
+        return None
+    return AccessLogSource(directory)
 
 
 def _repo_or_default() -> Any:
@@ -192,6 +201,22 @@ async def diagnose_trace(
     """
     if not _TRACE_RE.match(trace_id.strip()):
         return INVALID_TRACE_ID
+    return await run_diagnosis(trace_id, kind=kind, question=question)
+
+
+async def run_diagnosis(trace_id: str, kind: str = "answer", question: str = "") -> str:
+    """执行一次诊断并落库，返回卡片文本或入口文案。
+
+    告警链路与工具共用同一条路径：判定、落库、事件与卡片完全一致。
+
+    Args:
+        trace_id: 目标 trace（调用方已做格式校验）
+        kind: 问题分型 answer / 5xx / 4xx
+        question: 本轮用户问题原文（只用于判断是否追溯）
+
+    Returns:
+        卡片文本；分型非法或取数失败时返回对应提示文案
+    """
     parsed_kind = _KINDS.get(kind.strip().lower())
     if parsed_kind is None:
         return INVALID_KIND.format(kind=kind)
@@ -207,6 +232,7 @@ async def diagnose_trace(
         trace_source=trace_source,
         log_source=log_source,
         history_source=history_source,
+        access_source=_access_source(),
         facts=facts,
     )
     probe_facts = await _run_probe(report, facts)
@@ -219,6 +245,7 @@ async def diagnose_trace(
             trace_source=trace_source,
             log_source=log_source,
             history_source=history_source,
+            access_source=_access_source(),
             facts=facts,
             probe=probe_facts,
         )

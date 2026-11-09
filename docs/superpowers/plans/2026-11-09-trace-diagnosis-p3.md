@@ -225,7 +225,7 @@ tail -1 data/nginx-logs/access.log
 docker rm -f diag-nginx-verify-502
 ```
 
-Expected（502）：返回 `502`；日志里 `upstream_status=` 与 `trace=` 均为空（两个 `key=` 相邻），`status=502`。
+Expected（502）：返回 `502`；日志里 `upstream=-`、`upstream_status=-`、`trace=-`（**nginx 把空变量写成 `-`**，不是空串），`status=502`。
 
 脱敏不变（仍用 18080）：
 
@@ -309,7 +309,7 @@ _LINE = (
 )
 _LINE_502 = (
     '10.0.0.1 - - [09/Nov/2026:09:40:14 +0800] "GET /api/chat HTTP/1.1" 502 157 '
-    '"-" "curl/8.0" upstream=172.18.0.2:8000 upstream_status= trace= rt=0.003\n'
+    '"-" "curl/8.0" upstream=- upstream_status=- trace=- rt=0.003\n'
 )
 
 
@@ -365,8 +365,9 @@ Expected: FAIL（`ModuleNotFoundError: src.rca.diagnose.access`）
 
 日志行由 deploy/nginx/nginx.conf 的 masked 格式产生，末尾四个字段顺序固定：
     upstream=<addr> upstream_status=<code|空> trace=<X-Trace-ID|空> rt=<秒>
-上游无响应（502/504 / 连接失败）时 upstream_status 与 trace 均为空——这类行
-按 trace 取不到，属定位器（应用日志无该 trace）的判定范围，不在本模块。
+上游无响应（502/504 / 连接失败）时 upstream_status 与 trace 均为空，nginx 在
+访问日志里写作 `-`，解析时归一为空串；这类行按 trace 取不到，属定位器
+（应用日志无该 trace）的判定范围，不在本模块。
 """
 
 from __future__ import annotations
@@ -421,7 +422,7 @@ class AccessLogSource:
         with path.open("r", encoding="utf-8", errors="ignore") as fh:
             for line in fh:
                 match = _LINE_RE.search(line)
-                if match is None or match.group("trace") != trace_id:
+                if match is None or _norm(match.group("trace")) != trace_id:
                     continue
                 ts = _parse_time(line)
                 if ts is None or ts < start or ts > end:
@@ -431,9 +432,9 @@ class AccessLogSource:
                     method=line.split('"', 2)[1].split(" ", 1)[0],
                     uri=match.group("uri"),
                     status=int(match.group("status")),
-                    upstream_status=match.group("upstream_status"),
+                    upstream_status=_norm(match.group("upstream_status")),
                     request_time=float(match.group("rt")),
-                    trace_id=match.group("trace"),
+                    trace_id=_norm(match.group("trace")),
                 )
                 if best is None or abs(row.ts - at) < abs(best.ts - at):
                     best = row

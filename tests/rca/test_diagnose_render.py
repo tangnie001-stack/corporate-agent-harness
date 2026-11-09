@@ -62,3 +62,16 @@ def test_card_masks_node_address():
 def test_card_shows_basis_rounds():
     text = render_card(_report(basis_rounds=2))
     assert "结论基于前 2 轮上下文" in text
+
+
+def test_render_alert_card_lists_groups_and_extra():
+    from src.rca.diagnose.render import render_alert_card
+
+    text = render_alert_card(
+        traces_total=22,
+        cards=["**诊断 · 服务端错误**\n> 档位：需要处理 ｜ 归属：研发"],
+        extra=[("biz error SESSION_NOT_FOUND", 3)],
+    )
+    assert "22 个错误 trace" in text
+    assert "档位" in text
+    assert "另 1 类" in text
