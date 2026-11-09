@@ -25,7 +25,7 @@
   - **采集器安装、机器组、SLS 采集配置不在本变更内**（运维动作，见 runbook）
   - 补充：app 容器只读挂载 `/data/nginx-logs:/data/nginx-logs:ro` + `DIAG_ACCESS_LOG_DIR`（诊断要读同一份日志）；nginx 把空变量写成 `-`（502 时 `upstream=- upstream_status=- trace=-`）；日志轮转属运维，见 runbook §6.2
 - [x] 2.3 `src/rca/diagnose/probe.py`：`RetrievalProbe`——确定性变体（去年份 / 去口语前缀与问句尾）后重检；任一变体 top1 ≥ `DIAG_SCORE_FLOOR` → "表述问题"，否则 "覆盖缺失"。**不用模型改写**。只在 `low_relevance` 时由工具触发（省掉无意义重检），结果只作附加断言，不改根因
-- [ ] 2.4 三个 Source 实现**新窄协议** `ErrorEvidenceSource`（`trace_fetch` / `error_logs` / `retrieval_probe`），与 `LogSource` 并列、不扩展后者；三态沿用 `SourceEmptyError` / `SourceFailedError`；测试替身照 `FixtureLogSource` 的写法
+- [x] 2.4 证据源收窄为**窄协议**（`src/rca/diagnose/protocols.py`）：`TraceFetcher` / `ErrorLogReader` / `HistoryReader` / `AccessReader`，与 `LogSource` 并列、不扩展后者；三态沿用 `SourceEmptyError` / `SourceFailedError`；探针（probe）是异步附加事实，不入协议。原计划的单协议 `ErrorEvidenceSource` 未采用——三源方法面差异大，合成一个协议只会变回 `object`
 
 ## 3. 判定
 

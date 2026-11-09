@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
 from loguru import logger
@@ -17,6 +18,12 @@ from src.rca.diagnose.models import (
     TraceFacts,
 )
 from src.rca.diagnose.probe import ProbeFacts
+from src.rca.diagnose.protocols import (
+    AccessReader,
+    ErrorLogReader,
+    HistoryReader,
+    TraceFetcher,
+)
 from src.rca.diagnose.report import validate
 from src.rca.diagnose.tier import assess
 from src.rca.sources.base import SourceEmptyError, SourceFailedError
@@ -35,10 +42,10 @@ def diagnose(
     has_context_budget_high: bool = False,
     has_history_budget_exceeded: bool = False,
     question: str = "",
-    trace_source: object | None = None,
-    log_source: object | None = None,
-    history_source: object | None = None,
-    access_source: object | None = None,
+    trace_source: TraceFetcher | None = None,
+    log_source: ErrorLogReader | None = None,
+    history_source: HistoryReader | None = None,
+    access_source: AccessReader | None = None,
     facts: TraceFacts | None = None,
     probe: ProbeFacts | None = None,
     now: datetime | None = None,
@@ -76,7 +83,7 @@ def diagnose(
             cited = facts.cited
     elif trace_source is not None:
         try:
-            fetched = trace_source.fetch(trace_id)  # type: ignore[attr-defined]
+            fetched = trace_source.fetch(trace_id)
             calls = list(fetched.calls)
             evidence = list(fetched.evidence)
             if cited is None:
@@ -92,7 +99,7 @@ def diagnose(
     if log_source is not None:
         end = now or datetime.now(UTC)
         try:
-            rows = log_source.errors_between(end - _LOG_WINDOW, end)  # type: ignore[attr-defined]
+            rows = log_source.errors_between(end - _LOG_WINDOW, end)
         except SourceFailedError as exc:
             return _undetermined(trace_id, f"日志源不可用：{exc}", kind)
         except SourceEmptyError:
@@ -101,9 +108,7 @@ def diagnose(
     access_row = None
     if kind is not DiagnosisKind.ANSWER and access_source is not None:
         try:
-            access_row = access_source.row_for_trace(  # type: ignore[attr-defined]
-                trace_id, now or datetime.now(UTC)
-            )
+            access_row = access_source.row_for_trace(trace_id, now or datetime.now(UTC))
         except SourceFailedError as exc:
             logger.warning(
                 "[diagnose] access source failed trace_id={} err={}", trace_id, exc
@@ -122,7 +127,7 @@ def diagnose(
         question=question,
     ):
         try:
-            rounds = history_source.rounds_before(  # type: ignore[attr-defined]
+            rounds = history_source.rounds_before(
                 trace_id, limit=settings.DIAG_TRACE_LOOKBACK_ROUNDS
             )
         except Exception as exc:  # noqa: BLE001  追溯失败只降级，不影响主结论
@@ -171,7 +176,7 @@ def diagnose(
     return validate(report)
 
 
-def _log_evidence(rows: list[object]) -> list[Evidence]:
+def _log_evidence(rows: Sequence[object]) -> list[Evidence]:
     """把错误日志行转成证据（只留事件名，不带原文）。"""
     out: list[Evidence] = []
     for index, row in enumerate(rows[:_MAX_LOG_EVIDENCE], 1):
@@ -258,7 +263,7 @@ def _assertions(
     cause: RootCause,
     reason: str,
     evidence: list[Evidence],
-    rows: list[object],
+    rows: Sequence[object],
     rounds: tuple[HistoryRound, ...],
     probe: ProbeFacts | None = None,
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
