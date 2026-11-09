@@ -190,7 +190,9 @@ services:
 
   langfuse-web:
     image: crpi-u3ezxc1o5hirfddw.cn-shanghai.personal.cr.aliyuncs.com/deploy_demo/deploy_base:langfuse-4.76.0
-    mem_limit: 1g
+    # 1.5g：v4 的 Next 16 启动期注册 MCP 工具时 heap 会冲到 400MB+；
+    # 2026-11-09 生产用 1g 上限 + 384MB heap 直接 FATAL OOM（日志 Reached heap limit）
+    mem_limit: 1536m
     mem_reservation: 512m
     container_name: corporate-rag-langfuse-web
     ports:
@@ -207,6 +209,8 @@ services:
     # langfuse.tangnie.cn，反代到容器内 langfuse-web:3000。
     environment:
       <<: *langfuse_env
+      # 覆盖锚点的 384：web 跑 Next 16 比 worker 吃内存得多，384 会在启动期 heap OOM
+      NODE_OPTIONS: --max-old-space-size=1024
       DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASS:-langfuse_pass}@postgres:5432/langfuse_v4
       # 对外门牌号：NextAuth 用它拼绝对 URL（跳转 / 邮件里的链接 / SSO 回调）。
       # **硬编码而非变量插值**：这是"生产独有"的值（dev 是 localhost、生产是公网地址），

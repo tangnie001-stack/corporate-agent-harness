@@ -25,6 +25,22 @@
   - 前端在选择文件时即拦截并给出可操作提示，不让超限文件走到网关吃 413。
 - **关联**：`docs/agents/deploy-runbook.md`（app 为什么是 2g）、`docs/agents/api_contract.md` §2.2.2（上传接口 413）。
 
+### 2026-11-09 · Langfuse v4 控制台上线后 502（web 容器 heap OOM 反复重启）
+
+- **现象**：`https://langfuse.tangnie.cn/` 持续 502（偶发一次 15s 超时）；站点 `www` / `api` 的 `/api/health` 均 200。
+- **影响面**：仅 Langfuse 控制台；应用与告警不受影响（观测上报未启用/失败不影响主链路）。
+- **定位证据**：
+  - 入口 nginx 的 error.log：`connect() failed (111: Connection refused) ... upstream: "http://172.18.0.5:3000/..."` —— DNS 已解析到容器 IP，排除端口映射与 profile 未启用；
+  - `docker logs corporate-rag-langfuse-web`：`FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory`，崩溃前 heap 已到 377~399 MB；Postgres 迁移与 ClickHouse 迁移均成功（`No pending migrations to apply`）；
+  - 容器 `Up 6 seconds` —— 被 `restart: unless-stopped` 反复拉起，重启间隙 nginx 看到 111。
+- **根因**：`docker-compose.image.yml` 的共享锚点 `&langfuse_env` 把 `NODE_OPTIONS` 设为 `--max-old-space-size=384`（本是给 worker 的值），`langfuse-web` 直接 `<<: *langfuse_env` 继承、未覆盖。v4 的 Next 16 启动期注册 MCP 工具时 heap 超过 384MB → 进程自杀。dev 档给 web 覆盖成 768 所以测试床没暴露；`docker-compose.prod.yml` 是 768，但它不是发布用档。
+- **处置**：`docker-compose.image.yml` 的 langfuse-web 显式覆盖 `NODE_OPTIONS: --max-old-space-size=1024`，`mem_limit` 1g → 1536m；prod 档同步 1024；发布后容器稳定、控制台可登录。
+- **防复发**：
+  - 锚点只放"所有 Node 容器都能接受"的值，**web 与 worker 的差异必须显式覆盖并写注释**；
+  - 新增 Node 服务时，容器 `mem_limit` 至少给 heap 上限 + 300MB 的余量（heap 384 + 512m 上限的组合曾用于 v2，v4 不成立）；
+  - 502 排查先看应用机 nginx error.log 区分 `Connection refused`（进程没起）与 `could not be resolved`（容器不在网络），再进容器看 heap/迁移。
+- **关联**：`docs/agents/deploy-runbook.md` §1.2（web 为什么是 1.5g）、change `langfuse-v4-fresh-deploy`。
+
 ## 上传大小限制现状（10MB 单一上限）
 
 | 位置 | 值 | 说明 |

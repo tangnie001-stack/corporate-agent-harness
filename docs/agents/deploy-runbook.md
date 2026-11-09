@@ -32,7 +32,9 @@
 
 ### 1.2 资源档位
 
-`docker-compose.image.yml` 的 `mem_limit` 合计 **≈6.56 GB**：redis 128m / postgres 1g / minio 256m / langfuse-web 1g / **langfuse-worker 512m** / **clickhouse 1536m** / nginx 128m / **app 2g**。
+`docker-compose.image.yml` 的 `mem_limit` 合计 **≈7.06 GB**：redis 128m / postgres 1g / minio 256m / **langfuse-web 1536m** / **langfuse-worker 512m** / **clickhouse 1536m** / nginx 128m / **app 2g**。
+
+> **langfuse-web 为什么是 1.5g**：v4 的 Next 16 在启动期注册 MCP 工具时 heap 会冲到 400MB+；2026-11-09 生产用 1g 容器上限 + 384MB heap（锚点默认值）直接 `FATAL ERROR: Reached heap limit`，容器反复重启、nginx 报 502。web 必须显式覆盖 `NODE_OPTIONS=--max-old-space-size=1024`，worker 仍用 384。
 
 > **app 为什么是 2g**：上传接口 `await file.read()` 把整份文件读进内存，解析器再展开（图片解码放大数倍）。2026-10-20 实测 512m 下解析年报类 PDF 连续被 cgroup OOM 杀掉（`dmesg` 有 `oom-kill ... task=python3.12`），症状是上传返回 202 之后，轮询状态的请求全部 502、几十秒后自动恢复。调大后宿主 8G 仍有富余（整栈实测约 700MB）。
 
