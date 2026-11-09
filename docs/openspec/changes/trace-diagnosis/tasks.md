@@ -82,7 +82,10 @@
   - 判据修订（本期 7.3 只存摘要与 locator，无原文）：改为「端到端跑通 + locator 可解析 + 延迟达标」
   - 实测：带 KB 的真实 trace `07435406…` 1.3s、无 KB 的 `0220f935…` 2.8s（均远低于 P50 30s）；报告含 `E1 [trace] retrieve_kb#1 — result=39 ctx=5 kind=rerank`
   - 未覆盖：`python -m src.cli.diagnose` 只打印不落库；落库（`diagnosis_reports`）与详情页 `GET /api/rca/diag/{id}` 走告警链路，需 `DIAG_ALERT_NAMES` 白名单，留待告警联调
-- [ ] 8.7 待验证三项：`score_kind=timeout` 真实落库形态、多轮 trace 的 metadata 体积上限、告警 `details` 可提取字段
+- [x] 8.7 待验证三项：`score_kind=timeout` 真实落库形态、多轮 trace 的 metadata 体积上限、告警 `details` 可提取字段
+  - **`score_kind=timeout`**：以 `RERANK_TIMEOUT_READ=0.01` / `RERANK_MAX_ATTEMPTS=1` / `RERANK_OUTER_TIMEOUT=0.05` 起 app 跑一轮 KB 对话，trace `0d6a34bd…` 的 `retrieval_contexts[0].score_kind="timeout"`（contexts 仍完整 5 条）⇒ 外层 `wait_for` 超时确实落 `timeout`；内层重试失败（连接错误等）统一落 `fallback`。判定侧因 `rerank_calls` 为空走"量纲不可比"→ `undetermined`
+  - **metadata 体积**：写读逐项相等、未观察截断 —— 1轮×10条 1.9KB / 5轮×10条 9.6KB / 5轮×20条 18.4KB / 5轮×100条 88.8KB / 10轮×100条 178KB，读回 calls 与 contexts 数量、字节数一致（差 20~70B 为序列化空档）。生产典型 5 轮×10 条 ≈ 9.6KB，余量充足
+  - **告警 `details`**：`details` 取 `alerts[].annotations` 的 message→summary→description 首个非空；`values` 保留 `(ref_id, value)`；**`labels` 中的 `api` / `http_code` / `instance` 未被提取**（实测丢弃）⇒ 接口名与错误码只有写进注解文本或 `values` 才拿得到，若 Grafana 侧放在 labels 需另加提取
 
 ## 9. 文档
 
