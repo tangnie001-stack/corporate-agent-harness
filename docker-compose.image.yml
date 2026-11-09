@@ -186,6 +186,8 @@ services:
     volumes:
       - ./deploy/nginx/nginx.conf:/etc/nginx/conf.d/default.conf
       - ./deploy/nginx/html:/usr/share/nginx/html
+      # 访问日志落宿主机，供 app 侧诊断读取与外部采集（见 deploy-runbook）
+      - /data/nginx-logs:/var/log/nginx
     depends_on:
       - app
     networks:
@@ -217,6 +219,8 @@ services:
       POSTGRES_USER: corporate_rag
       POSTGRES_DATABASE: corporate_rag
       LOG_DIR: /data/logs
+      # 访问日志目录（nginx 容器同源挂载）；空串 = 不启用 4xx 分类
+      DIAG_ACCESS_LOG_DIR: /data/nginx-logs
       # 生产侧企微长连接总开关：本行覆盖 .env 的同名值。
       # 本地（宿主机 uvicorn / dev compose）一律不连，避免误连生产机器人触发「新连接踢旧连接」。
       WECOM_BOT_ENABLED: "true"
@@ -229,6 +233,8 @@ services:
     volumes:
       - app_logs:/data/logs
       - ./data/deepeval:/app/data/deepeval
+      # 只读：诊断按 trace 读 nginx 访问日志（2.5 / 4xx 分类）
+      - /data/nginx-logs:/data/nginx-logs:ro
       # skills/ agents/ alembic/ alembic.ini **不在此挂载**：它们已打进 app 镜像（见 Dockerfile），
       # 与代码同源；挂了会遮住镜像里的同名内容。
       # 迁移在容器内跑（容器已带正确的 DB 环境变量 POSTGRES_HOST=postgres）：

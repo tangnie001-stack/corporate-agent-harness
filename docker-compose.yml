@@ -125,6 +125,9 @@ services:
       - "80:80"
     environment:
       TZ: Asia/Shanghai
+    volumes:
+      # 访问日志落宿主机，供诊断读取（dev 的 conf 烤在镜像里，改配置要 rebuild）
+      - ./data/nginx-logs:/var/log/nginx
     depends_on:
       - app
     networks:
@@ -170,9 +173,11 @@ services:
       POSTGRES_USER: corporate_rag
       POSTGRES_DATABASE: corporate_rag
       LOG_DIR: /data/logs
+      DIAG_ACCESS_LOG_DIR: /data/nginx-logs
     volumes:
       - app_logs:/data/logs
       - ./data/deepeval:/app/data/deepeval
+      - ./data/nginx-logs:/data/nginx-logs:ro
     depends_on:
       redis:
         condition: service_healthy
