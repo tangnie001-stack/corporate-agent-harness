@@ -90,6 +90,38 @@ v4 升级前实测整栈占用 **≈715 MiB**（app 254 / langfuse-web 212 / min
   - **缺任一张证书，入口机 nginx 起不来（整站不可用）** —— 首次上机先放证书再启动 nginx。续期只需替换文件 + `nginx -t && systemctl reload nginx`，**不用发布、不碰应用机**。
   - 应用机侧：`deploy.sh` 第 3 步读 `deploy/nginx/nginx.conf`，origin 模式里没有 `ssl_certificate` ⇒ **自动跳过证书检查**，拓扑切换后不用再维护那份清单；将来若改回本机终结 TLS，配置里出现证书路径会重新生效（2026-10-20 踩过一次：证书没传就发布，nginx 重建后整站下线）。
 
+### 1.5 基镜像导库（新增 / 升级基镜像时）
+
+**发布只从 ACR 拉，`compose pull` 不会反向填充 ACR** —— 新镜像必须先导库，否则部署在 5/8 报 `manifest unknown`（2026-11-09 踩过：compose 已引用 `langfuse-4.76.0` / `langfuse-worker-4.76.0` / `clickhouse-26.3.62.3`，库里只有 7 个旧 tag，部署直接失败）。
+
+1. **定 tag**：`deploy_base:<服务名>-<版本>`，必须带 patch 号（`redis-7.4.9-alpine`、`clickhouse-26.3.62.3`），不用浮动 tag。
+2. **导库（一次性）**：在「能到 Docker Hub + 能推 ACR」的机器上
+
+   ```bash
+   REG=<ACR>/deploy_demo/deploy_base
+   docker login "$REG"
+   docker pull  <上游>:<tag>
+   docker tag   <上游>:<tag>  "$REG:<服务名>-<版本>"
+   docker push  "$REG:<服务名>-<版本>"
+   ```
+
+   机器选择：**目标机 ECS 最优**（推 ACR 走同地域内网，前提是它能拉 Docker Hub）；开发机可行但上行带宽慢；云效构建机可行，但要为此改流水线，不值得。
+   ⚠️ 公开库 `deploy_base` 只是**拉**免登录，**推**仍需登录有权限的账号。
+3. **验证入库**：`docker manifest inspect "$REG:<tag>" >/dev/null && echo OK`。
+4. **改引用**：`docker-compose.image.yml` 对应 `image:` → 提交 → 推 GitHub → 同步 Codeup → 发布。
+
+**发布前置校验**（针对目标机上已有的 compose 文件，逐 tag 探测）：
+
+```bash
+cd /opt/www/corporate_rag
+grep -oE 'deploy_base:[A-Za-z0-9._-]+' docker-compose.image.yml | sed 's/deploy_base://' | sort -u | while read -r t; do
+  R=crpi-u3ezxc1o5hirfddw.cn-shanghai.personal.cr.aliyuncs.com/deploy_demo/deploy_base:$t
+  docker manifest inspect "$R" >/dev/null 2>&1 && echo "OK   $t" || echo "MISS $t"
+done
+```
+
+出现 `MISS` 就不要发——那一步必然失败。
+
 ---
 
 ## 2. 发布链路与流水线配置（云效）
@@ -378,7 +410,7 @@ provider 差异（思考参数形状 / reasoning 字段 / 端点 / 密钥 / 定�
 - 临时停服（维护 / 下线）：`bash scripts/deploy/deploy.sh stop`（**人工运维用**，别接进流水线停止槽位）；
 - 回收磁盘：`bash scripts/deploy/deploy.sh clean`（保留最近 2 个 app 镜像 + 清悬空镜像与残留包）。
 
-**发布前置**：制品源于**已提交的 commit** —— 发布前 `git status` 必须为空，未提交改动不得进入发布。
+**发布前置**：① 制品源于**已提交的 commit** —— 发布前 `git status` 必须为空，未提交改动不得进入发布；② `docker-compose.image.yml` 引用的 `deploy_base:*` 必须**都已入库 ACR**（校验命令见 §1.5，出现 `MISS` 不要发）。
 
 ### 6.1 RAGAS → DeepEval 配置迁移（2026-10-17）
 
