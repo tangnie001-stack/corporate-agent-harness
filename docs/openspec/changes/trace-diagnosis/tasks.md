@@ -73,6 +73,7 @@
 - [x] 8.2 `tests/rca/test_locator.py`：聚类取代表、上限 3、空窗口 → "未落到应用层"
 - [x] 8.3 `tests/rca/test_diagnose_report.py`：引用缺失/伪造 → 降级
 - [x] 8.4 `tests/rca/test_trace_source.py` / `test_local_log_source.py`：注入式替身覆盖 `ok/empty/failed` 三态
+- **验收前置（2026-11-09）**：8.5 / 8.6 / 8.7 与归档暂缓，等 `langfuse-v4-fresh-deploy` 部署后执行——v4 把 trace_id 改为 32 位 hex 并把读路径改为 Observations API v2，届时 `diagnose_tools._TRACE_RE`、`diagnose/logs.py` 的日志正则与 `cli/eval_trace_io.py` 的读取函数需同批适配；另 8.6 的"报告可点开原文"与 7.3（本期只存摘要、无原文）矛盾，验收前先改判据
 - [ ] 8.5 回归集：`feedback` 点踩 + `prod-incident-log` 取 15~20 条，人工标注根因；根因一致率 ≥ 80%
 - [ ] 8.6 活体：真实 `trace_id` 端到端跑通，验证报告可点开原文、P50 < 30s
 - [ ] 8.7 待验证三项：`score_kind=timeout` 真实落库形态、多轮 trace 的 metadata 体积上限、告警 `details` 可提取字段
