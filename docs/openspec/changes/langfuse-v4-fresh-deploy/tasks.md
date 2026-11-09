@@ -13,8 +13,12 @@
 - [x] 2.4 为 ClickHouse 用户补齐 v4 所需 grant（`ALTER ... ON default.*`、读 `system.parts/mutations/tables/processes/query_log`、`SYSTEM SYNC REPLICA`），并记录到 runbook
 - [x] 2.5 在既有 MinIO 新建事件桶，S3 配置开启 `FORCE_PATH_STYLE`；验证事件文件可写可读
 - [x] 2.6 调大 `langfuse-web` 的 `mem_limit`（≥1g）、worker（≥512m），两容器设 `NODE_OPTIONS=--max-old-space-size`
-- [ ] 2.7 拉取三个镜像并推入 ACR：`langfuse/langfuse:<tag>` 与 `langfuse/langfuse-worker:<tag>` 走 Docker Hub + 本机国内加速器（两者**必须同 tag**，实施时取 latest，如 4.76.0）；`docker.io/clickhouse/clickhouse-server` 取官方 compose 对应版本（如 26.3.62.3）；三者推入公开库 `deploy_base`，确认 ECS 同地域可拉取
-- [ ] 2.8 在 `docker-compose.image.yml` 中写死三个镜像的**具体 tag**（不用浮动 `:4`），并记录三者 digest 作为「生产跑的就是验过的那个」的证据
+- [x] 2.7 拉取三个镜像并推入 ACR：`langfuse/langfuse:<tag>` 与 `langfuse/langfuse-worker:<tag>` 走 Docker Hub + 本机国内加速器（两者**必须同 tag**，实施时取 latest，如 4.76.0）；`docker.io/clickhouse/clickhouse-server` 取官方 compose 对应版本（如 26.3.62.3）；三者推入公开库 `deploy_base`，确认 ECS 同地域可拉取
+- [x] 2.8 在 `docker-compose.image.yml` 中写死三个镜像的**具体 tag**（不用浮动 `:4`），并记录三者 digest 作为「生产跑的就是验过的那个」的证据
+  - 2026-11-09 实测（ACR `deploy_base`，逐层推送后 registry 侧回读，均为单平台 amd64 manifest）：
+    - `langfuse-4.76.0` → `sha256:ba55f5337897e4230458ca7af2d060d5f9dd2e9826b6f811669c58d1d649b1e8`（docker manifest v2）
+    - `langfuse-worker-4.76.0` → `sha256:1405bb683bd916247bf48b1aba7954139f8abc459cf64e3850fdbf4ff4fd9cc9`（docker manifest v2）
+    - `clickhouse-26.3.62.3` → `sha256:6eb24df16477b65c87b772a56eb341a9624529491856c103e74c537db59669f1`（oci manifest）
 - [x] 2.9 dev 用 3001 端口 + `langfuse_v4` 起测试床，确认空库迁移成功、四个容器 healthy
 
 ## 3. 身份与开关（必须先于第 4 组）
