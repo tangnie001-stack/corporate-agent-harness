@@ -17,6 +17,7 @@
 """
 
 import logging
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
@@ -34,6 +35,48 @@ _EV_CHAIN_END = "on_chain_end"
 _EV_TOOL_START = "on_tool_start"
 _EV_TOOL_END = "on_tool_end"
 _EV_TOOL_ERROR = "on_tool_error"
+
+# 触发委派的工具名（主链路注册名，无前缀）
+_DELEGATE_TOOL = "delegate_task"
+
+# 当前委派父 span id：open_delegate_span 设置、collector.close() 复位。
+# 子代理跑在同一事件循环里，middleware 开 agent_turn 时优先取它当父节点，
+# 否则会沿用主链路的环境 span（chat_turn），子代理的生成会挂错层。
+_delegate_span_id: ContextVar[str | None] = ContextVar("delegate_span_id", default=None)
+
+# trace_id → 尚未配对的 delegate_task 工具 span id（先进先出）。
+# 工具体跑在独立任务里，拿不到主采集器的实例状态，只能按 trace 交换这一个 id。
+# 同一轮并发多个委派时按顺序配对，极端并发下可能与具体工具调用错位（都仍是同轮的
+# delegate_task span），换取"delegate 不落成孤儿节点"这一稳定树形。
+_DELEGATE_TOOL_SPANS: dict[str, list[str]] = {}
+
+
+def take_delegate_tool_span(trace_id: str) -> str | None:
+    """取出该 trace 下一个待配对的 delegate_task 工具 span id。
+
+    Args:
+        trace_id: 本轮 trace id。
+
+    Returns:
+        span id；没有待配对项时为 None。
+    """
+    pending = _DELEGATE_TOOL_SPANS.get(trace_id)
+    if not pending:
+        return None
+    span_id = pending.pop(0)
+    if not pending:
+        _DELEGATE_TOOL_SPANS.pop(trace_id, None)
+    return span_id
+
+
+def current_delegate_span_id() -> str | None:
+    """返回当前委派父 span 的 id；无委派进行中时为 None。
+
+    Returns:
+        委派 span id（16 位 hex），或 None。
+    """
+    return _delegate_span_id.get()
+
 
 # 只认该节点下的事件（与 `_convert_event` 的既有口径一致）。
 # **不得**改用 `checkpoint_ns` 判空：实测 on_tool_* 的 checkpoint_ns 是
@@ -87,6 +130,12 @@ class ToolTraceCollector:
         self._open: dict[str, Any] = {}  # run_id -> 尚未结束的工具 span
         self._round: Any = None  # 当前 tools 父 span
         self._delegate_span: Any = None  # 委派父 span（仅 scope=delegate）
+        self._delegate_parent: Any = (
+            None  # 触发委派的 delegate_task 工具 span（主链路记录）
+        )
+        self._delegate_token: Any = (
+            None  # _delegate_span_id 的 ContextVar token（close 时复位）
+        )
         self._tools_used: set[str] = set()  # 本轮实际调用过的工具名（去重）
 
     # ---------- 对外 ----------
@@ -99,21 +148,26 @@ class ToolTraceCollector:
         """
         return sorted(name for name in self._tools_used if name)
 
-    def open_delegate_span(self, delegate_id: str, skill: str) -> Any | None:
+    def open_delegate_span(
+        self, delegate_id: str, skill: str, parent_span_id: str | None = None
+    ) -> Any | None:
         """开委派父 span（标注 delegate_id / skill），供该次委派的工具 span 挂靠。
 
         Args:
             delegate_id: 本次委派短 id
             skill: 被调用的 skill 名（通用委派传占位名）
+            parent_span_id: 触发本次委派的工具 span id（由 delegate_task 传入）；None 时按
+                采集器自身状态与环境 span 兜底
 
         Returns:
             委派父 span；未启用或建 span 失败时返回 None（观测失败不得影响对话）
         """
         if not self._enabled:
             return None
+        parent_id = parent_span_id or self._delegate_parent_id()
         try:
             self._delegate_span = self._get_client().start_observation(
-                trace_context=TraceContext(trace_id=self._trace_id),
+                trace_context=self._trace_context(parent_id),
                 name=_DELEGATE_SPAN,
                 as_type="span",
                 metadata={"delegate_id": delegate_id, "skill": skill},
@@ -122,7 +176,37 @@ class ToolTraceCollector:
             logger.warning("[tool_trace] open delegate span failed", exc_info=True)
             return None
         self._parent_span = self._delegate_span
+        # 子代理运行期间把 delegate span 记为"当前委派父"，middleware 据此挂 agent_turn
+        self._delegate_token = _delegate_span_id.set(self._delegate_span.id)
         return self._delegate_span
+
+    def _delegate_parent_id(self) -> str | None:
+        """委派 span 的父节点 id：优先触发它的 delegate_task 工具 span，其次当前轮 span。
+
+        Returns:
+            父 span id；均不可用时返回 None（由调用方退化为无父节点）。
+        """
+        tool_span_id = take_delegate_tool_span(self._trace_id)
+        if tool_span_id:
+            return tool_span_id
+        for candidate in (self._delegate_parent, self._round):
+            if candidate is not None:
+                return str(candidate.id)
+        # 跨任务拿不到工具 span 时的兜底：挂到当前轮的环境 span（chat_turn）
+        return self._get_client().get_current_observation_id() or None
+
+    def _trace_context(self, parent_id: str | None) -> TraceContext:
+        """按父节点是否可用构造 TraceContext。
+
+        Args:
+            parent_id: 父 span id；None 时只带 trace_id（由 SDK 生成合成父节点）。
+
+        Returns:
+            TraceContext 实例。
+        """
+        if parent_id:
+            return TraceContext(trace_id=self._trace_id, parent_span_id=parent_id)
+        return TraceContext(trace_id=self._trace_id)
 
     def consume(self, item: Any) -> None:
         """事件循环每项调一次。
@@ -169,6 +253,11 @@ class ToolTraceCollector:
             span, self._delegate_span = self._delegate_span, None
             self._parent_span = None
             self._end_span(span)
+        if self._delegate_token is not None:
+            _delegate_span_id.reset(self._delegate_token)
+            self._delegate_token = None
+        # 清掉本 trace 未配对的工具 span，避免残留到下一次请求
+        _DELEGATE_TOOL_SPANS.pop(self._trace_id, None)
 
     # ---------- 扩展点（MCP 接入时在此加逻辑，本期不实现） ----------
 
@@ -223,13 +312,12 @@ class ToolTraceCollector:
         parent_id = None
         if self._parent_span is not None:
             parent_id = self._parent_span.id
+        if parent_id is None:
+            # 主链路：挂到当前轮的环境 span（chat_turn）；委派域已在 _parent_span 上。
+            parent_id = self._get_client().get_current_observation_id() or None
         try:
             self._round = self._get_client().start_observation(
-                trace_context=(
-                    TraceContext(trace_id=self._trace_id, parent_span_id=parent_id)
-                    if parent_id
-                    else TraceContext(trace_id=self._trace_id)
-                ),
+                trace_context=self._trace_context(parent_id),
                 name=self._name_prefix + _TOOLS_NODE,
                 as_type="span",
             )
@@ -263,6 +351,25 @@ class ToolTraceCollector:
             logger.warning("[tool_trace] open tool span failed", exc_info=True)
             return
         self._open[str(item.get("run_id", ""))] = span
+        if str(item.get("name", "")) == _DELEGATE_TOOL:
+            # 委派 span 要挂在这个工具 span 下（委派在工具执行期间发生）；
+            # 同时写进 ContextVar，供委派域新建的 collector 读取。
+            self._delegate_parent = span
+            _DELEGATE_TOOL_SPANS.setdefault(self._trace_id, []).append(str(span.id))
+
+    def _forget_delegate_tool_span(self, span_id: str) -> None:
+        """把已结束的委派工具 span 从待配对表中移除。
+
+        Args:
+            span_id: 已结束的工具 span id。
+        """
+        pending = _DELEGATE_TOOL_SPANS.get(self._trace_id)
+        if not pending:
+            return
+        if span_id in pending:
+            pending.remove(span_id)
+        if not pending:
+            _DELEGATE_TOOL_SPANS.pop(self._trace_id, None)
 
     def _on_tool_end(self, item: dict) -> None:
         """按 run_id 取回 span 并写入返回值。"""
@@ -270,6 +377,8 @@ class ToolTraceCollector:
         if span is None:
             return
         self._end_span(span, output=self._normalize_output(item))
+        if str(item.get("name", "")) == _DELEGATE_TOOL:
+            self._forget_delegate_tool_span(str(span.id))
 
     def _on_tool_error(self, item: dict) -> None:
         """工具抛错：标记 ERROR 并写入错误信息（此路径没有 on_tool_end）。"""
@@ -283,6 +392,8 @@ class ToolTraceCollector:
             level="ERROR",
             status_message=str(data.get("error", "")),
         )
+        if str(item.get("name", "")) == _DELEGATE_TOOL:
+            self._forget_delegate_tool_span(str(span.id))
 
     def _end_span(
         self,

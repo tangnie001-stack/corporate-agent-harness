@@ -37,6 +37,10 @@ class _FakeClient:
         self.spans.append(span)
         return span
 
+    def get_current_observation_id(self) -> str | None:
+        """替身：当前没有主链路的环堢 span。"""
+        return None
+
 
 class _Chunk:
     def __init__(self, text):

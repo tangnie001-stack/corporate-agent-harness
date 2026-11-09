@@ -4,7 +4,11 @@ from typing import Any
 
 from langchain_core.messages import ToolMessage
 
-from src.infra.llm.tool_trace import ToolTraceCollector
+from src.infra.llm.tool_trace import (
+    ToolTraceCollector,
+    current_delegate_span_id,
+    take_delegate_tool_span,
+)
 
 
 class _FakeSpan:
@@ -54,6 +58,10 @@ class _FakeClient:
         )
         self.spans.append(span)
         return span
+
+    def get_current_observation_id(self) -> str | None:
+        """替身：主链路没有环境 span（真实客户端返回当前 OTel span id）。"""
+        return None
 
 
 def _item(event: str, name: str = "", run_id: str = "r1", **data):
@@ -324,3 +332,56 @@ def test_tools_used_empty_when_no_tool_called():
     """未发生工具调用时返回空列表（trace metadata 恒有该字段）。"""
     collector = ToolTraceCollector(enabled=False, trace_id="t")
     assert collector.tools_used == []
+
+
+def test_delegate_span_nests_under_delegate_task_tool():
+    """委派 span 挂在触发它的 delegate_task 工具 span 下，并在运行期暴露为当前委派父。"""
+    client = _FakeClient()
+    collector = ToolTraceCollector(enabled=True, trace_id="t1", client=client)
+
+    collector.consume(_item("on_chain_start", name="tools"))
+    collector.consume(
+        _item("on_tool_start", name="delegate_task", run_id="rD", input={"task": "x"})
+    )
+    tool_span = client.spans[-1]
+
+    delegate = collector.open_delegate_span("d1", "bot-dev")
+
+    assert delegate is not None
+    assert delegate.parent_observation_id == tool_span.id
+    assert current_delegate_span_id() == delegate.id
+
+    collector.close()
+    assert current_delegate_span_id() is None
+
+
+def test_delegate_scope_round_nests_under_delegate_span():
+    """委派域的轮次 span 挂在 delegate span 下（子代理工具不落到主链路）。"""
+    client = _FakeClient()
+    collector = ToolTraceCollector(
+        enabled=True,
+        trace_id="t1",
+        client=client,
+        scope="delegate",
+        name_prefix="delegate:",
+    )
+
+    delegate = collector.open_delegate_span("d1", "bot-dev")
+    assert delegate is not None
+    collector.consume(_item("on_chain_start", name="tools"))
+
+    assert client.spans[-1].parent_observation_id == delegate.id
+    collector.close()
+
+
+def test_delegate_tool_span_pairs_once_per_trace():
+    """委派工具 span 按 trace 登记，取一次即出队（下一个委派不会复用）。"""
+    client = _FakeClient()
+    collector = ToolTraceCollector(enabled=True, trace_id="t1", client=client)
+
+    collector.consume(_item("on_tool_start", name="delegate_task", run_id="rD"))
+    tool_span = client.spans[-1]
+
+    assert take_delegate_tool_span("t1") == tool_span.id
+    assert take_delegate_tool_span("t1") is None
+    collector.close()

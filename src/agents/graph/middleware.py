@@ -28,6 +28,7 @@ from src.infra.llm.provider.thinking import thinking_extra_body
 from src.infra.llm.request_context import current_request_ctx
 from src.infra.llm.token_count import count_messages_tokens
 from src.infra.llm.token_usage import estimate_usage
+from src.infra.llm.tool_trace import current_delegate_span_id
 from src.infra.llm.trace_context import current_trace_id
 from src.infra.llm.tracing import get_client, tracing_enabled
 
@@ -266,7 +267,8 @@ class AgentSpanMiddleware(AgentMiddleware):
             return None
         try:
             client = get_client()
-            parent = client.get_current_observation_id()
+            # 委派中的子代理要挂在 delegate 下；主链路取环境 span（chat_turn）
+            parent = current_delegate_span_id() or client.get_current_observation_id()
             ctx = (
                 TraceContext(trace_id=trace_id, parent_span_id=parent)
                 if parent

@@ -66,8 +66,11 @@
 ## 7. 验收
 
 - [x] 7.1 dev 上一轮普通对话：trace 树完整（`chat_turn` → `round` → `tool`）、token 与成本非 NULL、session/user/tag/metadata 齐全
-- [ ] 7.2 dev 上一轮委派对话：`delegate` span 父子关系正确
-- [ ] 7.3 `LANGFUSE_ENABLE=false` 并把 host 指向必然失败的端口，跑一轮对话与一次评测：**零出网请求**、功能正常
+- [x] 7.2 dev 上一轮委派对话：`delegate` span 父子关系正确
+  - 修复前：`tools` / `delegate` 的 `parent_span_id` 是 SDK 合成的随机 id（库里不存在，树上是孤儿）
+  - 修复后实测（trace `0220f935…`）：`chat_turn` → `tools` → `delegate_task` → `delegate`，`agent_turn` 挂 `chat_turn`，无合成父节点
+- [x] 7.3 `LANGFUSE_ENABLE=false` 并把 host 指向必然失败的端口，跑一轮对话与一次评测：**零出网请求**、功能正常
+  - 实测：`LANGFUSE_HOST=http://127.0.0.1:9` 跑 `--limit 1`，退出码 0，报告正常产出；`events_core` 15→15、`scores` 0→0，日志无连接拒绝/异常
 - [x] 7.4 `docker compose restart` 后旧 trace 仍可查（验证命名卷）
 - [ ] 7.5 控制台可登录；能对一条 trace 手工打分并在 Scores 中看到
 - [ ] 7.6 跑一次评测 CLI：分数写入成功，日志中无 "Ignoring trace ID"
