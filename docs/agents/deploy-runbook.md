@@ -125,7 +125,7 @@ v4 升级前实测整栈占用 **≈715 MiB**（app 254 / langfuse-web 212 / min
 - **代码同步**（GitHub → Codeup，第 5 步）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/codeup/deploytest/tangnie001-stack/corporate-agent-harness/settings/mirror_sync`
 - **流水线**（看进度 / 第 7 步在此创建发布单）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/flow/my?page=1`
 - **版本 / 回滚**（第 10 步）：`https://deploytest-cn-shanghai.devops.aliyuncs.com/appstack/app/deploy-app/versions`
-- **生产入口**：站点 `https://www.tangnie.cn/`（接口域 `https://api.tangnie.cn`）｜ Langfuse `https://langfuse.tangnie.cn`｜ **入口机** `root@8.133.224.173`（TLS 与证书在 `/etc/nginx/certs`）｜ **应用机（发布目标）** `root@8.153.17.226`（发布路径 `/opt/www/corporate_rag`）
+- **生产入口**：站点 `https://www.tangnie.cn/`（接口域 `https://api.tangnie.cn`）｜ Langfuse `https://langfuse.tangnie.cn`｜ **入口机** `root@8.133.224.173`（TLS 与证书在 `/etc/nginx/certs`）｜ **应用机（发布目标）** `root@8.133.177.207`（发布路径 `/opt/www/corporate_rag`；机器清单见 `infra-inventory.md`）
 
 > 本节只做**链接速查**；步骤正文见上面的 §2.0 表格，不在此复述。
 
